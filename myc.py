@@ -14,7 +14,7 @@ from openai.types.shared_params import FunctionDefinition
 load_dotenv()
 
 # 系统提示词
-SYSTEM = f"你是编程智能体 myc。当前在 {os.getcwd()}。使用 bash 完成任务。直接做勿解释。"
+SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 完成任务。直接做勿解释。"
 
 # 工具定义
 TOOLS = [ChatCompletionFunctionToolParam(
