@@ -103,13 +103,17 @@ if __name__ == '__main__':
     while True:
         try:
             user_input = input('\x1B[1;32mmyc > \x1B[0m')
-        except (EOFError, KeyboardInterrupt):
+            if user_input.strip() in {"/q", "/quit"}:
+                print()
+                break
+            # 消息列表追加用户输入并进入智能体循环
+            hist_messages.append(ChatCompletionUserMessageParam(role='user', content=user_input))
+            agent_loop(hist_messages)
+        except EOFError:
+            # Ctrl-D: 退出程序
+            print()
             break
-        if user_input.strip() in {"/q", "/quit"}:
-            break
-        # 消息列表追加用户输入并进入智能体循环
-        hist_messages.append(ChatCompletionUserMessageParam(role='user', content=user_input))
-        agent_loop(hist_messages)
-
-    # 退出前输出换行
-    print()
+        except KeyboardInterrupt:
+            # Ctrl-C: 结束当前执行，恢复到提示符
+            print("\n")
+            continue
