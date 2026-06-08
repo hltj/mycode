@@ -41,6 +41,23 @@ def get_iso_timestamp() -> str:
     return datetime.now().astimezone().isoformat()
 
 
+def find_latest_session_file() -> Path | None:
+    """根据当前目录找到最新的会话文件（按修改时间排序）"""
+    sanitized_cwd = sanitize_path(os.getcwd())
+    session_dir = SESSIONS_DIR / sanitized_cwd
+    if not session_dir.exists():
+        return None
+    jsonl_files = sorted(session_dir.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return jsonl_files[0] if jsonl_files else None
+
+
+def get_session_file(session_id_: str) -> Path | None:
+    """根据 session id（完整UUID）获取会话文件路径"""
+    sanitized_cwd = sanitize_path(os.getcwd())
+    target = SESSIONS_DIR / sanitized_cwd / f"{session_id_}.jsonl"
+    return target if target.exists() else None
+
+
 class SessionEntry:
     """会话条目基类"""
     

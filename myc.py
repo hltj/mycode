@@ -30,23 +30,13 @@ SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 
 # noinspection PyUnusedImports
 from tools import bash
 from tools_reg import ToolsRegistry
-from session import SessionHistory, SESSIONS_DIR, SessionMessage, SessionToolCall
+from session import SessionHistory, SESSIONS_DIR, SessionMessage, SessionToolCall, find_latest_session_file, get_session_file
 from openai.types.chat import ChatCompletionMessageFunctionToolCall
 
 client = OpenAI(
     api_key=os.getenv('API_KEY'),
     base_url=os.getenv('BASE_URL'),
 )
-
-
-def find_session_file(session_id_: str) -> Path | None:
-    """根据 session id（完整UUID）查找会话文件"""
-    if not SESSIONS_DIR.exists():
-        return None
-    for jsonl_file in SESSIONS_DIR.rglob("*.jsonl"):
-        if jsonl_file.name.startswith(session_id_ + "."):
-            return jsonl_file
-    return None
 
 
 def replay_history(session_hist_: SessionHistory):
@@ -157,6 +147,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='mycode - 编程智能体')
     parser.add_argument('-r', '--resume', type=str, metavar='SESSION_ID',
                         help='恢复指定会话')
+    parser.add_argument('-c', '--continue', dest='continue_session', action='store_true',
+                        help='恢复当前目录的最新会话')
     # 将 -h/--help 的 help 文本改为中文
     for action in parser._actions:
         if isinstance(action, argparse._HelpAction):
@@ -178,9 +170,17 @@ if __name__ == '__main__':
     
     if args.resume:
         session_id = args.resume
-        session_file = find_session_file(session_id)
+        session_file = get_session_file(session_id)
         if session_file is None:
             print(f"未找到会话 ID 为 {session_id} 的会话。")
+            sys.exit(1)
+        
+        session_hist = SessionHistory.load(session_file)
+        hist_messages.extend(session_hist.get_messages())
+    elif args.continue_session:
+        session_file = find_latest_session_file()
+        if session_file is None:
+            print(f"未找到当前目录的会话记录。")
             sys.exit(1)
         
         session_hist = SessionHistory.load(session_file)
@@ -193,7 +193,7 @@ if __name__ == '__main__':
     print(f"会话 ID: {session_hist.session_uuid}")
     print()
 
-    if args.resume:
+    if args.resume or args.continue_session:
         replay_history(session_hist)
 
     # 定义提示符样式

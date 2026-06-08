@@ -13,6 +13,8 @@ from session import (
     SessionSession,
     SessionMessage,
     SessionToolCall,
+    get_session_file,
+    find_latest_session_file,
 )
 from openai.types.chat import (
     ChatCompletionUserMessageParam,
@@ -549,3 +551,85 @@ class TestToolCallsSerialization:
         # 验证 entries 顺序
         entry_types = [e.type for e in loaded.entries if e.type != "session"]
         assert entry_types == ["message", "tool_call", "message"]
+
+
+class TestGetSessionFile:
+    """测试 get_session_file"""
+
+    def test_existing_file(self, temp_home):
+        """存在时返回路径"""
+        sessions_dir = temp_home / "sessions"
+        with patch('session.SESSIONS_DIR', sessions_dir):
+            history = SessionHistory("/test", model="test-model")
+
+        loaded = SessionHistory.load(history.file_path)
+        session_id = loaded.session_uuid
+
+        # get_session_file 内部用 session.SESSIONS_DIR 和 session.os.getcwd()，需同时 patch
+        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+            result = get_session_file(session_id)
+        assert result is not None
+        assert result == history.file_path
+
+    def test_non_existing_file(self, temp_home):
+        """不存在时返回 None"""
+        import uuid as uu
+        fake_id = str(uu.uuid4())
+
+        result = get_session_file(fake_id)
+        assert result is None
+
+    def test_sessions_dir_not_exists(self, temp_home):
+        """SESSIONS_DIR 不存在时返回 None"""
+        fake_sessions = temp_home / "fake_sessions"
+        with patch('session.SESSIONS_DIR', fake_sessions):
+            result = get_session_file("any-id")
+            assert result is None
+
+
+class TestFindLatestSessionFile:
+    """测试 find_latest_session_file"""
+
+    def test_returns_latest_by_mtime(self, temp_home):
+        """按修改时间返回最新的会话文件"""
+        sessions_dir = temp_home / "sessions"
+        with patch('session.SESSIONS_DIR', sessions_dir):
+            history1 = SessionHistory("/test", model="test-model")
+            import time
+            time.sleep(0.1)
+            history2 = SessionHistory("/test", model="test-model")
+
+        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+            result = find_latest_session_file()
+        assert result is not None
+        assert result == history2.file_path
+
+    def test_single_session(self, temp_home):
+        """只有一个会话时返回该会话"""
+        sessions_dir = temp_home / "sessions"
+        with patch('session.SESSIONS_DIR', sessions_dir):
+            history = SessionHistory("/test", model="test-model")
+
+        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+            result = find_latest_session_file()
+        assert result is not None
+        assert result == history.file_path
+
+    def test_no_sessions_for_cwd(self, temp_home):
+        """当前目录没有会话时返回 None"""
+        sessions_dir = temp_home / "sessions"
+        with patch('session.SESSIONS_DIR', sessions_dir):
+            # 在另一个目录创建会话
+            SessionHistory("/other", model="test-model")
+
+        # 当前目录是 /test，没有会话
+        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+            result = find_latest_session_file()
+        assert result is None
+
+    def test_sessions_dir_not_exists(self, temp_home):
+        """SESSIONS_DIR 不存在时返回 None"""
+        fake_sessions = temp_home / "fake_sessions"
+        with patch('session.SESSIONS_DIR', fake_sessions):
+            result = find_latest_session_file()
+            assert result is None
