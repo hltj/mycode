@@ -56,13 +56,12 @@ def replay_history(session_hist_: SessionHistory):
             msg = entry.message
             role = msg.get("role")
             if role == "user":
-                print(f"myc > {msg.get('content', '')}")
+                print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{msg.get('content', '')}")
             elif role == "assistant":
                 content = msg.get("content")
                 if content and str(content).strip():
                     print(f"\x1B[1;34mAI【{entry.model}】:\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
-                else:
-                    print(f"\x1B[1;34mAI【{entry.model}】:\x1B[0m\n")
+
             elif role == "tool":
                 tool_result = msg.get("content", "")
                 print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
@@ -234,4 +233,10 @@ if __name__ == '__main__':
             continue
 
     # 退出时输出如何继续本次会话的指引
-    print(f"\n可通过以下命令继续本次会话：\n{sys.argv[0]} -r {session_hist.session_uuid}")
+    entry_count = len([e for e in session_hist.entries if isinstance(e, SessionMessage)])
+    if entry_count == 0:
+        # 没有任何用户消息，删除只有 session 记录的文件
+        session_hist.file_path.unlink(missing_ok=True)
+        print("\n无输入，会话已清理。")
+    else:
+        print(f"\n可通过以下命令继续本次会话：\n{sys.argv[0]} -r {session_hist.session_uuid}")
