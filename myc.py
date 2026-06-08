@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import os
+import sys
+import argparse
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -28,21 +30,58 @@ SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 
 # noinspection PyUnusedImports
 from tools import bash
 from tools_reg import ToolsRegistry
+from session import SessionHistory, SESSIONS_DIR, SessionMessage, SessionToolCall
+from openai.types.chat import ChatCompletionMessageFunctionToolCall
 
 client = OpenAI(
     api_key=os.getenv('API_KEY'),
     base_url=os.getenv('BASE_URL'),
 )
 
+
+def find_session_file(session_id_: str) -> Path | None:
+    """根据 session id（完整UUID）查找会话文件"""
+    if not SESSIONS_DIR.exists():
+        return None
+    for jsonl_file in SESSIONS_DIR.rglob("*.jsonl"):
+        if jsonl_file.name.startswith(session_id_ + "."):
+            return jsonl_file
+    return None
+
+
+def replay_history(session_hist_: SessionHistory):
+    """以实时输出格式重放历史会话"""
+    for entry in session_hist_.entries:
+        if isinstance(entry, SessionMessage):
+            msg = entry.message
+            role = msg.get("role")
+            if role == "user":
+                print(f"myc > {msg.get('content', '')}")
+            elif role == "assistant":
+                content = msg.get("content")
+                if content and str(content).strip():
+                    print(f"\x1B[1;34mAI【{entry.model}】:\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
+                else:
+                    print(f"\x1B[1;34mAI【{entry.model}】:\x1B[0m\n")
+            elif role == "tool":
+                tool_result = msg.get("content", "")
+                print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
+        elif isinstance(entry, SessionToolCall):
+            tc = entry.tool_call
+            func_name = tc.function.name
+            args_ = tc.function.arguments
+            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{args_}\n```")
+
+
 # 智能体自循环
-def agent_loop(messages: list[ChatCompletionMessageParam]):
+def agent_loop(messages: list[ChatCompletionMessageParam], session_hist_: SessionHistory | None = None):
     tools = ToolsRegistry.get_tools()
     while True:
         # 调用模型
-        model = os.getenv('MODEL_NAME')
+        model_ = os.getenv('MODEL_NAME') or ''
         # noinspection PyTypeChecker
         response = client.chat.completions.create(
-            model=model,
+            model=model_,
             messages=messages,
             tools=tools,
             tool_choice="auto",
@@ -55,34 +94,51 @@ def agent_loop(messages: list[ChatCompletionMessageParam]):
         message = choice.message
         content = message.content
         # noinspection PyTypeChecker
-        messages.append(
-            ChatCompletionAssistantMessageParam(role='assistant', content=content, tool_calls=message.tool_calls)
+        assistant_msg: ChatCompletionMessageParam = ChatCompletionAssistantMessageParam(
+            role='assistant', content=content, tool_calls=message.tool_calls
         )
+        messages.append(assistant_msg)
+        
+        if session_hist_ is not None:
+            session_hist_.append_message(assistant_msg, model_)
+        
         if content and content.strip():
-            print(f"\x1B[1;34mAI【{model}】:\x1B[0m\n{content.strip(chr(0x0A))}\n")
+            print(f"\x1B[1;34mAI【{model_}】:\x1B[0m\n{content.strip(chr(0x0A))}\n")
 
         # 非工具调用结束循环
         if choice.finish_reason != 'tool_calls':
             return
 
-        # 处理各个工具调用
-        for tool_call in (message.tool_calls or []):
+        # 处理各个工具调用（tool_call 是联合类型：function / custom，只处理 function）
+        for tc in (message.tool_calls or []):
+            if not isinstance(tc, ChatCompletionMessageFunctionToolCall):
+                continue
+            tool_call: ChatCompletionMessageFunctionToolCall = tc
             func_name = tool_call.function.name
             handler = ToolsRegistry.get_handler(func_name)
+            
+            # 保存工具调用记录到会话历史（tool_call 已是 ChatCompletionMessageFunctionToolCallParam，直接复制）
+            if session_hist_ is not None:
+                session_hist_.append_tool_call(tool_call, model_)
+            
+            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{tool_call.function.arguments}\n```")
             if handler is None:
                 tool_result = f"Error: Unknown tool '{func_name}'"
             else:
                 # 解析工具参数并执行
                 # noinspection PyUnresolvedReferences
-                args = eval(tool_call.function.arguments)
-                print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{tool_call.function.arguments}\n```")
-                tool_result = handler(**args)
-                print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
+                args_ = eval(tool_call.function.arguments)
+                tool_result = handler(**args_)
+            print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
 
             # 消息列表追加工具执行结果
-            messages.append(
-                ChatCompletionToolMessageParam(role='tool', tool_call_id=tool_call.id, content=tool_result)
+            tool_msg: ChatCompletionMessageParam = ChatCompletionToolMessageParam(
+                role='tool', tool_call_id=tool_call.id, content=tool_result
             )
+            messages.append(tool_msg)
+            
+            if session_hist_ is not None:
+                session_hist_.append_message(tool_msg, model_)
 
 
 class MycCommandCompleter(Completer):
@@ -98,11 +154,48 @@ class MycCommandCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text), display=cmd)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description='mycode - 编程智能体')
+    parser.add_argument('-r', '--resume', type=str, metavar='SESSION_ID',
+                        help='恢复指定会话')
+    # 将 -h/--help 的 help 文本改为中文
+    for action in parser._actions:
+        if isinstance(action, argparse._HelpAction):
+            action.help = '显示此帮助信息并退出'
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
+    args = parse_args()
+    
+    model = os.getenv('MODEL_NAME') or ''
+    
     # 消息列表初始化系统提示词
     hist_messages: list[ChatCompletionMessageParam] = [
         ChatCompletionSystemMessageParam(role='system', content=SYSTEM),
     ]
+    
+    session_hist: SessionHistory | None = None
+    
+    if args.resume:
+        session_id = args.resume
+        session_file = find_session_file(session_id)
+        if session_file is None:
+            print(f"未找到会话 ID 为 {session_id} 的会话。")
+            sys.exit(1)
+        
+        session_hist = SessionHistory.load(session_file)
+        hist_messages.extend(session_hist.get_messages())
+    else:
+        session_hist = SessionHistory(cwd=os.getcwd(), model=model)
+
+    # 输出头部信息
+    print("【mycode】")
+    print(f"会话 ID: {session_hist.session_uuid}")
+    print()
+
+    if args.resume:
+        replay_history(session_hist)
 
     # 定义提示符样式
     prompt_style = Style.from_dict({
@@ -123,16 +216,22 @@ if __name__ == '__main__':
         try:
             user_input = session.prompt([('class:mycode-prompt', 'myc > ')])
             if user_input.strip() in {"/q", "/quit"}:
-                print('')
                 break
             # 消息列表追加用户输入并进入智能体循环
-            hist_messages.append(ChatCompletionUserMessageParam(role='user', content=user_input))
-            agent_loop(hist_messages)
+            user_msg: ChatCompletionMessageParam = ChatCompletionUserMessageParam(role='user', content=user_input)
+            hist_messages.append(user_msg)
+            
+            if session_hist is not None:
+                session_hist.append_message(user_msg, model)
+            
+            agent_loop(hist_messages, session_hist)
         except EOFError:
             # Ctrl-D: 退出程序
-            print('')
             break
         except KeyboardInterrupt:
             # Ctrl-C: 结束当前执行，恢复到提示符
             print("\n")
             continue
+
+    # 退出时输出如何继续本次会话的指引
+    print(f"\n可通过以下命令继续本次会话：\n{sys.argv[0]} -r {session_hist.session_uuid}")
