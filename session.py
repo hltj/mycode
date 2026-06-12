@@ -9,10 +9,10 @@ import uuid
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import TypedDict, Optional, List, Dict, Any
+from typing import TypedDict, Optional, List, Dict, Any, cast
 
 from openai.types.chat import ChatCompletionMessageParam
-from openai.types.chat import ChatCompletionMessageFunctionToolCall
+from openai.types.chat import ChatCompletionMessageFunctionToolCallParam
 
 # 应用目录
 APP_HOME_DIR = Path(os.getenv('MYCODE_HOME_DIR', os.path.expanduser('~/.mycode')))
@@ -120,22 +120,10 @@ class SessionMessage(SessionEntry):
         super().__init__(time, "message", id_, parent_id, model)
         self.message = message
     
-    @staticmethod
-    def _serialize_message(message: ChatCompletionMessageParam) -> ChatCompletionMessageParam:
-        """递归序列化消息中的 Pydantic 对象（如 tool_calls）为 dict"""
-        if "tool_calls" in message and message["tool_calls"]:
-            serialized_calls = []
-            for tc in message["tool_calls"]:
-                if hasattr(tc, "model_dump"):
-                    serialized_calls.append(tc.model_dump())
-                else:
-                    serialized_calls.append(tc)
-            return {**message, "tool_calls": serialized_calls}
-        return message
-
     def to_dict(self) -> Dict[str, Any]:
         data = self.to_dict_base()
-        data["message"] = self._serialize_message(self.message)
+        # message 中的 tool_calls 已在 myc.py 构造 assistant_msg 时转为 dict，直接存储
+        data["message"] = self.message
         return data
     
     @classmethod
@@ -150,15 +138,15 @@ class SessionMessage(SessionEntry):
 
 
 class SessionToolCall(SessionEntry):
-    """tool_call 类型的条目，记录工具调用的原始信息"""
+    """tool_call 类型的条目，记录工具调用的原始信息（dict/Param 形式）"""
     
-    def __init__(self, time: str, id_: str, parent_id: str, tool_call: ChatCompletionMessageFunctionToolCall, model: str):
+    def __init__(self, time: str, id_: str, parent_id: str, tool_call: ChatCompletionMessageFunctionToolCallParam, model: str):
         super().__init__(time, "tool_call", id_, parent_id, model)
         self.tool_call = tool_call
     
     def to_dict(self) -> Dict[str, Any]:
         data = self.to_dict_base()
-        data["tool_call"] = self.tool_call.model_dump()
+        data["tool_call"] = self.tool_call
         return data
     
     @classmethod
@@ -170,7 +158,7 @@ class SessionToolCall(SessionEntry):
             time=data["time"],
             id_=data["id"],
             parent_id=data["parent_id"],
-            tool_call=ChatCompletionMessageFunctionToolCall.model_validate(tc_data),
+            tool_call=cast(ChatCompletionMessageFunctionToolCallParam, cast(Any, tc_data)),
             model=data["model"],
         )
 
@@ -240,7 +228,7 @@ class SessionHistory:
         # 追加写入到文件
         self._append_to_file(entry.to_dict())
     
-    def append_tool_call(self, tool_call: ChatCompletionMessageFunctionToolCall, model: str):
+    def append_tool_call(self, tool_call: ChatCompletionMessageFunctionToolCallParam, model: str):
         """追加工具调用记录"""
         full_uuid = str(uuid.uuid4())
         short_id = full_uuid[:8]

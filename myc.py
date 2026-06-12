@@ -3,13 +3,14 @@
 import os
 import sys
 import argparse
+from typing import cast
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam, \
     ChatCompletionMessageParam, ChatCompletionToolMessageParam, \
-    ChatCompletionAssistantMessageParam
+    ChatCompletionAssistantMessageParam, ChatCompletionMessageToolCallUnionParam, ChatCompletionMessageFunctionToolCallParam
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import Completion, Completer
@@ -30,8 +31,7 @@ SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 
 # noinspection PyUnusedImports
 from tools import bash
 from tools_reg import ToolsRegistry
-from session import SessionHistory, SESSIONS_DIR, SessionMessage, SessionToolCall, find_latest_session_file, get_session_file
-from openai.types.chat import ChatCompletionMessageFunctionToolCall
+from session import SessionHistory, SessionMessage, SessionToolCall, find_latest_session_file, get_session_file
 
 client = OpenAI(
     api_key=os.getenv('API_KEY'),
@@ -57,8 +57,8 @@ def replay_history(session_hist_: SessionHistory):
                 print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
         elif isinstance(entry, SessionToolCall):
             tc = entry.tool_call
-            func_name = tc.function.name
-            args_ = tc.function.arguments
+            func_name = tc["function"]["name"]
+            args_ = tc["function"]["arguments"]
             print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{args_}\n```")
 
 
@@ -82,9 +82,10 @@ def agent_loop(messages: list[ChatCompletionMessageParam], session_hist_: Sessio
         # 消息列表追加模型回复并输出
         message = choice.message
         content = message.content
-        # noinspection PyTypeChecker
+        # 将 Pydantic tool_calls 转为 list[ChatCompletionMessageToolCallUnionParam]
+        serialized_tool_calls: list[ChatCompletionMessageToolCallUnionParam] = [tc.model_dump() for tc in (message.tool_calls or [])]
         assistant_msg: ChatCompletionMessageParam = ChatCompletionAssistantMessageParam(
-            role='assistant', content=content, tool_calls=message.tool_calls
+            role='assistant', content=content, tool_calls=serialized_tool_calls
         )
         messages.append(assistant_msg)
         
@@ -99,33 +100,34 @@ def agent_loop(messages: list[ChatCompletionMessageParam], session_hist_: Sessio
             return
 
         # 处理各个工具调用（tool_call 是联合类型：function / custom，只处理 function）
-        for tc in (message.tool_calls or []):
-            if not isinstance(tc, ChatCompletionMessageFunctionToolCall):
+        for tc in serialized_tool_calls:
+            if tc.get("type") != "function":
                 continue
-            tool_call: ChatCompletionMessageFunctionToolCall = tc
-            func_name = tool_call.function.name
+            tool_call = cast(ChatCompletionMessageFunctionToolCallParam, tc)
+            func_name = tool_call["function"]["name"]
             handler = ToolsRegistry.get_handler(func_name)
-            
-            # 保存工具调用记录到会话历史（tool_call 已是 ChatCompletionMessageFunctionToolCallParam，直接复制）
+
+            # 保存工具调用记录到会话历史
             if session_hist_ is not None:
                 session_hist_.append_tool_call(tool_call, model_)
-            
-            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{tool_call.function.arguments}\n```")
+
+            args_str = tool_call["function"]["arguments"]
+            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{args_str}\n```")
             if handler is None:
                 tool_result = f"Error: Unknown tool '{func_name}'"
             else:
                 # 解析工具参数并执行
                 # noinspection PyUnresolvedReferences
-                args_ = eval(tool_call.function.arguments)
+                args_ = eval(tool_call["function"]["arguments"])
                 tool_result = handler(**args_)
             print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
 
             # 消息列表追加工具执行结果
             tool_msg: ChatCompletionMessageParam = ChatCompletionToolMessageParam(
-                role='tool', tool_call_id=tool_call.id, content=tool_result
+                role='tool', tool_call_id=tool_call["id"], content=tool_result
             )
             messages.append(tool_msg)
-            
+
             if session_hist_ is not None:
                 session_hist_.append_message(tool_msg, model_)
 

@@ -20,8 +20,9 @@ from openai.types.chat import (
     ChatCompletionUserMessageParam,
     ChatCompletionAssistantMessageParam,
     ChatCompletionToolMessageParam,
-    ChatCompletionMessageFunctionToolCall,
+    ChatCompletionMessageFunctionToolCallParam,
 )
+from openai.types.chat.chat_completion_message_function_tool_call_param import Function
 
 
 @pytest.fixture
@@ -436,10 +437,10 @@ class TestToolCallsSerialization:
         with patch('session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
-            tc = ChatCompletionMessageFunctionToolCall(
+            tc = ChatCompletionMessageFunctionToolCallParam(
                 id="call_abc",
                 type="function",
-                function={"name": "bash", 'arguments': '{"command": "echo hi"}'}
+                function=Function(name="bash", arguments='{"command": "echo hi"}'),
             )
             msg = ChatCompletionAssistantMessageParam(
                 role="assistant",
@@ -464,10 +465,10 @@ class TestToolCallsSerialization:
         with patch('session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
-            tc = ChatCompletionMessageFunctionToolCall(
+            tc = ChatCompletionMessageFunctionToolCallParam(
                 id="call_xyz",
                 type="function",
-                function={"name": "ls", 'arguments': "{}"}
+                function=Function(name="ls", arguments="{}"),
             )
             msg = ChatCompletionAssistantMessageParam(
                 role="assistant",
@@ -491,10 +492,10 @@ class TestToolCallsSerialization:
         with patch('session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
-            tc = ChatCompletionMessageFunctionToolCall(
+            tc = ChatCompletionMessageFunctionToolCallParam(
                 id="call_tc_test",
                 type="function",
-                function={"name": "cat", 'arguments': '{"path": "test.txt"}'}
+                function=Function(name="cat", arguments='{"path": "test.txt"}'),
             )
             history.append_tool_call(tc, "gpt-4o")
 
@@ -507,13 +508,13 @@ class TestToolCallsSerialization:
             assert tc_lines[0]["tool_call"]["id"] == "call_tc_test"
             assert tc_lines[0]["tool_call"]["function"]["name"] == "cat"
 
-        # 加载并验证
+        # 加载并验证（tool_call 是 dict）
         loaded = SessionHistory.load(history.file_path)
         tc_entries = [e for e in loaded.entries if isinstance(e, SessionToolCall)]
         assert len(tc_entries) == 1
         tc_entry = tc_entries[0]
-        assert tc_entry.tool_call.id == "call_tc_test"
-        assert tc_entry.tool_call.function.name == "cat"
+        assert tc_entry.tool_call["id"] == "call_tc_test"
+        assert tc_entry.tool_call["function"]["name"] == "cat"
         assert tc_entry.model == "gpt-4o"
 
     def test_full_tool_call_workflow(self, temp_home):
@@ -522,18 +523,18 @@ class TestToolCallsSerialization:
         with patch('session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
-            # assistant 回复带 tool_calls
-            tc_obj = ChatCompletionMessageFunctionToolCall(
+            # assistant 回复带 tool_calls（ChatCompletionMessageFunctionToolCallParam 形式）
+            tc = ChatCompletionMessageFunctionToolCallParam(
                 id="call_work",
                 type="function",
-                function={"name": "bash", 'arguments': '{"command": "pwd"}'}
+                function=Function(name="bash", arguments='{"command": "pwd"}'),
             )
             history.append_message(ChatCompletionAssistantMessageParam(
-                role="assistant", content="", tool_calls=[tc_obj]
+                role="assistant", content="", tool_calls=[tc]
             ), "gpt-4o")
 
-            # tool_call 记录
-            history.append_tool_call(tc_obj, "gpt-4o")
+            # tool_call 记录（ChatCompletionMessageFunctionToolCallParam 形式）
+            history.append_tool_call(tc, "gpt-4o")
 
             # tool result
             history.append_message(ChatCompletionToolMessageParam(
@@ -551,6 +552,7 @@ class TestToolCallsSerialization:
         # 验证 entries 顺序
         entry_types = [e.type for e in loaded.entries if e.type != "session"]
         assert entry_types == ["message", "tool_call", "message"]
+
 
 
 class TestGetSessionFile:
@@ -594,7 +596,7 @@ class TestFindLatestSessionFile:
         """按修改时间返回最新的会话文件"""
         sessions_dir = temp_home / "sessions"
         with patch('session.SESSIONS_DIR', sessions_dir):
-            history1 = SessionHistory("/test", model="test-model")
+            _history1 = SessionHistory("/test", model="test-model")
             import time
             time.sleep(0.1)
             history2 = SessionHistory("/test", model="test-model")
