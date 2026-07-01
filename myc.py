@@ -83,7 +83,10 @@ def agent_loop(messages: list[ChatCompletionMessageParam], session_hist_: Sessio
         message = choice.message
         content = message.content
         # 将 Pydantic tool_calls 转为 list[ChatCompletionMessageToolCallUnionParam]
-        serialized_tool_calls: list[ChatCompletionMessageToolCallUnionParam] = [tc.model_dump() for tc in (message.tool_calls or [])]
+        serialized_tool_calls = cast(
+            list[ChatCompletionMessageToolCallUnionParam],
+            [tc.model_dump() for tc in (message.tool_calls or [])]
+        )
         assistant_msg: ChatCompletionMessageParam = ChatCompletionAssistantMessageParam(
             role='assistant', content=content, tool_calls=serialized_tool_calls
         )
@@ -205,7 +208,7 @@ if __name__ == '__main__':
 
     # 配置 prompt_toolkit session
     completer = MycCommandCompleter()
-    session = PromptSession(
+    session: PromptSession[str] = PromptSession(
         history=FileHistory(str(HISTORY_FILE)),
         completer=completer,
         multiline=True,

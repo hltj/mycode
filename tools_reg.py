@@ -125,7 +125,7 @@ class ToolsRegistry:
     _tools: list[ChatCompletionFunctionToolParam] = []
     _handlers: dict[str, Callable] = {}
 
-    def __new__(cls, *_: Any, **__: Any) -> NoReturn:
+    def __new__(cls, *_: Any, **__: Any) -> "ToolsRegistry":
         raise TypeError(f"{cls.__name__} 禁止实例化，请直接调用类方法。")
 
     @classmethod

@@ -251,7 +251,7 @@ class SessionHistory:
         """从JSONL文件加载会话历史"""
         instance = cls.__new__(cls)
         instance.file_path = file_path
-        instance.session_uuid = None
+        instance.session_uuid = ''
         instance.file_name = file_path.name
         instance.entries = []
         instance._last_id = None
