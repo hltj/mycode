@@ -13,6 +13,7 @@ from session import (
     SessionSession,
     SessionMessage,
     SessionToolCall,
+    SessionInterrupt,
     get_session_file,
     find_latest_session_file,
 )
@@ -125,6 +126,17 @@ class TestSessionEntry:
         entry = SessionEntry.from_dict(data)
         assert isinstance(entry, SessionMessage)
 
+    def test_from_dict_interrupt(self):
+        data = {
+            "time": "2026-04-08T16:06:55.000000+08:00",
+            "type": "interrupt",
+            "id": "b27efd38",
+            "parent_id": "ed66ff3e",
+            "model": "test-model",
+        }
+        entry = SessionEntry.from_dict(data)
+        assert isinstance(entry, SessionInterrupt)
+
     def test_from_dict_invalid_type(self):
         data = {"type": "unknown"}
         with pytest.raises(ValueError, match="未知的条目类型"):
@@ -224,6 +236,36 @@ class TestSessionHistory:
         assert len(messages) == 2
         assert messages[0]["content"] == "msg1"
         assert messages[1]["content"] == "msg2"
+
+    def test_append_interrupt(self, session_history):
+        """测试追加中断记录"""
+        session_history.append_interrupt(model="test-model")
+
+        with open(session_history.file_path, 'r') as f:
+            lines = f.readlines()
+            assert len(lines) == 2
+            interrupt_data = json.loads(lines[1])
+            assert interrupt_data["type"] == "interrupt"
+
+    def test_append_interrupt_parent_id(self, session_history):
+        """测试中断记录的父节点ID链"""
+        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
+        session_history.append_interrupt(model="test-model")
+
+        with open(session_history.file_path, 'r') as f:
+            entries = [json.loads(line) for line in f.readlines()]
+            # interrupt 的 parent 应该是 msg1
+            assert entries[2]["parent_id"] == entries[1]["id"]
+
+    def test_load_interrupt(self, session_history):
+        """测试中断记录的加载"""
+        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        session_history.append_interrupt(model="test-model")
+
+        loaded = SessionHistory.load(session_history.file_path)
+        assert len(loaded.entries) == 3
+        assert isinstance(loaded.entries[2], SessionInterrupt)
+        assert loaded.entries[2].model == "test-model"
 
     def test_sanitize_preserves_leading_dashes(self, session_history):
         """测试 sanitize_path 保留开头的减号"""
@@ -375,6 +417,21 @@ class TestSessionHistoryFileStructure:
             data = json.loads(f.readline())
 
         assert len(data["id"]) == 8
+
+    def test_interrupt_entry_structure(self, session_history):
+        """interrupt条目应包含所有必需字段"""
+        session_history.append_interrupt(model="test-model")
+
+        with open(session_history.file_path, 'r') as f:
+            lines = f.readlines()
+            interrupt_data = json.loads(lines[1])
+
+        assert "time" in interrupt_data
+        assert interrupt_data["type"] == "interrupt"
+        assert "id" in interrupt_data
+        assert "parent_id" in interrupt_data
+        assert "model" in interrupt_data
+        assert interrupt_data["model"] == "test-model"
 
     def test_file_name_matches_session_id(self, session_history):
         """文件名使用完整UUID，记录id用短ID(前8位)"""

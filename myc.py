@@ -72,7 +72,12 @@ class ToolResultEvent:
     msg_param: ChatCompletionToolMessageParam
     model: str
 
-AgentMessage = UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent
+
+@dataclass
+class InterruptEvent:
+    model: str
+
+AgentMessage = UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent
 
 
 def assert_never(arg: NoReturn) -> NoReturn:
@@ -118,6 +123,8 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
                 session_hist.append_tool_call(tool_call, model)
             case ToolResultEvent(msg_param, model):
                 session_hist.append_message(msg_param, model)
+            case InterruptEvent(model):
+                session_hist.append_interrupt(model)
             case _ as unreachable:
                 assert_never(unreachable)
     return persist
@@ -141,6 +148,9 @@ def _render_common(msg: AgentMessage) -> None:
         case ToolResultEvent(msg_param, _):
             tool_result = msg_param.get("content", "")
             print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
+        case InterruptEvent(_):
+            # 交互状态输出空行
+            print('\n')
         case UserMessage(_, _):
             # 实时交互中不渲染用户消息（prompt_toolkit 已显示）
             pass
@@ -152,10 +162,13 @@ def render_terminal(msg: AgentMessage) -> None:
 
 
 def render_replay(msg: AgentMessage) -> None:
-    """历史重放渲染：所有类型均输出，UserMessage 单独处理后委托"""
+    """历史重放渲染：所有类型均输出；UserMessage 单独处理；InterruptEvent 输出 ^C 及空行"""
     match msg:
         case UserMessage(msg_param, _):
             print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{msg_param.get('content', '')}")
+        case InterruptEvent(_):
+            print("^C")
+            print()
         case _:
             _render_common(msg)
 
@@ -166,7 +179,7 @@ def render_replay(msg: AgentMessage) -> None:
 
 def replay_history(session_hist: SessionHistory) -> None:
     """重放历史会话"""
-    from session import SessionMessage, SessionToolCall
+    from session import SessionMessage, SessionToolCall, SessionInterrupt
 
     bus_replay = AgentEventBus()
     bus_replay.register(render_replay)
@@ -187,6 +200,8 @@ def replay_history(session_hist: SessionHistory) -> None:
         elif isinstance(entry, SessionToolCall):
             tc = entry.tool_call
             bus_replay.dispatch(ToolCallEvent(tool_call=tc, model=entry.model))
+        elif isinstance(entry, SessionInterrupt):
+            bus_replay.dispatch(InterruptEvent(model=entry.model))
 
 
 # ===================================================================
@@ -297,7 +312,7 @@ def parse_args():
 # ===================================================================
 
 
-from session import SessionHistory, SessionMessage, find_latest_session_file, get_session_file
+from session import SessionHistory, SessionMessage, SessionInterrupt, find_latest_session_file, get_session_file
 
 def main():
     args = parse_args()
@@ -382,7 +397,7 @@ def main():
 
         except KeyboardInterrupt:
             # Ctrl-C: 结束当前执行，恢复到提示符
-            print("\n")
+            bus.dispatch(InterruptEvent(model=model))
             continue
 
     # ---- 退出提示 ----

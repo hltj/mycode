@@ -88,6 +88,8 @@ class SessionEntry:
             return SessionMessage.from_dict(data)
         elif data.get("type") == "tool_call":
             return SessionToolCall.from_dict(data)
+        elif data.get("type") == "interrupt":
+            return SessionInterrupt.from_dict(data)
         raise ValueError(f"未知的条目类型: {data.get('type')}")
 
 
@@ -159,6 +161,26 @@ class SessionToolCall(SessionEntry):
             id_=data["id"],
             parent_id=data["parent_id"],
             tool_call=cast(ChatCompletionMessageFunctionToolCallParam, cast(Any, tc_data)),
+            model=data["model"],
+        )
+
+
+class SessionInterrupt(SessionEntry):
+    """interrupt 类型的条目，记录 Ctrl-C 中断事件"""
+    
+    def __init__(self, time: str, id_: str, parent_id: str, model: str):
+        super().__init__(time, "interrupt", id_, parent_id, model)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        data = self.to_dict_base()
+        return data
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SessionInterrupt:
+        return cls(
+            time=data["time"],
+            id_=data["id"],
+            parent_id=data["parent_id"],
             model=data["model"],
         )
 
@@ -244,6 +266,24 @@ class SessionHistory:
         )
         self.entries.append(entry)
         self._last_id = entry.id
+        self._append_to_file(entry.to_dict())
+    
+    def append_interrupt(self, model: str):
+        """追加中断记录"""
+        full_uuid = str(uuid.uuid4())
+        short_id = full_uuid[:8]
+        existing_ids = {e.id for e in self.entries}
+        record_id = short_id if short_id not in existing_ids else full_uuid
+        assert self._last_id is not None
+        entry = SessionInterrupt(
+            time=get_iso_timestamp(),
+            id_=record_id,
+            parent_id=self._last_id,
+            model=model,
+        )
+        self.entries.append(entry)
+        self._last_id = entry.id
+        # 追加写入到文件
         self._append_to_file(entry.to_dict())
     
     @classmethod
