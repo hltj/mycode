@@ -1,0 +1,210 @@
+# mycode 事件架构设计文档
+
+## 概述
+
+mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作（用户输入、AI 回复、工具调用、中断等）统一建模为 `AgentMessage` 类型，通过 `AgentEventBus` 分发，由注册的 Handler 分别处理渲染与持久化。
+
+核心文件：
+- `session.py` — ADT 类型定义、MessageProtocol、SessionHistory（持久化）
+- `myc.py` — AgentEventBus、渲染 Handler、主循环
+
+---
+
+## 一、ADT：AgentMessage 联合类型
+
+所有交互事件统一为 `AgentMessage` 联合类型，定义在 `session.py`：
+
+```python
+AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent
+```
+
+### MessageProtocol
+
+所有子类型显式继承 `MessageProtocol`，共享元数据字段：
+
+```python
+class MessageProtocol(Protocol):
+    id: str                  # 记录 ID（短 ID，通常为 UUID 前 8 位）
+    parent_id: Optional[str] # 前一条记录的 id，构成链表
+    model: str               # 使用的模型名称
+    entry_type: str          # session / message / tool_call / interrupt
+    time: str                # ISO8601 时间戳
+```
+
+各字段的**默认值均为空**（`id=""`, `parent_id=None`, `time=""`），在 dispatch 时由 AgentEventBus 统一注入。
+
+### 子类型一览
+
+| 类型 | 业务字段 | entry_type | 说明 |
+|------|---------|------------|------|
+| `SessionRecord` | `session: SessionData` | `"session"` | 会话初始化记录 |
+| `UserMessage` | `message: ChatCompletionUserMessageParam` | `"message"` | 用户输入 |
+| `AssistantMessage` | `message: ChatCompletionAssistantMessageParam` | `"message"` | AI 回复 |
+| `ToolCallEvent` | `tool_call: ChatCompletionMessageFunctionToolCallParam` | `"tool_call"` | 工具调用发起 |
+| `ToolResultEvent` | `message: ChatCompletionToolMessageParam` | `"message"` | 工具执行结果 |
+| `InterruptEvent` | （无额外字段） | `"interrupt"` | Ctrl-C 中断 |
+
+> **注意**：`entry_type` 在 dataclass 中通过默认值硬编码，不可修改。联合类型顺序固定为 SessionRecord → UserMessage → ... → InterruptEvent，所有 match-case 必须按此顺序处理并在末尾添加 `case _ as unreachable: assert_never(unreachable)` 确保 exhaustiveness。
+
+---
+
+## 二、AgentEventBus
+
+事件总线负责**元数据注入 + 分发**。
+
+```python
+class AgentEventBus:
+    def __init__(self, session_hist: SessionHistory | None = None) -> None:
+        self._handlers: list[Handler] = []
+        self._session_hist = session_hist
+
+    def dispatch(self, msg: AgentMessage) -> None:
+        if self._session_hist is not None:
+            self._session_hist.inject_meta(msg)  # 注入 id/parent_id/time
+        for handler in self._handlers:
+            handler(msg)
+```
+
+### 元数据注入流程
+
+1. **构造消息时只传业务字段**：`UserMessage(model=model, message=user_msg)`
+2. **dispatch 时自动注入**：bus 调用 `session_hist.inject_meta()` 设置 `id`、`parent_id`、`time`
+3. `inject_meta()` 内部逻辑：
+   - `msg.id = self._next_id()` — 生成不冲突的短 ID（8 位 UUID，冲突时用完整 36 位）
+   - `msg.parent_id = self.entries[-1].id` — 指向内存中上一条记录
+   - `msg.time = get_iso_timestamp()` — 当前时间
+
+### 两种使用场景
+
+#### 实时交互（CLI）
+
+```python
+bus = AgentEventBus(session_hist=session_hist)
+bus.register(make_persist_handler(session_hist))
+bus.register(render_terminal)
+# dispatch → inject_meta → persist handler → render handler
+```
+
+#### 历史重放（Replay）
+
+```python
+bus_replay = AgentEventBus()  # 不传 session_hist，跳过 inject_meta
+bus_replay.register(render_replay)
+for entry in session_hist.entries:
+    bus_replay.dispatch(entry)
+```
+
+重放时 entries 中的消息已有完整的 id/parent_id/time，无需再次注入。
+
+---
+
+## 三、SessionHistory
+
+会话历史记录管理器，负责**文件持久化 + 内存存储**。
+
+### 核心接口
+
+```python
+class SessionHistory:
+    def inject_meta(self, msg: AgentMessage) -> None
+    def append(self, msg: AgentMessage) -> None
+    def get_messages(self) -> List[ChatCompletionMessageParam]
+```
+
+- `inject_meta()` — 注入元数据（id/parent_id/time）
+- `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
+- `get_messages()` — 过滤出所有 message 类型的消息（排除 session/tool_call/interrupt）
+
+### 内存结构
+
+`entries: List[AgentMessage]` 存储所有记录，**包含 SessionRecord**。
+
+```
+entries[0] = SessionRecord     # 会话初始化
+entries[1] = UserMessage       # 用户输入
+entries[2] = AssistantMessage  # AI 回复
+entries[3] = ToolCallEvent     # 工具调用
+entries[4] = ToolResultEvent   # 工具结果
+...
+```
+
+### JSONL 文件格式
+
+每行一条 JSON 记录，结构统一：
+
+```json
+{"time":"...","type":"session","id":"a1b2c3d4","parent_id":null,"model":"gpt-4o","session":{"id":"full-uuid...","cwd":"/path"}}
+{"time":"...","type":"message","id":"e5f6g7h8","parent_id":"a1b2c3d4","model":"gpt-4o","message":{"role":"user","content":"hello"}}
+```
+
+- `type` 字段对应 `entry_type`
+- 业务数据根据类型放在 `session` / `message` / `tool_call` key 下，key 名与 `type` 值相同
+- `parent_id` 链构成完整的消息树
+
+### ID 生成策略
+
+1. 生成完整 UUID
+2. 取前 8 位作为短 ID
+3. 与内存中所有已有 id 比对，不冲突则用短 ID，冲突则用完整 36 位 UUID
+4. 比对范围仅为**内存 entries**，不读文件（load 时 entries 已完整恢复）
+
+---
+
+## 四、渲染 Handler
+
+### \_render_common（共享渲染逻辑）
+
+```python
+def _render_common(msg: AgentMessage) -> None:
+    match msg:
+        case SessionRecord(): pass
+        case UserMessage(): pass          # prompt_toolkit 已显示
+        case InterruptEvent(): print('\n')
+        case AssistantMessage(message, model): ...
+        case ToolCallEvent(tool_call): ...
+        case ToolResultEvent(message): ...
+        case _ as unreachable: assert_never(unreachable)
+```
+
+### render_terminal（实时交互）
+
+委托给 `_render_common`，UserMessage 由 prompt_toolkit 显示故跳过。
+
+### render_replay（历史重放）
+
+```python
+def render_replay(msg: AgentMessage) -> None:
+    match msg:
+        case UserMessage(message):
+            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}")
+        case InterruptEvent():
+            print("^C")
+            print()  # 模拟实时 Ctrl-C 的视觉表现
+        case _:
+            _render_common(msg)
+```
+
+> SessionRecord 由 `_render_common` 中的第一个 case 处理并跳过。
+
+---
+
+## 五、持久化 Handler
+
+```python
+def make_persist_handler(session_hist: SessionHistory) -> Handler:
+    def persist(msg: AgentMessage) -> None:
+        session_hist.append(msg)
+    return persist
+```
+
+极简实现——AgentEventBus dispatch 已注入元数据，handler 只需调用 append。
+
+---
+
+## 六、开发规范
+
+1. **新增事件类型**：在 `session.py` 中添加新的 `@dataclass` 继承 `MessageProtocol`，放入 `AgentMessage` 联合类型中适当位置（SessionRecord 始终第一，InterruptEvent 始终最后）
+2. **match-case 顺序**：必须与联合类型顺序一致，末尾必须加 `case _ as unreachable: assert_never(unreachable)`
+3. **构造消息**：只传业务字段 + model，id/parent_id/time 由 bus dispatch 自动注入
+4. **直接调用 append**（如测试场景）：必须先手动调用 `inject_meta()`
+5. **entries 包含 SessionRecord 等全部类型**：过滤 LLM 消息时用 `isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent))`
