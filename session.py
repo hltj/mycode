@@ -30,6 +30,13 @@ class SessionData(TypedDict):
     cwd: str
 
 
+class ExceptionData(TypedDict):
+    """异常自定义数据"""
+    type: str
+    message: str
+    traceback: str
+
+
 def sanitize_path(path: str) -> str:
     r"""将路径中的元字符替换为减号：/ : ? * " < > |（路径分隔符、Windows盘符分隔符及非法文件名字符）"""
     if not path:
@@ -135,7 +142,18 @@ class InterruptEvent(MessageProtocol):
     time: str = ""
 
 
-AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent
+
+@dataclass
+class ExceptionEvent(MessageProtocol):
+    model: str
+    exception: ExceptionData
+    id: str = ""
+    parent_id: Optional[str] = None
+    entry_type: str = "exception"
+    time: str = ""
+
+
+AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent | ExceptionEvent
 
 
 def assert_never(arg: NoReturn) -> NoReturn:
@@ -164,6 +182,8 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["message"] = message
         case InterruptEvent():
             pass
+        case ExceptionEvent(exception=exc_data):
+            d["exception"] = exc_data
         case _ as unreachable:
             assert_never(unreachable)
     return d
@@ -172,7 +192,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
 def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     """将 JSONL 字典转为 AgentMessage"""
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "interrupt", "session"):
+    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
@@ -201,6 +221,9 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         )
     elif entry_type == "interrupt":
         return InterruptEvent(**base_kwargs)
+    elif entry_type == "exception":
+        exc_data = data.get("exception", {})
+        return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
     # unreachable
     raise ValueError(f"未知的条目类型: {entry_type}")
 

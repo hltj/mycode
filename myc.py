@@ -57,6 +57,7 @@ from session import (
     ToolCallEvent,
     ToolResultEvent,
     InterruptEvent,
+    ExceptionEvent,
     AgentMessage,
     SessionHistory,
 )
@@ -128,6 +129,14 @@ def _render_common(msg: AgentMessage) -> None:
         case InterruptEvent():
             # 交互状态输出空行
             print('\n')
+        case ExceptionEvent(exception=exc):
+            exc_type = exc.get("type", "Unknown")
+            exc_message = exc.get("message", "")
+            traceback_str = exc.get("traceback", str(exc))
+            print(f"\x1B[1;31m异常 - {exc_type} - {exc_message}\x1B[0m")
+            print("```")
+            print(traceback_str.rstrip("\n"))
+            print("```")
         case _ as unreachable:
             assert_never(unreachable)
 
@@ -352,9 +361,20 @@ def main():
             # Ctrl-D: 退出程序
             break
 
-        except KeyboardInterrupt:
+        except KeyboardInterrupt as e:
             # Ctrl-C: 结束当前执行，恢复到提示符
             bus.dispatch(InterruptEvent(model=model))
+            continue
+
+        except Exception as e:
+            # 捕获所有异常并作为事件分发
+            import traceback as tb
+            tb_lines = tb.format_exc().rstrip()
+            bus.dispatch(ExceptionEvent(model=model, exception={
+                "type": type(e).__name__,
+                "message": str(e),
+                "traceback": tb_lines,
+            }))
             continue
 
     # ---- 退出提示 ----

@@ -2,7 +2,7 @@
 
 ## 概述
 
-mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作（用户输入、AI 回复、工具调用、中断等）统一建模为 `AgentMessage` 类型，通过 `AgentEventBus` 分发，由注册的 Handler 分别处理渲染与持久化。
+mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作（用户输入、AI 回复、工具调用、中断、异常等）统一建模为 `AgentMessage` 类型，通过 `AgentEventBus` 分发，由注册的 Handler 分别处理渲染与持久化。
 
 核心文件：
 - `session.py` — ADT 类型定义、MessageProtocol、SessionHistory（持久化）
@@ -15,7 +15,7 @@ mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作�
 所有交互事件统一为 `AgentMessage` 联合类型，定义在 `session.py`：
 
 ```python
-AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent
+AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent | ExceptionEvent
 ```
 
 ### MessageProtocol
@@ -27,7 +27,7 @@ class MessageProtocol(Protocol):
     id: str                  # 记录 ID（短 ID，通常为 UUID 前 8 位）
     parent_id: Optional[str] # 前一条记录的 id，构成链表
     model: str               # 使用的模型名称
-    entry_type: str          # session / message / tool_call / interrupt
+    entry_type: str          # session / message / tool_call / interrupt / exception
     time: str                # ISO8601 时间戳
 ```
 
@@ -43,8 +43,9 @@ class MessageProtocol(Protocol):
 | `ToolCallEvent` | `tool_call: ChatCompletionMessageFunctionToolCallParam` | `"tool_call"` | 工具调用发起 |
 | `ToolResultEvent` | `message: ChatCompletionToolMessageParam` | `"message"` | 工具执行结果 |
 | `InterruptEvent` | （无额外字段） | `"interrupt"` | Ctrl-C 中断 |
+| `ExceptionEvent` | `exception: ExceptionData` | `"exception"` | 异常 |
 
-> **注意**：`entry_type` 在 dataclass 中通过默认值硬编码，不可修改。联合类型顺序固定为 SessionRecord → UserMessage → ... → InterruptEvent，所有 match-case 必须按此顺序处理并在末尾添加 `case _ as unreachable: assert_never(unreachable)` 确保 exhaustiveness。
+> **注意**：`entry_type` 在 dataclass 中通过默认值硬编码，不可修改。联合类型顺序固定为 SessionRecord → UserMessage → ... → InterruptEvent → ExceptionEvent，所有 match-case 必须按此顺序处理并在末尾添加 `case _ as unreachable: assert_never(unreachable)` 确保 exhaustiveness。
 
 ---
 
@@ -113,7 +114,7 @@ class SessionHistory:
 
 - `inject_meta()` — 注入元数据（id/parent_id/time）
 - `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
-- `get_messages()` — 过滤出所有 message 类型的消息（排除 session/tool_call/interrupt）
+- `get_messages()` — 过滤出所有 message 类型的消息（排除 session/tool_call/interrupt/exception）
 
 ### 内存结构
 
@@ -138,7 +139,7 @@ entries[4] = ToolResultEvent   # 工具结果
 ```
 
 - `type` 字段对应 `entry_type`
-- 业务数据根据类型放在 `session` / `message` / `tool_call` key 下，key 名与 `type` 值相同
+- 不同类型的定制数据放在 `type` 值（`session` / `message` / `tool_call` / `exception`） 对应的 key 下
 - `parent_id` 链构成完整的消息树
 
 ### ID 生成策略
@@ -163,6 +164,7 @@ def _render_common(msg: AgentMessage) -> None:
         case AssistantMessage(message, model): ...
         case ToolCallEvent(tool_call): ...
         case ToolResultEvent(message): ...
+        case ExceptionEvent(exception=exc): ...
         case _ as unreachable: assert_never(unreachable)
 ```
 
@@ -203,8 +205,9 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 
 ## 六、开发规范
 
-1. **新增事件类型**：在 `session.py` 中添加新的 `@dataclass` 继承 `MessageProtocol`，放入 `AgentMessage` 联合类型中适当位置（SessionRecord 始终第一，InterruptEvent 始终最后）
+1. **新增事件类型**：在 `session.py` 中添加新的 `@dataclass` 继承 `MessageProtocol`，放入 `AgentMessage` 联合类型中适当位置（SessionRecord 始终第一，ExceptionEvent 始终最后）
 2. **match-case 顺序**：必须与联合类型顺序一致，末尾必须加 `case _ as unreachable: assert_never(unreachable)`
 3. **构造消息**：只传业务字段 + model，id/parent_id/time 由 bus dispatch 自动注入
 4. **直接调用 append**（如测试场景）：必须先手动调用 `inject_meta()`
 5. **entries 包含 SessionRecord 等全部类型**：过滤 LLM 消息时用 `isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent))`
+6. **render_replay 委托原则**：若某事件在 render_replay 中的行为与 `_render_common` 完全相同，则不在 render_replay 中单独处理，统一交由 `_render_common` 处理
