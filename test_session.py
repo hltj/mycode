@@ -9,14 +9,17 @@ from session import (
     sanitize_path,
     get_iso_timestamp,
     SessionHistory,
-    SessionEntry,
-    SessionSession,
-    SessionMessage,
-    SessionToolCall,
-    SessionInterrupt,
+    SessionRecord,
+    UserMessage,
+    AssistantMessage,
+    ToolCallEvent,
+    ToolResultEvent,
+    InterruptEvent,
+    _dict_to_agent_message,
     get_session_file,
     find_latest_session_file,
 )
+
 from openai.types.chat import (
     ChatCompletionUserMessageParam,
     ChatCompletionAssistantMessageParam,
@@ -76,7 +79,7 @@ class TestSanitizePath:
 
     def test_windows_illegal_chars_replaced(self):
         # Windows 非法文件名字符被替换
-        result = sanitize_path("test?file*name\"with<special>chars|here")
+        result = sanitize_path('test?file*name"with<special>chars|here')
         assert "?" not in result
         assert "*" not in result
         assert '"' not in result
@@ -111,8 +114,9 @@ class TestSessionEntry:
             "model": "test-model",
             "session": {"id": "test-session-id", "cwd": "/home"}
         }
-        entry = SessionEntry.from_dict(data)
-        assert isinstance(entry, SessionSession)
+        result = _dict_to_agent_message(data)
+        assert isinstance(result, SessionRecord)
+        assert result.session["id"] == "test-session-id"
 
     def test_from_dict_message(self):
         data = {
@@ -123,8 +127,8 @@ class TestSessionEntry:
             "model": "test-model",
             "message": {"role": "user", "content": "test"}
         }
-        entry = SessionEntry.from_dict(data)
-        assert isinstance(entry, SessionMessage)
+        entry = _dict_to_agent_message(data)
+        assert isinstance(entry, UserMessage)
 
     def test_from_dict_interrupt(self):
         data = {
@@ -134,13 +138,13 @@ class TestSessionEntry:
             "parent_id": "ed66ff3e",
             "model": "test-model",
         }
-        entry = SessionEntry.from_dict(data)
-        assert isinstance(entry, SessionInterrupt)
+        entry = _dict_to_agent_message(data)
+        assert isinstance(entry, InterruptEvent)
 
     def test_from_dict_invalid_type(self):
         data = {"type": "unknown"}
         with pytest.raises(ValueError, match="未知的条目类型"):
-            SessionEntry.from_dict(data)
+            _dict_to_agent_message(data)
 
 
 class TestSessionHistory:
@@ -172,7 +176,9 @@ class TestSessionHistory:
     def test_append_message(self, session_history):
         """测试追加消息"""
         msg = ChatCompletionUserMessageParam(role="user", content="Hello")
-        session_history.append_message(msg, model="test-model")
+        user_msg = UserMessage(message=msg, model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
 
         with open(session_history.file_path, 'r') as f:
             lines = f.readlines()
@@ -183,8 +189,12 @@ class TestSessionHistory:
 
     def test_parent_id_chain(self, session_history):
         """测试父节点ID链"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-        session_history.append_message(ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+        user_msg1 = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
+        asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+        session_history.inject_meta(user_msg1)
+        session_history.append(user_msg1)
+        session_history.inject_meta(asst_msg)
+        session_history.append(asst_msg)
 
         with open(session_history.file_path, 'r') as f:
             entries = [json.loads(line) for line in f.readlines()]
@@ -197,18 +207,22 @@ class TestSessionHistory:
 
     def test_load_from_file(self, session_history):
         """测试从文件加载会话历史"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
 
         loaded = SessionHistory.load(session_history.file_path)
-        assert len(loaded.entries) == 2
-        assert isinstance(loaded.entries[0], SessionSession)
-        assert isinstance(loaded.entries[1], SessionMessage)
+        assert len(loaded.entries) == 2  # SessionRecord + UserMessage
+        assert isinstance(loaded.entries[0], SessionRecord)
+        assert isinstance(loaded.entries[1], UserMessage)
         # 验证 session_uuid 从 session 记录中恢复，而非文件名
         assert loaded.session_uuid == session_history.session_uuid
 
     def test_load_restores_all_attributes(self, session_history):
         """测试load后所有属性都被正确恢复"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
 
         loaded = SessionHistory.load(session_history.file_path)
 
@@ -221,16 +235,20 @@ class TestSessionHistory:
         # 验证 file_name 被恢复
         assert loaded.file_name == session_history.file_name
 
-        # 验证 _record_id 被恢复
-        assert loaded._record_id is not None
+        # 验证第一条记录 id 被恢复
+        assert loaded.entries[0].id is not None
 
         # 验证 session_uuid 从 session 记录中恢复，而非文件名
         assert loaded.session_uuid == session_history.session_uuid
 
     def test_get_messages(self, session_history):
         """测试获取所有消息"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-        session_history.append_message(ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
+        asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+        session_history.inject_meta(asst_msg)
+        session_history.append(asst_msg)
 
         messages = session_history.get_messages()
         assert len(messages) == 2
@@ -239,7 +257,9 @@ class TestSessionHistory:
 
     def test_append_interrupt(self, session_history):
         """测试追加中断记录"""
-        session_history.append_interrupt(model="test-model")
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
 
         with open(session_history.file_path, 'r') as f:
             lines = f.readlines()
@@ -250,7 +270,9 @@ class TestSessionHistory:
     def test_append_interrupt_parent_id(self, session_history):
         """测试中断记录的父节点ID链"""
         session_history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-        session_history.append_interrupt(model="test-model")
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
 
         with open(session_history.file_path, 'r') as f:
             entries = [json.loads(line) for line in f.readlines()]
@@ -259,12 +281,59 @@ class TestSessionHistory:
 
     def test_load_interrupt(self, session_history):
         """测试中断记录的加载"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
-        session_history.append_interrupt(model="test-model")
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
 
         loaded = SessionHistory.load(session_history.file_path)
         assert len(loaded.entries) == 3
         assert isinstance(loaded.entries[2], SessionInterrupt)
+        assert loaded.entries[2].model == "test-model"
+
+    def test_append_interrupt(self, session_history):
+        """测试追加中断记录"""
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
+
+        with open(session_history.file_path, 'r') as f:
+            lines = f.readlines()
+            assert len(lines) == 2
+            interrupt_data = json.loads(lines[1])
+            assert interrupt_data["type"] == "interrupt"
+
+    def test_append_interrupt_parent_id(self, session_history):
+        """测试中断记录的父节点ID链"""
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
+
+        with open(session_history.file_path, 'r') as f:
+            entries = [json.loads(line) for line in f.readlines()]
+            # session -> msg1 -> interrupt
+            assert entries[0]["type"] == "session"
+            # interrupt 的 parent 应该是 msg1
+            assert entries[1]["parent_id"] == entries[0]["id"]
+            assert entries[2]["parent_id"] == entries[1]["id"]
+
+    def test_load_interrupt(self, session_history):
+        """测试中断记录的加载"""
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
+
+        loaded = SessionHistory.load(session_history.file_path)
+        assert len(loaded.entries) == 3  # SessionRecord + UserMessage + InterruptEvent
+        assert isinstance(loaded.entries[2], InterruptEvent)
         assert loaded.entries[2].model == "test-model"
 
     def test_sanitize_preserves_leading_dashes(self, session_history):
@@ -351,8 +420,12 @@ class TestSessionHistoryIntegration:
             assert history.directory.name.startswith("-")
 
             # 添加消息
-            history.append_message(ChatCompletionUserMessageParam(role="user", content="Hello"), model="test-model")
-            history.append_message(ChatCompletionAssistantMessageParam(role="assistant", content="Hi!"), model="test-model")
+            user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="Hello"), model="test-model")
+            asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(role="assistant", content="Hi!"), model="test-model")
+            history.inject_meta(user_msg)
+            history.append(user_msg)
+            history.inject_meta(asst_msg)
+            history.append(asst_msg)
 
             # 加载并验证
             loaded = SessionHistory.load(history.file_path)
@@ -390,7 +463,9 @@ class TestSessionHistoryFileStructure:
 
     def test_message_entry_structure(self, session_history):
         """message条目应包含所有必需字段"""
-        session_history.append_message(ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
 
         with open(session_history.file_path, 'r') as f:
             lines = f.readlines()
@@ -420,7 +495,9 @@ class TestSessionHistoryFileStructure:
 
     def test_interrupt_entry_structure(self, session_history):
         """interrupt条目应包含所有必需字段"""
-        session_history.append_interrupt(model="test-model")
+        interrupt = InterruptEvent(model="test-model")
+        session_history.inject_meta(interrupt)
+        session_history.append(interrupt)
 
         with open(session_history.file_path, 'r') as f:
             lines = f.readlines()
@@ -472,17 +549,25 @@ class TestIdCollision:
 
             with patch('session.uuid.uuid4', side_effect=mock_uuid4):
                 history = SessionHistory("/test", model="test-model")
-                history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-                history.append_message(ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+                user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
+                asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
+                history.inject_meta(user_msg)
+                history.append(user_msg)
+                history.inject_meta(asst_msg)
+                history.append(asst_msg)
 
             loaded = SessionHistory.load(history.file_path)
-            entries = [e for e in loaded.entries if isinstance(e, SessionMessage)]
 
+            # entries[0] 是 SessionRecord，entries[1] 是第一条 UserMessage
+            assert isinstance(loaded.entries[0], SessionRecord)
             # 第一条消息用短id aaaaaaaa
-            assert entries[0].id == "aaaaaaaa"
+            assert isinstance(loaded.entries[1], UserMessage)
+            assert loaded.entries[1].message["content"] == "msg1"
+            assert loaded.entries[1].id == "aaaaaaaa"
             # 第二条消息因冲突使用完整uuid（长度36，带横杠）
-            assert len(entries[1].id) == 36
-            assert entries[1].id == "aaaaaaaa-5555-6666-7777-888888888888"
+            assert isinstance(loaded.entries[2], AssistantMessage)
+            assert len(loaded.entries[2].id) == 36
+            assert loaded.entries[2].id == "aaaaaaaa-5555-6666-7777-888888888888"
 
 
 class TestToolCallsSerialization:
@@ -504,7 +589,9 @@ class TestToolCallsSerialization:
                 content="",
                 tool_calls=[tc]
             )
-            history.append_message(msg, "gpt-4o")
+            asst_msg = AssistantMessage(message=msg, model="gpt-4o")
+            history.inject_meta(asst_msg)
+            history.append(asst_msg)
 
         # 验证写入的文件能被正确解析为 JSON
         with open(history.file_path) as f:
@@ -532,7 +619,9 @@ class TestToolCallsSerialization:
                 content="Let me check.",
                 tool_calls=[tc]
             )
-            history.append_message(msg, "gpt-4o")
+            asst_msg = AssistantMessage(message=msg, model="gpt-4o")
+            history.inject_meta(asst_msg)
+            history.append(asst_msg)
 
         # 加载并验证
         loaded = SessionHistory.load(history.file_path)
@@ -554,7 +643,9 @@ class TestToolCallsSerialization:
                 type="function",
                 function=Function(name="cat", arguments='{"path": "test.txt"}'),
             )
-            history.append_tool_call(tc, "gpt-4o")
+            tool_call_evt = ToolCallEvent(tool_call=tc, model="gpt-4o")
+            history.inject_meta(tool_call_evt)
+            history.append(tool_call_evt)
 
         # 验证 JSON 文件中包含 tool_call 类型
         with open(history.file_path) as f:
@@ -567,7 +658,7 @@ class TestToolCallsSerialization:
 
         # 加载并验证（tool_call 是 dict）
         loaded = SessionHistory.load(history.file_path)
-        tc_entries = [e for e in loaded.entries if isinstance(e, SessionToolCall)]
+        tc_entries = [e for e in loaded.entries if isinstance(e, ToolCallEvent)]
         assert len(tc_entries) == 1
         tc_entry = tc_entries[0]
         assert tc_entry.tool_call["id"] == "call_tc_test"
@@ -586,17 +677,23 @@ class TestToolCallsSerialization:
                 type="function",
                 function=Function(name="bash", arguments='{"command": "pwd"}'),
             )
-            history.append_message(ChatCompletionAssistantMessageParam(
+            asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(
                 role="assistant", content="", tool_calls=[tc]
-            ), "gpt-4o")
+            ), model="gpt-4o")
+            history.inject_meta(asst_msg)
+            history.append(asst_msg)
 
             # tool_call 记录（ChatCompletionMessageFunctionToolCallParam 形式）
-            history.append_tool_call(tc, "gpt-4o")
+            tool_call_evt = ToolCallEvent(tool_call=tc, model="gpt-4o")
+            history.inject_meta(tool_call_evt)
+            history.append(tool_call_evt)
 
             # tool result
-            history.append_message(ChatCompletionToolMessageParam(
+            tool_result = ToolResultEvent(message=ChatCompletionToolMessageParam(
                 role="tool", tool_call_id="call_work", content="/home"
-            ), "gpt-4o")
+            ), model="gpt-4o")
+            history.inject_meta(tool_result)
+            history.append(tool_result)
 
         # 加载并验证完整流程
         loaded = SessionHistory.load(history.file_path)
@@ -607,7 +704,7 @@ class TestToolCallsSerialization:
         assert messages[1]["content"] == "/home"
 
         # 验证 entries 顺序
-        entry_types = [e.type for e in loaded.entries if e.type != "session"]
+        entry_types = [e.entry_type for e in loaded.entries if e.entry_type != "session"]
         assert entry_types == ["message", "tool_call", "message"]
 
 
