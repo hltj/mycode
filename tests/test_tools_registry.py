@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-TDD tests for tools_reg.py
+TDD tests for tools_registry.py
 """
 import pytest
 from typing import Annotated, Dict, List, Optional
 from openai.types.chat import ChatCompletionFunctionToolParam
 from openai.types.shared_params import FunctionDefinition
-from tools_reg import ToolsRegistry, _parse_param, _type_to_json_schema_type
+from mycode.tools_registry import ToolsRegistry, _parse_param, _type_to_json_schema_type
 import inspect
 
 
@@ -372,7 +372,7 @@ def test_optional_pipe_syntax_type_str():
 
 def test_build_json_schema_unwraps_union_types():
     """测试 _build_json_schema 统一处理 T | None 的解包"""
-    from tools_reg import _build_json_schema
+    from mycode.tools_registry import _build_json_schema
     t = int | None
     schema = _build_json_schema(t)
     assert schema == {"type": "integer"}

@@ -38,8 +38,8 @@ SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 
 # 导入工具
 # ---------------------------------------------------------------------------
 # noinspection PyUnusedImports
-from tools import bash
-from tools_reg import ToolsRegistry
+from mycode.tools import bash
+from mycode.tools_registry import ToolsRegistry
 
 client = OpenAI(
     api_key=os.getenv('API_KEY'),
@@ -50,7 +50,7 @@ client = OpenAI(
 # 从 session 导入 ADT 类型
 # ===================================================================
 
-from session import (
+from mycode.session import (
     SessionRecord,
     UserMessage,
     AssistantMessage,
@@ -262,7 +262,7 @@ class MycCommandCompleter(Completer):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='mycode - 编程智能体')
+    parser = argparse.ArgumentParser(prog='mycode', description='mycode - 编程智能体')
     parser.add_argument('-r', '--resume', type=str, metavar='SESSION_ID',
                         help='恢复指定会话')
     parser.add_argument('-c', '--continue', dest='continue_session', action='store_true',
@@ -278,7 +278,7 @@ def parse_args():
 # main
 # ===================================================================
 
-from session import find_latest_session_file, get_session_file
+from mycode.session import find_latest_session_file, get_session_file
 
 def main():
     args = parse_args()

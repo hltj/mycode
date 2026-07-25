@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from session import (
+from mycode.session import (
     sanitize_path,
     get_iso_timestamp,
     SessionHistory,
@@ -152,7 +152,7 @@ class TestSessionHistory:
     def session_history(self, temp_home):
         """创建会话历史实例"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             return SessionHistory("/test/project", model="test-model")
 
     def test_creates_directory(self, temp_home, session_history):
@@ -344,7 +344,7 @@ class TestSessionHistory:
     def test_load_empty_file_raises_error(self, temp_home):
         """测试加载空文件抛异常"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             SessionHistory("/test", model="test-model")
 
         # 创建空文件
@@ -359,7 +359,7 @@ class TestSessionHistory:
     def test_load_corrupted_json_raises_error(self, temp_home):
         """测试加载损坏的JSON文件抛异常"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             SessionHistory("/test", model="test-model")
 
         # 创建包含损坏JSON的文件
@@ -374,7 +374,7 @@ class TestSessionHistory:
     def test_load_missing_type_raises_error(self, temp_home):
         """测试加载缺少type字段的条目抛异常"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             SessionHistory("/test", model="test-model")
 
         # 创建包含无type字段条目的文件
@@ -389,7 +389,7 @@ class TestSessionHistory:
     def test_load_first_entry_not_session_raises_error(self, temp_home):
         """测试加载第一条不是session记录的条目抛异常"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             SessionHistory("/test", model="test-model")
 
         bad_file = sessions_dir / "test" / "badorder.jsonl"
@@ -411,7 +411,7 @@ class TestSessionHistoryIntegration:
     def test_full_workflow(self, temp_home):
         """完整工作流测试"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             # 创建会话
             history = SessionHistory("/my project/test", model="test-model")
 
@@ -442,7 +442,7 @@ class TestSessionHistoryFileStructure:
     @pytest.fixture
     def session_history(self, temp_home):
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             return SessionHistory("/test/project", model="test-model")
 
     def test_session_entry_structure(self, session_history):
@@ -531,7 +531,7 @@ class TestIdCollision:
         """短id冲突时改用完整uuid"""
         import uuid as uu
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             # 第一个uuid用于创建session，后面两个用于追加消息
             call_count = [0]
 
@@ -547,7 +547,7 @@ class TestIdCollision:
                     # 第二次消息，短id还是 aaaaaaaa 导致冲突
                     return uu.UUID('aaaaaaaa-5555-6666-7777-888888888888')
 
-            with patch('session.uuid.uuid4', side_effect=mock_uuid4):
+            with patch('mycode.session.uuid.uuid4', side_effect=mock_uuid4):
                 history = SessionHistory("/test", model="test-model")
                 user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
                 asst_msg = AssistantMessage(message=ChatCompletionAssistantMessageParam(role="assistant", content="msg2"), model="test-model")
@@ -576,7 +576,7 @@ class TestToolCallsSerialization:
     def test_assistant_message_with_tool_calls_serializes(self, temp_home):
         """测试带 tool_calls 的 assistant message 能正确序列化为 JSON"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
             tc = ChatCompletionMessageFunctionToolCallParam(
@@ -606,7 +606,7 @@ class TestToolCallsSerialization:
     def test_assistant_message_with_tool_calls_roundtrip(self, temp_home):
         """测试带 tool_calls 的 assistant message 能正确加载并恢复"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
             tc = ChatCompletionMessageFunctionToolCallParam(
@@ -635,7 +635,7 @@ class TestToolCallsSerialization:
     def test_tool_call_entry_serializes_and_loads(self, temp_home):
         """测试 tool_call 类型条目能正确序列化和加载"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
             tc = ChatCompletionMessageFunctionToolCallParam(
@@ -668,7 +668,7 @@ class TestToolCallsSerialization:
     def test_full_tool_call_workflow(self, temp_home):
         """完整工作流：assistant -> tool_call -> tool_result"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="gpt-4o")
 
             # assistant 回复带 tool_calls（ChatCompletionMessageFunctionToolCallParam 形式）
@@ -715,14 +715,14 @@ class TestGetSessionFile:
     def test_existing_file(self, temp_home):
         """存在时返回路径"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="test-model")
 
         loaded = SessionHistory.load(history.file_path)
         session_id = loaded.session_uuid
 
         # get_session_file 内部用 session.SESSIONS_DIR 和 session.os.getcwd()，需同时 patch
-        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir), patch('mycode.session.os.getcwd', return_value="/test"):
             result = get_session_file(session_id)
         assert result is not None
         assert result == history.file_path
@@ -738,7 +738,7 @@ class TestGetSessionFile:
     def test_sessions_dir_not_exists(self, temp_home):
         """SESSIONS_DIR 不存在时返回 None"""
         fake_sessions = temp_home / "fake_sessions"
-        with patch('session.SESSIONS_DIR', fake_sessions):
+        with patch('mycode.session.SESSIONS_DIR', fake_sessions):
             result = get_session_file("any-id")
             assert result is None
 
@@ -749,13 +749,13 @@ class TestFindLatestSessionFile:
     def test_returns_latest_by_mtime(self, temp_home):
         """按修改时间返回最新的会话文件"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             _history1 = SessionHistory("/test", model="test-model")
             import time
             time.sleep(0.1)
             history2 = SessionHistory("/test", model="test-model")
 
-        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir), patch('mycode.session.os.getcwd', return_value="/test"):
             result = find_latest_session_file()
         assert result is not None
         assert result == history2.file_path
@@ -763,10 +763,10 @@ class TestFindLatestSessionFile:
     def test_single_session(self, temp_home):
         """只有一个会话时返回该会话"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             history = SessionHistory("/test", model="test-model")
 
-        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir), patch('mycode.session.os.getcwd', return_value="/test"):
             result = find_latest_session_file()
         assert result is not None
         assert result == history.file_path
@@ -774,18 +774,18 @@ class TestFindLatestSessionFile:
     def test_no_sessions_for_cwd(self, temp_home):
         """当前目录没有会话时返回 None"""
         sessions_dir = temp_home / "sessions"
-        with patch('session.SESSIONS_DIR', sessions_dir):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             # 在另一个目录创建会话
             SessionHistory("/other", model="test-model")
 
         # 当前目录是 /test，没有会话
-        with patch('session.SESSIONS_DIR', sessions_dir), patch('session.os.getcwd', return_value="/test"):
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir), patch('mycode.session.os.getcwd', return_value="/test"):
             result = find_latest_session_file()
         assert result is None
 
     def test_sessions_dir_not_exists(self, temp_home):
         """SESSIONS_DIR 不存在时返回 None"""
         fake_sessions = temp_home / "fake_sessions"
-        with patch('session.SESSIONS_DIR', fake_sessions):
+        with patch('mycode.session.SESSIONS_DIR', fake_sessions):
             result = find_latest_session_file()
             assert result is None

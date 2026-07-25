@@ -5,7 +5,7 @@
 import os
 import subprocess
 from typing import Annotated
-from tools_reg import ToolsRegistry
+from mycode.tools_registry import ToolsRegistry
 
 
 @ToolsRegistry.tool(description="运行 bash 命令")

@@ -5,14 +5,25 @@ TDD tests for tools.py
 import importlib
 import os
 
-import tools
-from tools_reg import ToolsRegistry
+import mycode.tools as tools
+from mycode.tools_registry import ToolsRegistry
 
 
 def _ensure_registered():
-    """确保工具已注册（模块导入时已注册，但 reset 后会清掉）"""
+    """确保工具已注册（模块导入时已注册，但 reset 后会清掉）
+
+    包结构下需要 reload 子模块 ``mycode.tools.bash``，因为 reload 包本身
+    不会重新执行子模块文件，装饰器不会再次触发。
+    使用 ``importlib.import_module`` 拿真正的子模块（包 ``__init__`` 里
+    ``from mycode.tools.bash import bash`` 会把 ``mycode.tools.bash`` 属性
+    覆盖为函数，直接 import 拿不到子模块对象）。
+    """
     if "bash" not in [t["function"]["name"] for t in ToolsRegistry.get_tools()]:
-        importlib.reload(tools)
+        import importlib as _il
+        bash_mod = _il.import_module("mycode.tools.bash")
+        _il.reload(bash_mod)
+        # 重新触发 ``mycode.tools`` 包初始化以恢复 ``bash`` 函数属性
+        _il.reload(tools)
 
 
 def test_bash_tool_registered():
