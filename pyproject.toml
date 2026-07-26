@@ -1,7 +1,7 @@
 [project]
 name = "mycode"
 version = "0.1.0"
-description = "基于 OpenAI 兼容 API 的交互式编程助手"
+description = "mycode - 编程智能体"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
