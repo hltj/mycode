@@ -215,12 +215,24 @@ def agent_loop(
         if choice.finish_reason != 'tool_calls':
             return
 
-        # 处理各个工具调用（tool_call 是联合类型：function / custom，只处理 function）
-        for tc in serialized_tool_calls:
-            if tc.get("type") != "function":
-                continue
+        # 收集所有 function 类型的 tool_call（按 assistant 返回顺序）。
+        # 后续无论工具是被异常打断还是正常完成，都能精准定位剩余未处理的项，
+        # 以便为它们补占位 tool 消息，避免 assistant.tool_calls 出现"孤儿子项"。
+        pending: list[ChatCompletionMessageFunctionToolCallParam] = [
+            cast(ChatCompletionMessageFunctionToolCallParam, tc)
+            for tc in serialized_tool_calls
+            if tc.get("type") == "function"
+        ]
 
-            tool_call = cast(ChatCompletionMessageFunctionToolCallParam, tc)
+        # 中断/异常原因：正常路径保持 None；赋值后仅用于 isinstance 判断与
+        # 构造 skip_message，不再向上抛（agent_loop 自身处理完毕即返回）。
+        cause: BaseException | None = None
+        # 记录异常发生在 pending 中的索引位置（0-based），用于精确补齐剩余项。
+        # 异常项本身已在 finally 中补上 tool 消息；只需为「此索引之后」的
+        # 尚未开始执行的 tool_call 补占位消息，已正常完成的更早项不动。
+        interrupted_at: int = -1
+
+        for idx, tool_call in enumerate(pending):
             func_name = tool_call["function"]["name"]
             handler = ToolsRegistry.get_handler(func_name)
 
@@ -228,22 +240,78 @@ def agent_loop(
             bus.dispatch(ToolCallEvent(model=model, tool_call=tool_call))
 
             args_str = tool_call["function"]["arguments"]
-            if handler is None:
-                tool_result = f"Error: Unknown tool '{func_name}'"
-            else:
-                # 解析工具参数并执行
-                # noinspection PyUnresolvedReferences
-                args_ = eval(args_str)
-                tool_result = handler(**args_)
+            tool_result: str | None = None
+            try:
+                if handler is None:
+                    tool_result = f"Error: Unknown tool '{func_name}'"
+                else:
+                    # 解析工具参数并执行
+                    # noinspection PyUnresolvedReferences
+                    args_ = eval(args_str)
+                    tool_result = handler(**args_)
+            except KeyboardInterrupt as e:
+                # Ctrl-C 中断工具执行：先 dispatch InterruptEvent 让 ^C 后
+                # 立即换行，然后用占位错误信息补齐 tool 消息（finally 中），
+                # 最后跳出循环、agent_loop 自然返回。
+                cause = e
+                interrupted_at = idx
+                tool_result = "Error: Tool execution interrupted by user"
+                bus.dispatch(InterruptEvent(model=model))
+                break
+            except BaseException as e:
+                # 工具执行抛异常：补一条 tool 错误消息、dispatch ExceptionEvent
+                # 并跳出循环。注意：traceback 必须在 except 块内获取，
+                # 否则 sys.exc_info() 已被清除，format_exc() 会返回
+                # "NoneType: None"。
+                import traceback as _tb
+                cause = e
+                interrupted_at = idx
+                tool_result = f"Error: Tool execution failed: {type(e).__name__}: {e}"
+                bus.dispatch(ExceptionEvent(model=model, exception={
+                    "type": type(e).__name__,
+                    "message": str(e),
+                    "traceback": _tb.format_exc().rstrip(),
+                }))
+                break
+            finally:
+                # 始终补上对应的 tool 消息与 ToolResultEvent，
+                # 避免下次恢复会话时模型供应商校验失败
+                # （tool call result does not follow tool call）。
+                # finally 在 break 前执行，能保证补上消息后再跳出循环。
+                if tool_result is None:
+                    tool_result = "Error: Tool execution terminated abnormally"
+                tool_msg = ChatCompletionToolMessageParam(
+                    role='tool', tool_call_id=tool_call["id"], content=tool_result
+                )
+                messages.append(tool_msg)
+                bus.dispatch(ToolResultEvent(model=model, message=tool_msg))
 
-            # 消息列表追加工具执行结果
-            tool_msg = ChatCompletionToolMessageParam(
-                role='tool', tool_call_id=tool_call["id"], content=tool_result
+        # 如果因为异常/Ctrl-C 提前跳出循环，assistant 消息里仍包含所有
+        # pending 中的 tool_calls，但只到 interrupted_at（含）的项补上了
+        # tool 消息。必须为「此索引之后」的剩余未处理的 tool_call 也补占位
+        # tool 消息，并 dispatch 相应事件，保持消息序列对模型合法。
+        if cause is not None:
+            # 提示事件（InterruptEvent / ExceptionEvent）已在各 except 块内
+            # dispatch —— 此处仅构造 skip_message 并补齐剩余 tool_call。
+            skip_message = (
+                "Error: Tool execution skipped: interrupted by user"
+                if isinstance(cause, KeyboardInterrupt)
+                else f"Error: Tool execution skipped due to previous error: "
+                     f"{type(cause).__name__}: {cause}"
             )
-            messages.append(tool_msg)
 
-            # dispatch 工具结果事件
-            bus.dispatch(ToolResultEvent(model=model, message=tool_msg))
+            # 为「此索引之后」的剩余未处理的 tool_call 补占位 tool 消息
+            # 并 dispatch 相应事件，保持消息序列对模型合法。
+            for remaining in pending[interrupted_at + 1:]:
+                bus.dispatch(ToolCallEvent(model=model, tool_call=remaining))
+                tool_msg = ChatCompletionToolMessageParam(
+                    role='tool', tool_call_id=remaining["id"], content=skip_message
+                )
+                messages.append(tool_msg)
+                bus.dispatch(ToolResultEvent(model=model, message=tool_msg))
+            # 所有提示事件已 dispatch、补齐已完成。让 agent_loop 自然返回，
+            # 由外层 main() 继续接受下一轮用户输入。
+            return
 
 
 # ===================================================================
@@ -361,13 +429,14 @@ def main():
             # Ctrl-D: 退出程序
             break
 
-        except KeyboardInterrupt as e:
-            # Ctrl-C: 结束当前执行，恢复到提示符
-            bus.dispatch(InterruptEvent(model=model))
+        except KeyboardInterrupt:
+            # Ctrl-C 在 prompt 阶段被触发：agent_loop 未运行，相当于什么都没
+            # 中断；直接 continue 重新接受下一轮输入即可。
             continue
 
         except Exception as e:
-            # 捕获所有异常并作为事件分发
+            # 外层自身产生的异常（如 session.prompt / 消息解析等）；
+            # agent_loop 内部的异常已由它自身处理。
             import traceback as tb
             tb_lines = tb.format_exc().rstrip()
             bus.dispatch(ExceptionEvent(model=model, exception={
