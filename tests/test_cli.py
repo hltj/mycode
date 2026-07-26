@@ -25,6 +25,8 @@ from openai.types.chat import (
 from openai.types.chat.chat_completion_message_function_tool_call_param import Function
 
 import mycode.cli as cli
+from mycode.cli import _render_common
+from mycode.session import ToolResultEvent
 from mycode.session import (
     AssistantMessage,
     ToolCallEvent,
@@ -587,3 +589,643 @@ class TestAgentLoopInterruptIndicatorDispatch:
 
         interrupt_count = sum(1 for n in event_names if n == "InterruptEvent")
         assert interrupt_count == 1
+
+
+
+class TestRenderCommonToolResult:
+    """_render_common 中 ToolResultEvent 的渲染（含 todo_write 特化）。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_todo_write_renders_list_before_result(self, monkeypatch):
+        """todo_write 工具结果渲染：先输出 TODO 列表，再输出结果。"""
+        from mycode.tools.todo_write import todo_write, reset_todos
+        reset_todos()
+        todo_write([
+            {"title": "步骤 1", "status": "completed"},
+            {"title": "步骤 2", "status": "in_process"},
+        ])
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c1", "content": "TODO 列表已更新（2 项）"},
+            tool_name="todo_write",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        # TODO 列表标题 + 符号 + 内容应先出现
+        assert "TODO 列表:" in out
+        assert "✅️" in out
+        assert "步骤 1" in out
+        assert "🟧" in out
+        assert "步骤 2" in out
+        # 然后是工具输出
+        idx_list = out.index("TODO 列表:")
+        idx_result = out.index("工具输出:")
+        assert idx_list < idx_result
+        assert "TODO 列表已更新（2 项）" in out
+
+    def test_other_tool_renders_only_result(self):
+        """非 todo_write 工具：只渲染工具输出，无 TODO 列表标题。"""
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c2", "content": "hello world"},
+            tool_name="bash",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "TODO 列表:" not in out
+        assert "工具输出:" in out
+        assert "hello world" in out
+
+    def test_tool_result_without_tool_name_renders_only_result(self):
+        """旧历史无 tool_name 时也能正常渲染（向下兼容）。"""
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c3", "content": "ok"},
+            # tool_name 默认空
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "TODO 列表:" not in out
+        assert "ok" in out
+
+
+
+class TestFormatTodos:
+    """cli._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。"""
+
+    def _reset(self):
+        from mycode.tools.todo_write import reset_todos
+        reset_todos()
+
+    def test_empty_state_returns_placeholder(self):
+        from mycode.cli import _format_todos
+        self._reset()
+        out = _format_todos([])
+        assert out == "(TODO 列表为空)"
+
+    def test_empty_state_when_no_arg_uses_get_todos(self):
+        """无参时从 get_todos() 取值；空状态返回占位符。"""
+        from mycode.cli import _format_todos
+        self._reset()
+        assert _format_todos() == "(TODO 列表为空)"
+
+    def test_single_completed(self):
+        from mycode.cli import _format_todos
+        out = _format_todos([{"title": "做完了", "status": "completed"}])
+        # 已完成：emoji + 1 空格 + 标题灰色 + 删除线
+        assert out == "✅️ \x1B[90m\x1B[9m做完了\x1B[0m"
+
+    def test_single_in_process(self):
+        from mycode.cli import _format_todos
+        out = _format_todos([{"title": "进行中", "status": "in_process"}])
+        # 进行中：🟧 + 1 空格 + 标题粗+白
+        assert out == "🟧 \x1B[1;37m进行中\x1B[0m"
+
+    def test_single_pending(self):
+        from mycode.cli import _format_todos
+        out = _format_todos([{"title": "待办", "status": "pending"}])
+        # 未开始：🔳 + 1 空格 + 普通文本
+        assert out == "🔳 待办"
+
+    def test_mixed_statuses_order_preserved(self):
+        from mycode.cli import _format_todos
+        items = [
+            {"title": "a", "status": "completed"},
+            {"title": "b", "status": "in_process"},
+            {"title": "c", "status": "pending"},
+        ]
+        out = _format_todos(items)
+        assert out == (
+            "✅️ \x1B[90m\x1B[9ma\x1B[0m\n"
+            "🟧 \x1B[1;37mb\x1B[0m\n"
+            "🔳 c"
+        )
+
+    def test_explicit_state_overrides_get_todos(self):
+        """显式传入 state 时不读内存状态。"""
+        from mycode.cli import _format_todos
+        from mycode.tools.todo_write import todo_write, get_todos
+        self._reset()
+        todo_write([{"title": "ignored", "status": "completed"}])
+        # 显式传入不同内容，验证不读 get_todos
+        out = _format_todos([{"title": "explicit", "status": "pending"}])
+        assert out == "🔳 explicit"
+        # get_todos 不受影响（仍然是被 set 的）
+        assert get_todos()[0]["title"] == "ignored"
+
+    def test_unknown_status_raises_keyerror(self):
+        """未知 status 抛 KeyError：上游 todo_write 已保证 status 合法。"""
+        import pytest
+        from mycode.cli import _format_todos
+        with pytest.raises(KeyError):
+            _format_todos([{"title": "x", "status": "weird"}])
+
+
+
+class TestReplayTodoSync:
+    """replay 时 todo_write 的 ToolCallEvent 同步 + 渲染验证。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def _make_history_with_two_todo_writes(self):
+        """构造一个 SessionHistory，包含两次 todo_write 调用。"""
+        import json
+        from mycode.session import SessionHistory, ToolCallEvent, ToolResultEvent
+        sh = SessionHistory(cwd="/tmp", model="m")
+        sh.entries = [
+            ToolCallEvent(
+                model="m",
+                tool_call={
+                    "id": "tc1",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": json.dumps({
+                            "items": [{"title": "第一步", "status": "completed"}],
+                        }),
+                    },
+                },
+            ),
+            ToolResultEvent(
+                model="m",
+                message={"role": "tool", "tool_call_id": "tc1",
+                          "content": "TODO 列表已更新（1 项）"},
+                tool_name="todo_write",
+            ),
+            ToolCallEvent(
+                model="m",
+                tool_call={
+                    "id": "tc2",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": json.dumps({
+                            "items": [{"title": "新一步", "status": "pending"}],
+                        }),
+                    },
+                },
+            ),
+            ToolResultEvent(
+                model="m",
+                message={"role": "tool", "tool_call_id": "tc2",
+                          "content": "TODO 列表已更新（1 项）"},
+                tool_name="todo_write",
+            ),
+        ]
+        return sh
+
+    def test_replay_renders_state_at_call_time(self):
+        """replay 时每次 todo_write 的 ToolResultEvent 渲染对应调用时刻的状态。"""
+        from mycode.tools.todo_write import reset_todos, get_todos
+        from mycode.cli import (
+            AgentEventBus, render_replay,
+            make_replay_todo_sync_handler,
+        )
+        reset_todos()
+        sh = self._make_history_with_two_todo_writes()
+
+        bus = AgentEventBus()
+        bus.register(render_replay)
+        bus.register(make_replay_todo_sync_handler())
+        out = self._capture(lambda: [bus.dispatch(e) for e in sh.entries])
+
+        # 第一次渲染（对应 tc1）应显示 "✅️ 第一步"
+        assert "✅️" in out
+        assert "第一步" in out
+        # 第二次渲染（对应 tc2）应显示 "🔳 新一步"，不再有 "第一步"
+        # 用相对位置判断：第一次渲染中的 TODO 列表只能有 "第一步"
+        first_idx = out.index("TODO 列表:")
+        second_idx = out.index("TODO 列表:", first_idx + 1)
+        first_block = out[first_idx:second_idx]
+        second_block = out[second_idx:]
+        assert "✅️" in first_block
+        assert "第一步" in first_block
+        assert "新一步" not in first_block  # 此时还未调 tc2
+        assert "🔳 新一步" in second_block
+        assert "第一步" not in second_block  # tc2 已整体替换
+
+        # replay 结束后 _todo_state 应该是最终态（新一步）
+        final = get_todos()
+        assert len(final) == 1
+        assert final[0]["title"] == "新一步"
+
+    def test_replay_skips_non_todo_write_calls(self):
+        """非 todo_write 的 ToolCallEvent 不应触发 _todo_state 变化。"""
+        import json
+        from mycode.session import SessionHistory, ToolCallEvent, ToolResultEvent
+        from mycode.tools.todo_write import reset_todos, get_todos
+        from mycode.cli import (
+            AgentEventBus, render_replay,
+            make_replay_todo_sync_handler,
+        )
+        reset_todos()
+        sh = SessionHistory(cwd="/tmp", model="m")
+        sh.entries = [
+            ToolCallEvent(
+                model="m",
+                tool_call={
+                    "id": "b1", "type": "function",
+                    "function": {"name": "bash", "arguments": json.dumps({"command": "ls"})},
+                },
+            ),
+            ToolResultEvent(
+                model="m",
+                message={"role": "tool", "tool_call_id": "b1", "content": "x"},
+                tool_name="bash",
+            ),
+        ]
+        bus = AgentEventBus()
+        bus.register(render_replay)
+        bus.register(make_replay_todo_sync_handler())
+        self._capture(lambda: [bus.dispatch(e) for e in sh.entries])
+        # bash 调用不触发 todo 状态变化
+        assert get_todos() == []
+
+    def test_replay_handles_malformed_arguments(self):
+        """arguments 解析失败的 todo_write ToolCallEvent 被静默跳过，不抛异常。"""
+        import json
+        from mycode.session import SessionHistory, ToolCallEvent, ToolResultEvent
+        from mycode.tools.todo_write import reset_todos, get_todos
+        from mycode.cli import (
+            AgentEventBus, render_replay,
+            make_replay_todo_sync_handler,
+        )
+        reset_todos()
+        sh = SessionHistory(cwd="/tmp", model="m")
+        sh.entries = [
+            ToolCallEvent(
+                model="m",
+                tool_call={
+                    "id": "bad", "type": "function",
+                    "function": {"name": "todo_write", "arguments": "{not json"},
+                },
+            ),
+            # 紧接着一次合法的 todo_write
+            ToolCallEvent(
+                model="m",
+                tool_call={
+                    "id": "ok", "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": json.dumps({
+                            "items": [{"title": "ok", "status": "pending"}],
+                        }),
+                    },
+                },
+            ),
+        ]
+        bus = AgentEventBus()
+        bus.register(render_replay)
+        bus.register(make_replay_todo_sync_handler())
+        # 不应抛异常
+        self._capture(lambda: [bus.dispatch(e) for e in sh.entries])
+        # 最终状态应是合法的那个调用
+        state = get_todos()
+        assert len(state) == 1
+        assert state[0]["title"] == "ok"
+
+
+
+class TestStaleTodoReminder:
+    """TODO 陈旧度提醒机制：超过阈值轮数未更新时触发。"""
+
+    def _reset(self):
+        from mycode.tools.todo_write import (
+            reset_todos, reset_stale_rounds, get_stale_rounds,
+        )
+        reset_todos()
+        reset_stale_rounds()
+        assert get_stale_rounds() == 0
+
+    def test_no_remind_when_no_unfinished(self):
+        """无 todo 或全部完成时不提醒。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        # 没有 todo
+        for _ in range(10):
+            bump_stale_rounds()
+        assert not should_remind_stale_todo()
+        # 全部 completed
+        todo_write([
+            {"title": "A", "status": "completed"},
+            {"title": "B", "status": "completed"},
+        ])
+        for _ in range(10):
+            bump_stale_rounds()
+        assert not should_remind_stale_todo()
+
+    def test_no_remind_below_threshold(self):
+        """未到阈值不提醒。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+            get_stale_rounds,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        # todo_write 后 stale 已清零
+        assert get_stale_rounds() == 0
+        bump_stale_rounds()
+        bump_stale_rounds()
+        assert get_stale_rounds() == 2
+        assert not should_remind_stale_todo()
+
+    def test_remind_at_threshold(self):
+        """达到阈值时提醒。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        for _ in range(3):
+            bump_stale_rounds()
+        assert should_remind_stale_todo()
+
+    def test_todo_write_resets_stale(self):
+        """再次 todo_write（哪怕同样内容）清零 stale。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        for _ in range(5):
+            bump_stale_rounds()
+        assert should_remind_stale_todo()
+        # 再次调用 todo_write
+        todo_write([{"title": "A", "status": "in_process"}])
+        assert not should_remind_stale_todo()
+        for _ in range(2):
+            bump_stale_rounds()
+        assert not should_remind_stale_todo()  # 累积未到阈值
+
+    def test_reminder_injection_resets_stale(self):
+        """注入提醒（手动调 reset）后 stale 清零，下一轮需重新累积。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+            reset_stale_rounds,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        for _ in range(5):
+            bump_stale_rounds()
+        assert should_remind_stale_todo()
+        # 注入提醒（agent_loop 实际会做的事）
+        if should_remind_stale_todo():
+            reset_stale_rounds()
+        assert not should_remind_stale_todo()
+
+    def test_reminder_format_is_simple_no_todo_list(self):
+        """提醒正文是简洁文本，不含 TODO 列表也不重复状态定义。
+
+        ``<reminder>`` 标签由 ``ReminderEvent.to_user_msg()`` 加，format
+        输出纯文本。
+        """
+        from mycode.tools.todo_write import format_stale_reminder, todo_write
+        self._reset()
+        todo_write([
+            {"title": "任务 B", "status": "in_process"},
+            {"title": "任务 C", "status": "pending"},
+        ])
+        text = format_stale_reminder()
+        # 整体文案与 todo 内容无关
+        assert text == "有未完成的 todo 最近未更新，请使用 todo_write 工具更新状态。"
+        # 标签由 to_user_msg 加，format 输出不含
+        assert "<reminder>" not in text
+        assert "</reminder>" not in text
+        # 不附带 TODO 项（避免依赖内存状态；模型须从历史读取）
+        assert "任务 B" not in text
+        assert "任务 C" not in text
+        # 不重复状态符号
+        assert "[>]" not in text
+        assert "[ ]" not in text
+        # 不重复状态名（工具描述里已有）
+        assert "completed" not in text
+        assert "in_process" not in text
+        assert "pending" not in text
+
+    def test_threshold_read_from_env(self, monkeypatch):
+        """阈值由环境变量 MYCODE_STALE_THRESHOLD 控制。"""
+        # 用 importlib 绕开 mycode.tools.__init__ 里同名属性拦截，
+        # 否则 ``import mycode.tools.todo_write as tw`` 会被解析成函数对象。
+        import importlib
+        tw = importlib.import_module("mycode.tools.todo_write")
+        monkeypatch.setattr(tw, "_STALE_THRESHOLD", 5)
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        # 阈值 5：4 次不触发
+        for _ in range(4):
+            bump_stale_rounds()
+        assert not should_remind_stale_todo()
+        # 第 5 次触发
+        bump_stale_rounds()
+        assert should_remind_stale_todo()
+
+    def test_pending_only_still_triggers_reminder(self):
+        """只有 pending 也能触发提醒（in_process 不是必要条件）。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        todo_write([
+            {"title": "A", "status": "pending"},
+            {"title": "B", "status": "pending"},
+        ])
+        for _ in range(3):
+            bump_stale_rounds()
+        assert should_remind_stale_todo()
+
+    def test_empty_todo_list_does_not_trigger(self):
+        """显式清空 todo 列表后不提醒（todo_write([])）。"""
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, should_remind_stale_todo, todo_write,
+        )
+        self._reset()
+        todo_write([
+            {"title": "A", "status": "in_process"},
+        ])
+        todo_write([])  # 清空
+        for _ in range(10):
+            bump_stale_rounds()
+        assert not should_remind_stale_todo()
+
+
+
+class TestReminderEvent:
+    """ReminderEvent：系统级提醒事件，区别于 UserMessage。
+
+    渲染一致性：实时与 replay 都走 ``_render_common`` 的黄色高亮分支，
+    不会被误渲染为用户输入。
+    """
+
+    def _capture(self, fn):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_replay_renders_reminder_as_reminder(self):
+        """replay 时 ReminderEvent 显示为黄色高亮，不是 ``myc > `` 前缀。
+
+        注意：ReminderEvent.content 不含 ``<reminder>`` 标签（标签只在
+        ``to_user_msg()`` 喂给模型时加），渲染纯文本更友好。
+        """
+        from mycode.session import ReminderEvent
+        from mycode.cli import render_replay
+
+        event = ReminderEvent(model="m", content="hello")
+        out = self._capture(lambda: render_replay(event))
+
+        # 黄色 ANSI + 纯文本 content（不含 <reminder> 标签）
+        assert "\x1B[1;33mhello\x1B[0m" in out
+        assert "<reminder>" not in out
+        # 关键：不出现用户输入前缀
+        assert "myc >" not in out
+
+    def test_terminal_render_skips_user_but_renders_reminder(self):
+        """实时路径（render_terminal）也渲染 ReminderEvent。"""
+        from mycode.session import ReminderEvent
+        from mycode.cli import render_terminal
+
+        event = ReminderEvent(model="m", content="hello")
+        out = self._capture(lambda: render_terminal(event))
+
+        assert "\x1B[1;33mhello\x1B[0m" in out
+        assert "<reminder>" not in out
+        assert "myc >" not in out
+
+    def test_to_user_msg_wraps_content_in_reminder_tag(self):
+        """to_user_msg() 把 content 用 ``<reminder>`` 标签包裹后返回。"""
+        from mycode.session import ReminderEvent
+
+        event = ReminderEvent(model="m", content="提醒正文")
+        msg = event.to_user_msg()
+        assert msg["role"] == "user"
+        assert msg["content"] == "<reminder>提醒正文</reminder>"
+
+    def test_replay_user_message_still_uses_myc_prefix(self):
+        """UserMessage 在 replay 中仍然用 ``myc > `` 前缀（不受影响）。"""
+        from openai.types.chat import ChatCompletionUserMessageParam
+        from mycode.session import UserMessage
+        from mycode.cli import render_replay
+
+        msg = ChatCompletionUserMessageParam(role="user", content="hi")
+        event = UserMessage(model="m", message=msg)
+        out = self._capture(lambda: render_replay(event))
+
+        assert "myc >" in out
+        assert "hi" in out
+
+    def test_reminder_event_roundtrips_through_jsonl(self, tmp_path):
+        """ReminderEvent 写入 JSONL 后能正确读回。"""
+        import json
+        from mycode.session import ReminderEvent, _dict_to_agent_message
+
+        original = ReminderEvent(model="gpt-4", content="<reminder>x</reminder>")
+        original.id = "r1"
+        original.time = "2026-01-01T00:00:00Z"
+
+        path = tmp_path / "reminder.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "time": original.time,
+                "type": "reminder",
+                "id": original.id,
+                "parent_id": None,
+                "model": original.model,
+                "content": original.content,
+            }, ensure_ascii=False) + "\n")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.loads(f.readline())
+        loaded = _dict_to_agent_message(data)
+
+        assert isinstance(loaded, ReminderEvent)
+        assert loaded.model == original.model
+        assert loaded.content == original.content
+        assert loaded.id == original.id
+
+
+
+class TestReminderInGetMessages:
+    """会话恢复时 ``get_messages()`` 把 ReminderEvent 包成 user message 返回。
+
+    目的：``-r`` / ``--continue`` 恢复会话后，模型仍能看到 reminder
+    内容（与实时注入一致），不会因为 reminder 被存为 ReminderEvent 而丢失。
+    """
+
+    def _make_history(self, tmp_path) -> "SessionHistory":
+        from mycode.session import SessionHistory
+        return SessionHistory(cwd=str(tmp_path), model="m")
+
+    def test_get_messages_includes_reminder_as_user_message(self, tmp_path):
+        """ReminderEvent 在 get_messages() 里转为 ChatCompletionUserMessageParam。
+
+        content 字段不带 ``<reminder>`` 标签，由 ``to_user_msg()`` 加上。
+        """
+        from mycode.session import ReminderEvent
+        sh = self._make_history(tmp_path)
+        sh.append(ReminderEvent(model="m", content="hi"))
+
+        msgs = sh.get_messages()
+        assert len(msgs) == 1
+        assert msgs[0]["role"] == "user"
+        assert msgs[0]["content"] == "<reminder>hi</reminder>"
+
+    def test_get_messages_order_matches_entries(self, tmp_path):
+        """get_messages() 输出顺序与 entries 一致（reminder 保留时间位置）。"""
+        from openai.types.chat import (
+            ChatCompletionUserMessageParam,
+            ChatCompletionAssistantMessageParam,
+        )
+        from mycode.session import (
+            ReminderEvent, UserMessage, AssistantMessage,
+        )
+
+        sh = self._make_history(tmp_path)
+        # 注入 user → reminder → assistant
+        sh.append(UserMessage(model="m", message=ChatCompletionUserMessageParam(
+            role="user", content="ask"
+        )))
+        sh.append(ReminderEvent(model="m", content="r"))
+        sh.append(AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
+            role="assistant", content="answer"
+        )))
+
+        msgs = sh.get_messages()
+        assert [m["role"] for m in msgs] == ["user", "user", "assistant"]
+        assert msgs[0]["content"] == "ask"
+        assert msgs[1]["content"] == "<reminder>r</reminder>"
+        assert msgs[2]["content"] == "answer"
+
+    def test_entry_count_excludes_reminder(self, tmp_path):
+        """cli.py 退出时计算的 entry_count 不把 reminder 当作"消息"。
+
+        reminder 是系统级注入，不是真实用户/助手对话，不应触发会话保留逻辑。
+        """
+        from mycode.session import (
+            ReminderEvent, UserMessage, AssistantMessage, ToolResultEvent,
+        )
+        sh = self._make_history(tmp_path)
+        sh.append(ReminderEvent(model="m", content="<reminder>r</reminder>"))
+
+        # 跟 cli.py 退出时的判定一致
+        entry_count = len([e for e in sh.entries if isinstance(
+            e, (UserMessage, AssistantMessage, ToolResultEvent)
+        )])
+        assert entry_count == 0  # reminder 不算

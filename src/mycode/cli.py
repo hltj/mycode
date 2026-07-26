@@ -2,6 +2,7 @@
 
 import os
 import sys
+import json
 import argparse
 from typing import Callable, NoReturn, cast
 
@@ -35,6 +36,59 @@ HISTORY_FILE = APP_HOME_DIR / 'history.txt'
 SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 完成任务。直接做勿解释。"
 
 # ---------------------------------------------------------------------------
+# TODO 渲染辅助
+# ---------------------------------------------------------------------------
+# ANSI 转义常量
+_RESET = "\x1B[0m"
+_GRAY = "\x1B[90m"          # bright black = 深灰
+_STRIKE = "\x1B[9m"         # 删除线
+_BOLD_WHITE = "\x1B[1;37m"  # 粗+白（在多数终端等价于亮白，对中文可见度比纯粗体好）
+
+# 状态符号：emoji 自带颜色，不依赖 ANSI 上色（避免彩色 emoji 字体忽略 ANSI）。
+_TODO_SYMBOL: dict[str, str] = {
+    "pending": "🔳",      # 白色方块
+    "in_process": "🟧",   # 橙色方块
+    "completed": "✅️",     # 绿色对勾
+}
+
+# 渲染模板：``{sym}`` 替换符号、``{title}`` 替换文本。
+# emoji 后面保留 1 个 ASCII 空格作为分隔（emoji 自带的视觉宽度不算）。
+_TODO_FORMATS: dict[str, str] = {
+    # 已完成：标题灰色 + 删除线
+    "completed": f"{{sym}} {_GRAY}{_STRIKE}{{title}}{_RESET}",
+    # 进行中：标题粗+白（视觉强调）
+    "in_process": f"{{sym}} {_BOLD_WHITE}{{title}}{_RESET}",
+    # 未开始：全部普通样式
+    "pending": "{sym} {title}",
+}
+
+
+def _format_todos(state: list[dict] | None = None) -> str:
+    """将 TODO 列表格式化为带状态符号与样式的可读字符串。
+
+    渲染规则：
+      - ``completed``：以 ``✅️`` 开头（后跟 1 空格），标题灰色带删除线。
+      - ``in_process``：以 ``🟧`` 开头（后跟 1 空格），标题粗体+白色。
+      - ``pending``：以 ``🔳`` 开头（后跟 1 空格），标题普通样式。
+
+    :param state: TODO 状态列表；``None`` 时取当前内存状态。
+    :returns: 形如 ``"✅️ 步骤 1\n🟧 步骤 2"`` 的字符串；空状态返回
+        ``"(TODO 列表为空)"``。
+    """
+    from mycode.tools.todo_write import get_todos
+    items = state if state is not None else get_todos()
+    if not items:
+        return "(TODO 列表为空)"
+    return "\n".join(
+        _TODO_FORMATS[it["status"]].format(
+            sym=_TODO_SYMBOL[it["status"]],
+            title=it["title"],
+        )
+        for it in items
+    )
+
+
+# ---------------------------------------------------------------------------
 # 导入工具
 # ---------------------------------------------------------------------------
 # noinspection PyUnusedImports
@@ -58,6 +112,7 @@ from mycode.session import (
     ToolResultEvent,
     InterruptEvent,
     ExceptionEvent,
+    ReminderEvent,
     AgentMessage,
     SessionHistory,
 )
@@ -123,12 +178,18 @@ def _render_common(msg: AgentMessage) -> None:
             func_name = tool_call["function"]["name"]
             args_ = tool_call["function"]["arguments"]
             print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{args_}\n```")
-        case ToolResultEvent(message=message):
+        case ToolResultEvent(message=message, tool_name=tool_name):
+            # todo_write 特化渲染：先输出当前 TODO 列表再输出结果
+            if tool_name == "todo_write":
+                print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{_format_todos()}\n")
             tool_result = message.get("content", "")
             print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
         case InterruptEvent():
             # 交互状态输出空行
             print('\n')
+        case ReminderEvent(content=content):
+            # 系统级提醒（陈旧 TODO 等）：黄色高亮
+            print(f"\x1B[1;33m{content}\x1B[0m\n")
         case ExceptionEvent(exception=exc):
             exc_type = exc.get("type", "Unknown")
             exc_message = exc.get("message", "")
@@ -159,13 +220,51 @@ def render_replay(msg: AgentMessage) -> None:
 
 
 # ===================================================================
+# replay handlers —— 同步工具状态
+# ===================================================================
+
+def make_replay_todo_sync_handler() -> Handler:
+    """replay 时把 todo_write 的 ToolCallEvent 实时同步到 _todo_state。
+
+    这样后续 dispatch 的对应 ToolResultEvent 渲染时，能看到调用
+    "那一刻"的 TODO 列表，而不是历史最终态。
+    """
+    from mycode.tools.todo_write import todo_write as todo_write_func
+
+    def sync(msg: AgentMessage) -> None:
+        if not isinstance(msg, ToolCallEvent):
+            return
+        tool_call = getattr(msg, "tool_call", None)
+        if not isinstance(tool_call, dict):
+            return
+        func = tool_call.get("function")
+        if not isinstance(func, dict) or func.get("name") != "todo_write":
+            return
+        try:
+            args = json.loads(func.get("arguments", "") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return
+        items = args.get("items") if isinstance(args, dict) else None
+        if not isinstance(items, list):
+            return
+        todo_write_func(items)
+
+    return sync
+
+
+# ===================================================================
 # replay_history —— 遍历 entries → dispatch render_replay
 # ===================================================================
 
 def replay_history(session_hist: SessionHistory) -> None:
     """重放历史会话"""
     bus_replay = AgentEventBus()
+    # bus 按注册顺序 dispatch：render 先于 sync。
+    # ToolCallEvent 派发时 render 会打印"调用工具"提示，紧接着 sync
+    # 写入 _todo_state；同一 entry 处理完才到下一个，因此对应的
+    # ToolResultEvent 渲染时已经看到最新状态。
     bus_replay.register(render_replay)
+    bus_replay.register(make_replay_todo_sync_handler())
 
     for entry in session_hist.entries:
         bus_replay.dispatch(entry)
@@ -180,8 +279,31 @@ def agent_loop(
     bus: AgentEventBus,
     model: str,
 ) -> None:
+    from mycode.tools.todo_write import (
+        bump_stale_rounds,
+        should_remind_stale_todo,
+        format_stale_reminder,
+        reset_stale_rounds as reset_todo_stale,
+    )
     tools = ToolsRegistry.get_tools()
     while True:
+        # ---- 陈旧 TODO 提醒 ----
+        # 每产生一个 assistant 消息前自增 stale；超过阈值且存在未完成
+        # TODO 时，往 messages 注入一条 user role 提示（让模型看到），
+        # 同时派发 ReminderEvent（让终端显示 + 持久化，与 replay 渲染一致），
+        # 然后清零 stale（避免连续打扰）。
+        bump_stale_rounds()
+        if should_remind_stale_todo():
+            reminder_text = format_stale_reminder()
+            # 进 messages：让模型下次 API 调用能看到
+            messages.append(ChatCompletionUserMessageParam(
+                role='user', content=reminder_text
+            ))
+            # 进 bus：渲染 + 持久化（走 ReminderEvent 而非 UserMessage，
+            # 避免 replay 时被当成用户输入显示 ``myc > `` 前缀）
+            bus.dispatch(ReminderEvent(model=model, content=reminder_text))
+            reset_todo_stale()
+
         # 调用模型
         # noinspection PyTypeChecker
         response = client.chat.completions.create(
@@ -247,7 +369,7 @@ def agent_loop(
                 else:
                     # 解析工具参数并执行
                     # noinspection PyUnresolvedReferences
-                    args_ = eval(args_str)
+                    args_ = json.loads(args_str)
                     tool_result = handler(**args_)
             except KeyboardInterrupt as e:
                 # Ctrl-C 中断工具执行：先 dispatch InterruptEvent 让 ^C 后
@@ -284,7 +406,7 @@ def agent_loop(
                     role='tool', tool_call_id=tool_call["id"], content=tool_result
                 )
                 messages.append(tool_msg)
-                bus.dispatch(ToolResultEvent(model=model, message=tool_msg))
+                bus.dispatch(ToolResultEvent(model=model, message=tool_msg, tool_name=func_name))
 
         # 如果因为异常/Ctrl-C 提前跳出循环，assistant 消息里仍包含所有
         # pending 中的 tool_calls，但只到 interrupted_at（含）的项补上了
@@ -308,7 +430,7 @@ def agent_loop(
                     role='tool', tool_call_id=remaining["id"], content=skip_message
                 )
                 messages.append(tool_msg)
-                bus.dispatch(ToolResultEvent(model=model, message=tool_msg))
+                bus.dispatch(ToolResultEvent(model=model, message=tool_msg, tool_name=func_name))
             # 所有提示事件已 dispatch、补齐已完成。让 agent_loop 自然返回，
             # 由外层 main() 继续接受下一轮用户输入。
             return

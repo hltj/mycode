@@ -127,6 +127,7 @@ class ToolCallEvent(MessageProtocol):
 class ToolResultEvent(MessageProtocol):
     model: str
     message: ChatCompletionToolMessageParam
+    tool_name: str = ""
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "message"
@@ -153,7 +154,41 @@ class ExceptionEvent(MessageProtocol):
     time: str = ""
 
 
-AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent | ExceptionEvent
+@dataclass
+class ReminderEvent(MessageProtocol):
+    """系统注入的提醒（如陈旧 TODO 提醒）。
+
+    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，渲染时
+    显示 ``myc > `` 前缀；ReminderEvent 表示系统级注入，渲染时按
+    提醒样式（如黄色高亮）展示。
+    """
+    model: str
+    content: str
+    id: str = ""
+    parent_id: Optional[str] = None
+    entry_type: str = "reminder"
+    time: str = ""
+
+    def to_user_msg(self) -> ChatCompletionUserMessageParam:
+        """转为 ``ChatCompletionUserMessageParam``（喂给模型）。
+
+        提示内容用 ``<reminder>`` 标签包裹，便于模型识别为系统注入。
+        """
+        return ChatCompletionUserMessageParam(
+            role='user', content=f"<reminder>{self.content}</reminder>"
+        )
+
+
+AgentMessage = (
+    SessionRecord
+    | UserMessage
+    | AssistantMessage
+    | ToolCallEvent
+    | ToolResultEvent
+    | InterruptEvent
+    | ExceptionEvent
+    | ReminderEvent
+)
 
 
 def assert_never(arg: NoReturn) -> NoReturn:
@@ -178,12 +213,16 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["message"] = message
         case ToolCallEvent(tool_call=tool_call):
             d["tool_call"] = tool_call
-        case ToolResultEvent(message=message):
+        case ToolResultEvent(message=message, tool_name=tool_name):
             d["message"] = message
+            if tool_name:
+                d["tool_name"] = tool_name
         case InterruptEvent():
             pass
         case ExceptionEvent(exception=exc_data):
             d["exception"] = exc_data
+        case ReminderEvent(content=content):
+            d["content"] = content
         case _ as unreachable:
             assert_never(unreachable)
     return d
@@ -192,7 +231,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
 def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     """将 JSONL 字典转为 AgentMessage"""
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception"):
+    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
@@ -210,7 +249,11 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         elif role == "assistant":
             return AssistantMessage(message=cast(ChatCompletionAssistantMessageParam, msg), **base_kwargs)
         elif role == "tool":
-            return ToolResultEvent(message=cast(ChatCompletionToolMessageParam, msg), **base_kwargs)
+            return ToolResultEvent(
+                message=cast(ChatCompletionToolMessageParam, msg),
+                tool_name=data.get("tool_name", ""),
+                **base_kwargs,
+            )
     elif entry_type == "tool_call":
         tc_data = data.get("tool_call")
         if not isinstance(tc_data, dict) or tc_data.get("type") != "function":
@@ -224,6 +267,9 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     elif entry_type == "exception":
         exc_data = data.get("exception", {})
         return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
+    elif entry_type == "reminder":
+        content = data.get("content", "")
+        return ReminderEvent(content=content, **base_kwargs)
     # unreachable
     raise ValueError(f"未知的条目类型: {entry_type}")
 
@@ -317,5 +363,16 @@ class SessionHistory:
         return instance
 
     def get_messages(self) -> List[ChatCompletionMessageParam]:
-        """获取所有消息（不含 session/interrupt/tool_call 记录）"""
-        return [e.message for e in self.entries if isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent))]
+        """获取所有消息（不含 session/interrupt/tool_call/exception 记录）。
+
+        ``ReminderEvent``（系统级提醒）会通过 ``to_user_msg()`` 转成
+        ``ChatCompletionUserMessageParam`` 加入返回列表，确保会话恢复后
+        reminder 仍能进入模型上下文。
+        """
+        result: List[ChatCompletionMessageParam] = []
+        for e in self.entries:
+            if isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent)):
+                result.append(e.message)
+            elif isinstance(e, ReminderEvent):
+                result.append(e.to_user_msg())
+        return result

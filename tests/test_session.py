@@ -146,6 +146,39 @@ class TestSessionEntry:
         with pytest.raises(ValueError, match="未知的条目类型"):
             _dict_to_agent_message(data)
 
+    def test_tool_result_event_with_tool_name(self):
+        """ToolResultEvent 持久化 tool_name 字段。"""
+        from mycode.session import ToolResultEvent, _msg_to_dict, _dict_to_agent_message
+        from mycode.tools_registry import ToolsRegistry
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            tool_name="todo_write",
+            id="t1",
+        )
+        d = _msg_to_dict(ev)
+        assert d["tool_name"] == "todo_write"
+        # 反向：tool_name 应被恢复
+        roundtrip = _dict_to_agent_message(d)
+        assert isinstance(roundtrip, ToolResultEvent)
+        assert roundtrip.tool_name == "todo_write"
+
+    def test_tool_result_event_without_tool_name_backward_compat(self):
+        """旧 session 数据无 tool_name 字段也能正常加载（向后兼容）。"""
+        from mycode.session import _dict_to_agent_message, ToolResultEvent
+        data = {
+            "time": "2026-04-08T16:06:54+08:00",
+            "type": "message",
+            "id": "x",
+            "parent_id": None,
+            "model": "m",
+            "message": {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+            # 无 tool_name
+        }
+        entry = _dict_to_agent_message(data)
+        assert isinstance(entry, ToolResultEvent)
+        assert entry.tool_name == ""  # 默认空字符串
+
 
 class TestSessionHistory:
     @pytest.fixture
