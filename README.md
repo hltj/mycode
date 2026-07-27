@@ -89,6 +89,7 @@ cp .env.example .env
 | `API_KEY`                 | OpenAI 兼容 API 的密钥                                                  | （必填）                  |
 | `BASE_URL`                | OpenAI 兼容 API 的 Base URL                                             | OpenAI 官方                |
 | `MODEL_NAME`              | 默认模型名                                                              | （必填）                  |
+| `ADDITIONAL_SYSTEM_PROMPT` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加      | （空）                    |
 | `BASH_TIMEOUT`            | `bash` 工具的超时（秒）                                                 | `60`                      |
 | `BASH_DANGEROUS`          | 逗号分隔的危险命令子串列表，命中即拒绝执行                              | `sudo,rm -rf`             |
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |

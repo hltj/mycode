@@ -33,7 +33,9 @@ APP_HOME_DIR.mkdir(parents=True, exist_ok=True)
 HISTORY_FILE = APP_HOME_DIR / 'history.txt'
 
 # 系统提示词
-SYSTEM = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用 bash 完成任务。直接做勿解释。"
+_BASE_SYSTEM_PROMPT = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用工具完成任务。直接做勿解释。"
+_ADDITIONAL = os.getenv('ADDITIONAL_SYSTEM_PROMPT')
+SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + (("\n" + _ADDITIONAL) if _ADDITIONAL else "")
 
 # ---------------------------------------------------------------------------
 # TODO 渲染辅助
@@ -477,7 +479,7 @@ def main():
 
     # 消息列表初始化系统提示词
     hist_messages: list[ChatCompletionMessageParam] = [
-        ChatCompletionSystemMessageParam(role='system', content=SYSTEM),
+        ChatCompletionSystemMessageParam(role='system', content=SYSTEM_PROMPT),
     ]
 
     session_hist: SessionHistory
