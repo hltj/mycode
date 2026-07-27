@@ -553,7 +553,8 @@ def main():
 
         except KeyboardInterrupt:
             # Ctrl-C 在 prompt 阶段被触发：agent_loop 未运行，相当于什么都没
-            # 中断；直接 continue 重新接受下一轮输入即可。
+            # 中断；输出换行让光标回到新行，再 continue 重新接受下一轮输入。
+            print()
             continue
 
         except Exception as e:
