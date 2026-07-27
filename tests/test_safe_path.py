@@ -53,7 +53,7 @@ def test_safe_path_protected_pattern_match(tmp_path: Path, monkeypatch: pytest.M
     _patch_cwd(tmp_path, monkeypatch)
     monkeypatch.setenv("MYCODE_PROTECTED_PATH_PATTERN", r"\.env$")
     (tmp_path / ".env").write_text("SECRET=1")
-    with pytest.raises(ValueError, match=r"保护正则"):
+    with pytest.raises(ValueError, match=r"拒绝访问"):
         safe_path(".env")
 
 
@@ -67,7 +67,7 @@ def test_safe_path_protected_multiple_patterns(tmp_path: Path, monkeypatch: pyte
     _patch_cwd(tmp_path, monkeypatch)
     monkeypatch.setenv("MYCODE_PROTECTED_PATH_PATTERN", "  foo , bar\\.txt  ,  ")
     (tmp_path / "bar.txt").write_text("x")
-    with pytest.raises(ValueError, match=r"bar\.txt"):
+    with pytest.raises(ValueError, match=r"拒绝访问"):
         safe_path("bar.txt")
 
 

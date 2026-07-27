@@ -53,9 +53,8 @@ def safe_path(path: str) -> str:
 
     for pat in _load_patterns():
         if re.search(pat, abs_path):
-            raise ValueError(
-                f"Error: 路径 '{path}' 被保护正则 '{pat}' 命中"
-            )
+            # 不向模型暴露具体正则，避免泄漏给 LLM
+            raise ValueError(f"Error: 拒绝访问 '{path}'")
 
     return abs_path
 
