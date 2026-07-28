@@ -162,14 +162,13 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 # ===================================================================
 
 def _render_common(msg: AgentMessage) -> None:
-    """共享渲染逻辑：AI回复 / 工具调用 / 工具结果"""
+    """共享渲染逻辑：用户输入 / AI回复 / 工具调用 / 工具结果"""
     match msg:
         case SessionRecord():
             # SessionRecord 仅用于文件标识，不渲染
             pass
-        case UserMessage():
-            # 实时交互中不渲染用户消息（prompt_toolkit 已显示）
-            pass
+        case UserMessage(message=message):
+            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}")
         case AssistantMessage(message=message, model=model):
             content = message.get("content")
             if content and str(content).strip():
@@ -203,15 +202,13 @@ def _render_common(msg: AgentMessage) -> None:
 
 
 def render_terminal(msg: AgentMessage) -> None:
-    """实时交互渲染：UserMessage → prompt_toolkit 已显示，跳过"""
+    """实时交互渲染"""
     _render_common(msg)
 
 
 def render_replay(msg: AgentMessage) -> None:
-    """历史重放渲染：所有类型均输出；UserMessage 单独处理；InterruptEvent 输出 ^C 及空行"""
+    """历史重放渲染：所有类型均输出；InterruptEvent 输出 ^C 及空行"""
     match msg:
-        case UserMessage(message=message):
-            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}")
         case InterruptEvent():
             print("^C")
             print()
@@ -530,6 +527,7 @@ def main():
         multiline=True,
         style=prompt_style,
         prompt_continuation='',
+        erase_when_done=True,
     )
 
     while True:
