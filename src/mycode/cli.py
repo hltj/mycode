@@ -93,8 +93,6 @@ def _format_todos(state: list[dict] | None = None) -> str:
 # ---------------------------------------------------------------------------
 # 导入工具
 # ---------------------------------------------------------------------------
-# noinspection PyUnusedImports
-from mycode.tools import bash
 from mycode.tools_registry import ToolsRegistry
 
 client = OpenAI(
