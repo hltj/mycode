@@ -91,7 +91,7 @@ cp .env.example .env
 | `MODEL_NAME`              | 默认模型名                                                              | （必填）                  |
 | `ADDITIONAL_SYSTEM_PROMPT` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加      | （空）                    |
 | `BASH_TIMEOUT`            | `bash` 工具的超时（秒）                                                 | `60`                      |
-| `BASH_DANGEROUS`          | 逗号分隔的危险命令子串列表，命中即拒绝执行                              | `sudo,rm -rf`             |
+| `BASH_DANGEROUS`          | 逗号分隔的危险命令正则（`re.search` 命中即拒）                             | （空）                    |
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
 | `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
 | `MYCODE_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `3`                       |

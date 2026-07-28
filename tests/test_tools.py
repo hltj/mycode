@@ -72,11 +72,39 @@ def test_bash_timeout():
 
 
 def test_bash_dangerous_command_blocked():
-    """测试危险命令被阻止"""
+    """测试危险命令被阻止（BASH_DANGEROUS 视为正则）"""
     saved = os.environ.get('BASH_DANGEROUS')
     os.environ['BASH_DANGEROUS'] = 'echo_dangerous_test_12345'
     result = tools.bash("echo_dangerous_test_12345")
-    assert "Dangerous command blocked" in result
+    assert "拒绝执行危险命令" in result
+    if saved is not None:
+        os.environ['BASH_DANGEROUS'] = saved
+    else:
+        os.environ.pop('BASH_DANGEROUS', None)
+
+
+def test_bash_dangerous_multiple_patterns():
+    """多条正则逗号分隔：前面的不匹不影响后面的命中"""
+    saved = os.environ.get('BASH_DANGEROUS')
+    os.environ['BASH_DANGEROUS'] = r'no_match_pattern_xyz,echo_dangerous_test_12345'
+    result = tools.bash("echo_dangerous_test_12345")
+    assert "拒绝执行危险命令" in result
+    if saved is not None:
+        os.environ['BASH_DANGEROUS'] = saved
+    else:
+        os.environ.pop('BASH_DANGEROUS', None)
+
+
+def test_bash_dangerous_anchored_regex():
+    """正则 ^ 锚定生效：含子串但不以它开头的命令不被拒"""
+    saved = os.environ.get('BASH_DANGEROUS')
+    os.environ['BASH_DANGEROUS'] = r'^dangerous_anchor_test'
+    # 含子串但在中间——正则 ^dangerous_anchor_test 不匹
+    result = tools.bash("echo dangerous_anchor_test")
+    assert "拒绝执行危险命令" not in result
+    # 以 dangerous_anchor_test 开头——拒
+    result2 = tools.bash("dangerous_anchor_test xyz")
+    assert "拒绝执行危险命令" in result2
     if saved is not None:
         os.environ['BASH_DANGEROUS'] = saved
     else:
