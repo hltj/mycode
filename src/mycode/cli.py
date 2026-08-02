@@ -340,10 +340,14 @@ def agent_loop(
             [tc.model_dump() for tc in (message.tool_calls or [])]
         )
 
-        # 消息列表追加模型回复
-        assistant_msg = ChatCompletionAssistantMessageParam(
-            role='assistant', content=content, tool_calls=serialized_tool_calls
-        )
+        # 消息列表追加模型回复。
+        # 某些模型供应商不接受 tool_calls 字段为空数组（会报 invalid_parameter_error），
+        # 因此仅当确有 tool_calls 时才设置该字段。
+        assistant_msg: ChatCompletionAssistantMessageParam = {
+            'role': 'assistant', 'content': content
+        }
+        if serialized_tool_calls:
+            assistant_msg['tool_calls'] = serialized_tool_calls
         messages.append(assistant_msg)
 
         # dispatch AI 回复
