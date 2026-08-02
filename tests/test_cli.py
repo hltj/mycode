@@ -652,6 +652,48 @@ class TestRenderCommonToolResult:
         assert "TODO 列表:" not in out
         assert "ok" in out
 
+    def test_tool_result_without_backticks_uses_3_fence(self):
+        """无反引号内容：用 3 重反引号定界。"""
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c4", "content": "hello world"},
+            tool_name="bash",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "\n```\nhello world\n```\n" in out
+
+    def test_tool_result_with_triple_backtick_uses_4_fence(self):
+        """内容含 3 重反引号：定界符升为 4 重。"""
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c5",
+                     "content": "代码块:\n```python\nprint(1)\n```\n结束"},
+            tool_name="bash",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        # 4 重反引号包裹，且 3 重反引号保留在内容内
+        assert "````\n代码块:\n```python\nprint(1)\n```\n结束\n````\n" in out
+
+    def test_tool_result_with_longer_backtick_run_escalates(self):
+        """内容含 4 重反引号：定界符升为 5 重，以此类推。"""
+        ev = ToolResultEvent(
+            model="m",
+            message={"role": "tool", "tool_call_id": "c6",
+                     "content": "````\ninner\n````\n"},
+            tool_name="bash",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "`````\n````\ninner\n````\n`````\n" in out
+
+    def test_code_fence_helper(self):
+        """_code_fence 辅助函数：根据最长连续反引号决定围栏长度。"""
+        from mycode.cli import _code_fence
+        assert _code_fence("no backticks") == "```"
+        assert _code_fence("a ``` b") == "````"
+        assert _code_fence("`````long") == "``````"
+        # 空内容也取最短 3 重
+        assert _code_fence("") == "```"
+
 
 
 class TestFormatTodos:

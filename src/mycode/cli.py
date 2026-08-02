@@ -161,6 +161,24 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 # 处理器 —— 渲染（分层委托消除重复）
 # ===================================================================
 
+def _code_fence(text: str) -> str:
+    """根据内容中最长连续反引号长度选择围栏定界符。
+
+    若内容中出现 3 重反引号，则定界符需用 4 重，以此类推，避免
+    内容中的反引号提前终止代码块。最短为 3 重。
+    """
+    longest = 0
+    cur = 0
+    for ch in text:
+        if ch == '`':
+            cur += 1
+            if cur > longest:
+                longest = cur
+        else:
+            cur = 0
+    return '`' * max(3, longest + 1)
+
+
 def _render_common(msg: AgentMessage) -> None:
     """共享渲染逻辑：用户输入 / AI回复 / 工具调用 / 工具结果"""
     match msg:
@@ -201,7 +219,8 @@ def _render_common(msg: AgentMessage) -> None:
             if tool_name == "todo_write":
                 print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{_format_todos()}\n")
             tool_result = message.get("content", "")
-            print(f"\x1B[1;36m工具输出:\x1B[0m\n```{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n```")
+            fence = _code_fence(tool_result)
+            print(f"\x1B[1;36m工具输出:\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
         case InterruptEvent():
             # 交互状态输出空行
             print('\n')
