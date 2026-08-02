@@ -176,7 +176,26 @@ def _render_common(msg: AgentMessage) -> None:
         case ToolCallEvent(tool_call=tool_call):
             func_name = tool_call["function"]["name"]
             args_ = tool_call["function"]["arguments"]
-            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```json\n{args_}\n```")
+            try:
+                parsed = json.loads(args_)
+            except (json.JSONDecodeError, TypeError):
+                yaml_text = args_
+            else:
+                import yaml
+
+                def _block_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+                    """含换行的字符串用 block literal（`|-`）输出，避免换行折叠翻倍。"""
+                    style = '|' if '\n' in data else None
+                    return dumper.represent_scalar(
+                        'tag:yaml.org,2002:str', data, style=style)
+
+                class _BlockStrDumper(yaml.SafeDumper):
+                    pass
+                _BlockStrDumper.add_representer(str, _block_str)
+                yaml_text = yaml.dump(parsed, Dumper=_BlockStrDumper,
+                                      allow_unicode=True, sort_keys=False,
+                                      default_flow_style=False, width=64 * 1024)
+            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```yaml\n{yaml_text}```")
         case ToolResultEvent(message=message, tool_name=tool_name):
             # todo_write 特化渲染：先输出当前 TODO 列表再输出结果
             if tool_name == "todo_write":

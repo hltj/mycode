@@ -803,16 +803,18 @@ class TestReplayTodoSync:
         assert "✅️" in out
         assert "第一步" in out
         # 第二次渲染（对应 tc2）应显示 "🔳 新一步"，不再有 "第一步"
-        # 用相对位置判断：第一次渲染中的 TODO 列表只能有 "第一步"
+        # 用相对位置判断：第一次渲染中的 TODO 列表只能有 "第一步"。
+        # 注意 completed 带 ANSI 样式（可影响符号与标题的紧邻匹配），
+        # 因此分别断言「状态符号 + 标题」的存在性，并用两种符号做交叉鉴别：
+        #   第一次只有 ✅️（completed），第二次只有 🔳（pending）。
         first_idx = out.index("TODO 列表:")
         second_idx = out.index("TODO 列表:", first_idx + 1)
         first_block = out[first_idx:second_idx]
         second_block = out[second_idx:]
-        assert "✅️" in first_block
-        assert "第一步" in first_block
-        assert "新一步" not in first_block  # 此时还未调 tc2
+        assert "✅️" in first_block and "第一步" in first_block
+        assert "🔳" not in first_block            # 第一次状态为 completed
         assert "🔳 新一步" in second_block
-        assert "第一步" not in second_block  # tc2 已整体替换
+        assert "✅️" not in second_block           # 第二次状态为 pending
 
         # replay 结束后 _todo_state 应该是最终态（新一步）
         final = get_todos()
