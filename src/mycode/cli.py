@@ -483,6 +483,19 @@ def agent_loop(
 # CLI 命令补全 & 参数解析
 # ===================================================================
 
+def _prompt_user_input(session: PromptSession[str]) -> str | None:
+    """读取一轮用户输入。
+
+    Ctrl-C 发生在输入过程中（``session.prompt`` 内部）时静默放弃
+    本次输入并返回 ``None``——不输出任何内容，由调用方直接继续
+    等待下一轮输入。EOF（Ctrl-D）则照常向上抛出。
+    """
+    try:
+        return session.prompt([('class:mycode-prompt', 'myc > ')])
+    except KeyboardInterrupt:
+        return None
+
+
 class MycCommandCompleter(Completer):
     COMMANDS = ["/q", "/quit"]
 
@@ -578,7 +591,10 @@ def main():
 
     while True:
         try:
-            user_input = session.prompt([('class:mycode-prompt', 'myc > ')])
+            user_input = _prompt_user_input(session)
+            if user_input is None:
+                # Ctrl-C 发生在输入过程中：不输出任何内容，直接继续
+                continue
             if user_input.strip() in {"/q", "/quit"}:
                 break
 

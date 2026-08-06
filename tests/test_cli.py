@@ -750,6 +750,42 @@ class TestRenderCommonAssistantUser:
 
 
 
+class TestPromptUserInput:
+    """cli._prompt_user_input：Ctrl-C 发生在输入过程中的静默处理。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_returns_input_on_success(self):
+        """正常输入：返回输入文本。"""
+        session = MagicMock()
+        session.prompt = MagicMock(return_value="hello")
+        assert cli._prompt_user_input(session) == "hello"
+
+    def test_keyboard_interrupt_during_input_returns_none_silently(self):
+        """输入过程中 Ctrl-C：返回 None 且不输出任何内容。"""
+        session = MagicMock()
+        session.prompt = MagicMock(side_effect=KeyboardInterrupt)
+        holder: dict = {}
+        out = self._capture(
+            lambda: holder.update(result=cli._prompt_user_input(session)))
+        assert holder["result"] is None
+        assert out == ""  # 无任何输出
+
+    def test_eof_error_propagates(self):
+        """Ctrl-D（EOFError）照常向上抛出，由外层退出程序。"""
+        session = MagicMock()
+        session.prompt = MagicMock(side_effect=EOFError)
+        with pytest.raises(EOFError):
+            cli._prompt_user_input(session)
+
+
+
 class TestFormatTodos:
     """cli._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。"""
 
