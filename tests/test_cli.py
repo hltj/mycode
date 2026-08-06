@@ -696,6 +696,60 @@ class TestRenderCommonToolResult:
 
 
 
+class TestRenderCommonAssistantUser:
+    """_render_common 中 AssistantMessage / UserMessage 的输出样式。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_assistant_with_content_still_renders_title_and_text(self):
+        """有文字输出的助手消息：标题 + 正文（原有行为不变）。"""
+        ev = AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
+            role="assistant", content="hello"))
+        out = self._capture(lambda: _render_common(ev))
+        assert "AI【m】:" in out
+        assert "hello" in out
+
+    def test_assistant_tool_calls_only_renders_title(self):
+        """仅有 tool_calls、无文字输出的助手消息也要展示标题。"""
+        ev = AssistantMessage(
+            model="m",
+            message=_make_assistant_with_tool_calls(_make_tool_call()),
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "AI【m】:" in out
+
+    def test_assistant_content_none_with_tool_calls_renders_title(self):
+        """content 为 None（纯 tool_calls）的助手消息同样展示标题。"""
+        ev = AssistantMessage(
+            model="m",
+            message=ChatCompletionAssistantMessageParam(
+                role="assistant", content=None,
+                tool_calls=[_make_tool_call()],
+            ),
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "AI【m】:" in out
+
+    def test_user_message_trailing_blank_line(self):
+        """用户消息输出之后要加一个空行。"""
+        from openai.types.chat import ChatCompletionUserMessageParam
+        from mycode.session import UserMessage
+
+        ev = UserMessage(model="m", message=ChatCompletionUserMessageParam(
+            role="user", content="hi"))
+        out = self._capture(lambda: _render_common(ev))
+        assert "hi" in out
+        # print 自身带一个换行，再加一个空行 => 结尾为 "\n\n"
+        assert out.endswith("\n\n")
+
+
+
 class TestFormatTodos:
     """cli._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。"""
 

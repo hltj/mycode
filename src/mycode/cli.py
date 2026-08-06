@@ -186,11 +186,15 @@ def _render_common(msg: AgentMessage) -> None:
             # SessionRecord 仅用于文件标识，不渲染
             pass
         case UserMessage(message=message):
-            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}")
+            # 末尾补一个空行，与后续 AI 回复分隔
+            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}\n")
         case AssistantMessage(message=message, model=model):
             content = message.get("content")
             if content and str(content).strip():
                 print(f"\x1B[1;34mAI【{model}】:\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
+            else:
+                # 仅有 tool_calls、无文字输出时也展示标题
+                print(f"\x1B[1;34mAI【{model}】:\x1B[0m")
         case ToolCallEvent(tool_call=tool_call):
             func_name = tool_call["function"]["name"]
             args_ = tool_call["function"]["arguments"]
