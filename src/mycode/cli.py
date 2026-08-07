@@ -191,10 +191,10 @@ def _render_common(msg: AgentMessage) -> None:
         case AssistantMessage(message=message, model=model):
             content = message.get("content")
             if content and str(content).strip():
-                print(f"\x1B[1;34mAI【{model}】:\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
+                print(f"\x1B[35mAI【{model}】\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
             else:
                 # 仅有 tool_calls、无文字输出时也展示标题
-                print(f"\x1B[1;34mAI【{model}】:\x1B[0m")
+                print(f"\x1B[35mAI【{model}】\x1B[0m")
         case ToolCallEvent(tool_call=tool_call):
             func_name = tool_call["function"]["name"]
             args_ = tool_call["function"]["arguments"]
@@ -217,14 +217,14 @@ def _render_common(msg: AgentMessage) -> None:
                 yaml_text = yaml.dump(parsed, Dumper=_BlockStrDumper,
                                       allow_unicode=True, sort_keys=False,
                                       default_flow_style=False, width=64 * 1024)
-            print(f"\x1B[1;36m调用工具 - {func_name}\x1B[0m\n```yaml\n{yaml_text}```")
+            print(f"\x1B[1;34m调用工具 - {func_name}\x1B[0m\n```yaml\n{yaml_text}```")
         case ToolResultEvent(message=message, tool_name=tool_name):
             # todo_write 特化渲染：先输出当前 TODO 列表再输出结果
             if tool_name == "todo_write":
                 print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{_format_todos()}\n")
             tool_result = message.get("content", "")
             fence = _code_fence(tool_result)
-            print(f"\x1B[1;36m工具输出:\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
+            print(f"\x1B[1;34m工具输出\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
         case InterruptEvent():
             # 交互状态输出空行
             print('\n')
@@ -563,8 +563,8 @@ def main():
     bus.register(make_persist_handler(session_hist))
     bus.register(render_terminal)
 
-    # 输出开头信息
-    print("【mycode】")
+    # 输出开头信息（标题橙色加粗）
+    print(f"\x1B[38;2;255;165;0;1m【mycode】\x1B[0m")
     print(f"会话 ID: {session_hist.session_uuid}")
     print()
 

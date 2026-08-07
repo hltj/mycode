@@ -625,7 +625,7 @@ class TestRenderCommonToolResult:
         assert "步骤 2" in out
         # 然后是工具输出
         idx_list = out.index("TODO 列表:")
-        idx_result = out.index("工具输出:")
+        idx_result = out.index("工具输出")
         assert idx_list < idx_result
         assert "TODO 列表已更新（2 项）" in out
 
@@ -638,7 +638,10 @@ class TestRenderCommonToolResult:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "TODO 列表:" not in out
-        assert "工具输出:" in out
+        assert "工具输出" in out
+        assert "工具输出:" not in out
+        # 工具输出标题为普通加粗蓝色
+        assert "\x1B[1;34m工具输出\x1B[0m" in out
         assert "hello world" in out
 
     def test_tool_result_without_tool_name_renders_only_result(self):
@@ -696,6 +699,30 @@ class TestRenderCommonToolResult:
 
 
 
+class TestRenderCommonToolCall:
+    """_render_common 中 ToolCallEvent 的输出样式。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_tool_call_title_blue_no_colon(self):
+        """调用工具标题为普通加粗蓝色，且不带冒号。"""
+        ev = ToolCallEvent(
+            model="m",
+            tool_call=_make_tool_call(call_id="c1", name="bash", args='{"command": "ls"}'),
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "\x1B[1;34m调用工具 - bash\x1B[0m" in out
+        assert "调用工具 - bash:" not in out
+        assert "command" in out
+
+
+
 class TestRenderCommonAssistantUser:
     """_render_common 中 AssistantMessage / UserMessage 的输出样式。"""
 
@@ -712,7 +739,8 @@ class TestRenderCommonAssistantUser:
         ev = AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
             role="assistant", content="hello"))
         out = self._capture(lambda: _render_common(ev))
-        assert "AI【m】:" in out
+        # 标题为紫色（不加粗）、无冒号
+        assert "\x1B[35mAI【m】\x1B[0m" in out
         assert "hello" in out
 
     def test_assistant_tool_calls_only_renders_title(self):
@@ -722,7 +750,8 @@ class TestRenderCommonAssistantUser:
             message=_make_assistant_with_tool_calls(_make_tool_call()),
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "AI【m】:" in out
+        assert "AI【m】" in out
+        assert "AI【m】:" not in out
 
     def test_assistant_content_none_with_tool_calls_renders_title(self):
         """content 为 None（纯 tool_calls）的助手消息同样展示标题。"""
@@ -734,7 +763,8 @@ class TestRenderCommonAssistantUser:
             ),
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "AI【m】:" in out
+        assert "AI【m】" in out
+        assert "AI【m】:" not in out
 
     def test_user_message_trailing_blank_line(self):
         """用户消息输出之后要加一个空行。"""
