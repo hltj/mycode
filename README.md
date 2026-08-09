@@ -26,6 +26,7 @@ myc/
 │   ├── __init__.py
 │   ├── __main__.py         # 支持 `python -m mycode`
 │   ├── cli.py              # CLI 入口逻辑
+│   ├── renderer.py         # 渲染器（default/classic 风格）
 │   ├── session.py          # 会话管理与 ADT 事件类型
 │   ├── tools_registry.py   # 工具注册表（ToolsRegistry）
 │   ├── tools/
@@ -40,13 +41,17 @@ myc/
 │   │   ├── write.py         # 写文件
 │   │   ├── edit.py          # 字符串替换编辑
 │   │   ├── patch.py         # 应用 unified diff
-│   │   └── todo_write.py    # 内存 TODO 列表
+│   │   └── todo_write.py    # 内存待办事项列表
 │   └── py.typed            # PEP 561 类型标记
 ├── tests/                  # 测试（pytest）
+│   ├── _helpers.py         # 测试辅助工具
+│   ├── conftest.py         # pytest 共享 fixtures
+│   ├── test_cli.py
+│   ├── test_renderer.py
+│   ├── test_safe_path.py
 │   ├── test_session.py
 │   ├── test_tools.py
 │   ├── test_tools_registry.py
-│   ├── test_safe_path.py
 │   └── test_truncate.py
 ├── docs/dev/event_design.md         # 事件架构设计文档
 ├── LICENSE
@@ -94,7 +99,7 @@ cp .env.example .env
 | `BASH_DANGEROUS`          | 逗号分隔的危险命令正则（`re.search` 命中即拒）                             | （空）                    |
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
 | `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
-| `MYCODE_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `3`                       |
+| `MYCODE_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
 
 ### 运行
 
@@ -139,7 +144,7 @@ uv run myc -c   # 恢复当前目录的最新会话
 | `write`       | 覆盖写入文件，自动创建父目录                                         |
 | `edit`        | 按 `old_text`/`new_text` 替换；`replace_all` 控制全部替换            |
 | `patch`       | 应用 unified diff（自动检测 `-p0`/`-p1`，先 dry-run 再正式应用）      |
-| `todo_write`  | 整体替换内存 TODO 列表；同时只能有一项 `in_process`                  |
+| `todo_write`  | 整体替换内存待办事项列表；同时只能有一项 `in_process`                  |
 
 > **路径安全**：所有文件类工具在处理前都会通过 `safe_path()`，拒绝超出
 > CWD 的路径（含跟随软链接后越界）以及命中 `MYCODE_PROTECTED_PATH_PATTERN`
@@ -147,7 +152,7 @@ uv run myc -c   # 恢复当前目录的最新会话
 
 ### `todo_write` 与陈旧度提醒
 
-- `todo_write(items)` 整体替换当前 TODO 列表；空列表表示清空。
+- `todo_write(items)` 整体替换当前待办事项列表；空列表表示清空。
 - 每产生一个 assistant 消息时自增一次陈旧度计数；
   - 超过 `MYCODE_STALE_THRESHOLD` 且存在未完成项时，往 `messages` 注入一条
     `<reminder>` 文本（模型下次 API 调用可见），同时派发 `ReminderEvent`
@@ -182,7 +187,8 @@ uv run pytest
 - 路径安全检查（`test_safe_path.py`）
 - 行数/KiB 联合截断（`test_truncate.py`）
 - 会话历史与 ADT 序列化往返（`test_session.py`）
-- CLI 渲染、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
+- 渲染器 default/classic 风格输出（`test_renderer.py`）
+- CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 
 ### 类型检查
 
