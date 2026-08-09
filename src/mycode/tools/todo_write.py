@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""todo_write 工具：在内存中维护 TODO 列表，不做持久化。"""
+"""todo_write 工具：在内存中维护待办列表，不做持久化。"""
 
 import json
 import os
@@ -11,21 +11,21 @@ from mycode.tools_registry import ToolsRegistry
 _todo_state: list[dict] = []
 
 # 陈旧度提醒：自上次 todo_write 以来的"assistant 消息数"。
-# 超过阈值且存在未完成 todo 时，agent_loop 会往 messages 注入提醒。
-# 阈值可通过环境变量 ``MYCODE_STALE_THRESHOLD`` 覆盖，默认 3。
-_STALE_THRESHOLD: int = int(os.getenv("MYCODE_STALE_THRESHOLD", "3"))
+# 超过阈值且存在未完成待办时，agent_loop 会往 messages 注入提醒。
+# 阈值可通过环境变量 ``MYCODE_STALE_THRESHOLD`` 覆盖，默认 5。
+_STALE_THRESHOLD: int = int(os.getenv("MYCODE_STALE_THRESHOLD", "5"))
 _stale_rounds: int = 0
 
 VALID_STATUS = ("pending", "in_process", "completed")
 
 
 def reset_todos() -> None:
-    """重置内存 TODO 状态（供测试使用）。"""
+    """重置内存待办状态（供测试使用）。"""
     _todo_state.clear()
 
 
 def get_todos() -> list[dict]:
-    """读取当前 TODO 状态（供测试使用）。"""
+    """读取当前待办状态（供测试使用）。"""
     return list(_todo_state)
 
 
@@ -51,12 +51,12 @@ def get_stale_rounds() -> int:
 
 
 def get_unfinished_todos() -> list[dict]:
-    """返回未完成的 todo（status 为 pending 或 in_process）。"""
+    """返回未完成的待办（status 为 pending 或 in_process）。"""
     return [it for it in _todo_state if it.get("status") in ("pending", "in_process")]
 
 
 def should_remind_stale_todo() -> bool:
-    """是否应触发陈旧 TODO 提醒。"""
+    """是否应触发陈旧待办提醒。"""
     return bool(get_unfinished_todos()) and _stale_rounds >= _STALE_THRESHOLD
 
 
@@ -65,7 +65,7 @@ def format_stale_reminder() -> str:
 
 
 def rebuild_from_history(entries: Iterable) -> None:
-    """从会话历史重建 TODO 状态。
+    """从会话历史重建待办状态。
 
     遍历 entries 中的所有 ``ToolCallEvent``，按时间顺序 replay
     名为 ``todo_write`` 的调用。每次 todo_write 整体替换状态，
@@ -97,14 +97,14 @@ def rebuild_from_history(entries: Iterable) -> None:
 
 @ToolsRegistry.tool(
     description=(
-        "整体替换内存中的 TODO 列表。items 是 dict 数组，每个 dict 含"
+        "整体替换内存中的待办列表。items 是 dict 数组，每个 dict 含"
         " title (str) 与 status (str，pending/in_process/completed 之一；"
         "同时只能有一项 in_process)。状态仅保存在内存，不持久化到磁盘，"
         "会话恢复时由历史工具调用重建。"
     )
 )
 def todo_write(
-    items: Annotated[list[dict], "TODO 项列表，每项含 title 和 status"],
+    items: Annotated[list[dict], "待办项列表，每项含 title 和 status"],
 ) -> str:
     if not isinstance(items, list):
         return f"Error: items 必须是 list，实际为 {type(items).__name__}"

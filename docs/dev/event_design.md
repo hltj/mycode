@@ -2,11 +2,11 @@
 
 ## 概述
 
-mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作（用户输入、AI 回复、工具调用、中断、异常等）统一建模为 `AgentMessage` 类型，通过 `AgentEventBus` 分发，由注册的 Handler 分别处理渲染与持久化。
+mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作（用户输入、AI 回复、工具调用、中断、异常等）统一建模为 `AgentMessage` 类型，通过 `AgentEventBus` 分发，由注册的处理器（Handler）分别处理渲染与持久化。
 
 核心文件：
 - `session.py` — ADT 类型定义、MessageProtocol、SessionHistory（持久化）
-- `myc.py` — AgentEventBus、渲染 Handler、主循环
+- `myc.py` — AgentEventBus、渲染处理器、主循环
 
 ---
 
@@ -63,7 +63,7 @@ class AgentEventBus:
         if self._session_hist is not None:
             self._session_hist.inject_meta(msg)  # 注入 id/parent_id/time
         for handler in self._handlers:
-            handler(msg)
+            handler(msg)  # 处理器按注册顺序依次收到消息
 ```
 
 ### 元数据注入流程
@@ -83,7 +83,7 @@ class AgentEventBus:
 bus = AgentEventBus(session_hist=session_hist)
 bus.register(make_persist_handler(session_hist))
 bus.register(render_terminal)
-# dispatch → inject_meta → persist handler → render handler
+# dispatch → inject_meta → 持久化处理器 → 渲染处理器
 ```
 
 #### 历史重放（Replay）
@@ -151,20 +151,56 @@ entries[4] = ToolResultEvent   # 工具结果
 
 ---
 
-## 四、渲染 Handler
+## 四、渲染处理器（渲染器架构）
 
-### \_render_common（共享渲染逻辑）
+渲染按渲染风格（`--style`，默认 `default`）拆分为不同的渲染器（处理器），
+公共渲染流程在基类复用，风格差异由子类覆写。
+
+### 渲染器基类 \_Renderer
+
+```python
+class _Renderer:
+    # 公共流程（基类实现，复用给所有风格）
+    def format_todos(self, state=None) -> str: ...
+    def render_tool_call(self, tool_call) -> None: ...   # YAML 参数 + 代码围栏
+    def render_tool_result(self, message, tool_name) -> None: ...
+    def render_reminder(self, content) -> None: ...
+    def render_exception(self, exc) -> None: ...         # traceback 围栏
+    def render_interrupt(self) -> None: ...
+
+    # 风格差异（子类覆写）
+    def ai_title(self, model) -> str: ...
+    def tool_call_title(self, func_name) -> str: ...
+    def tool_result_title(self) -> str: ...
+    def reminder_text(self, content) -> str: ...
+    def exception_title(self, exc_type, exc_message) -> str: ...
+    def render_user_message(self, text) -> None: ...
+    def prompt_fragments(self) -> list[tuple[str, str]]: ...
+    def create_prompt_style(self) -> Style: ...
+    def apply_input_style(self, session) -> None: ...
+```
+
+### 子类
+
+- `_DefaultRenderer` — 默认风格：emoji 标题（AI `🤖 模型`、
+  工具调用 `🔧 调用工具 - x`、工具输出 `📤 工具输出`、提醒 `💡`、异常 `❌`）、
+  灰色输入区 + 首行竖线提示符。
+- `_ClassicRenderer` — 经典风格：`AI【模型】`、复选框待办、`myc > ` 提示符。
+
+### \_render_common（共享分发）
 
 ```python
 def _render_common(msg: AgentMessage) -> None:
+    renderer = _get_renderer()   # 按 RENDER_STYLE 惰性实例化并缓存
     match msg:
         case SessionRecord(): pass
-        case UserMessage(): pass          # prompt_toolkit 已显示
-        case InterruptEvent(): print('\n')
-        case AssistantMessage(message, model): ...
-        case ToolCallEvent(tool_call): ...
-        case ToolResultEvent(message): ...
-        case ExceptionEvent(exception=exc): ...
+        case UserMessage(message): renderer.render_user_message(content)
+        case AssistantMessage(message, model): ...  # renderer.ai_title + 正文
+        case ToolCallEvent(tool_call): renderer.render_tool_call(tool_call)
+        case ToolResultEvent(message, tool_name): renderer.render_tool_result(...)
+        case InterruptEvent(): renderer.render_interrupt()
+        case ReminderEvent(content): renderer.render_reminder(content)
+        case ExceptionEvent(exception): renderer.render_exception(exception)
         case _ as unreachable: assert_never(unreachable)
 ```
 
@@ -177,8 +213,6 @@ def _render_common(msg: AgentMessage) -> None:
 ```python
 def render_replay(msg: AgentMessage) -> None:
     match msg:
-        case UserMessage(message):
-            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}")
         case InterruptEvent():
             print("^C")
             print()  # 模拟实时 Ctrl-C 的视觉表现
@@ -190,7 +224,7 @@ def render_replay(msg: AgentMessage) -> None:
 
 ---
 
-## 五、持久化 Handler
+## 五、持久化处理器
 
 ```python
 def make_persist_handler(session_hist: SessionHistory) -> Handler:
@@ -199,7 +233,7 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
     return persist
 ```
 
-极简实现——AgentEventBus dispatch 已注入元数据，handler 只需调用 append。
+极简实现——AgentEventBus dispatch 已注入元数据，处理器只需调用 append。
 
 ---
 

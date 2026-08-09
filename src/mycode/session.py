@@ -156,7 +156,7 @@ class ExceptionEvent(MessageProtocol):
 
 @dataclass
 class ReminderEvent(MessageProtocol):
-    """系统注入的提醒（如陈旧 TODO 提醒）。
+    """系统注入的提醒（如陈旧待办提醒）。
 
     与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，渲染时
     显示 ``myc > `` 前缀；ReminderEvent 表示系统级注入，渲染时按

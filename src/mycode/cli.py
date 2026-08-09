@@ -4,7 +4,7 @@ import os
 import sys
 import json
 import argparse
-from typing import Callable, NoReturn, cast
+from typing import Any, Callable, cast
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -20,7 +20,14 @@ from openai.types.chat import (
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.completion import Completion, Completer
-from prompt_toolkit.styles import Style
+
+from mycode.renderer import (
+    _get_renderer,
+    set_render_style,
+    render_terminal,
+    render_replay,
+    _prompt_fragments,
+)
 
 # ---------------------------------------------------------------------------
 # 加载 .env 环境变量
@@ -38,59 +45,6 @@ _ADDITIONAL = os.getenv('ADDITIONAL_SYSTEM_PROMPT')
 SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + (("\n" + _ADDITIONAL) if _ADDITIONAL else "")
 
 # ---------------------------------------------------------------------------
-# TODO 渲染辅助
-# ---------------------------------------------------------------------------
-# ANSI 转义常量
-_RESET = "\x1B[0m"
-_GRAY = "\x1B[90m"          # bright black = 深灰
-_STRIKE = "\x1B[9m"         # 删除线
-_BOLD_WHITE = "\x1B[1;37m"  # 粗+白（在多数终端等价于亮白，对中文可见度比纯粗体好）
-
-# 状态符号：emoji 自带颜色，不依赖 ANSI 上色（避免彩色 emoji 字体忽略 ANSI）。
-_TODO_SYMBOL: dict[str, str] = {
-    "pending": "🔳",      # 白色方块
-    "in_process": "🟧",   # 橙色方块
-    "completed": "✅️",     # 绿色对勾
-}
-
-# 渲染模板：``{sym}`` 替换符号、``{title}`` 替换文本。
-# emoji 后面保留 1 个 ASCII 空格作为分隔（emoji 自带的视觉宽度不算）。
-_TODO_FORMATS: dict[str, str] = {
-    # 已完成：标题灰色 + 删除线
-    "completed": f"{{sym}} {_GRAY}{_STRIKE}{{title}}{_RESET}",
-    # 进行中：标题粗+白（视觉强调）
-    "in_process": f"{{sym}} {_BOLD_WHITE}{{title}}{_RESET}",
-    # 未开始：全部普通样式
-    "pending": "{sym} {title}",
-}
-
-
-def _format_todos(state: list[dict] | None = None) -> str:
-    """将 TODO 列表格式化为带状态符号与样式的可读字符串。
-
-    渲染规则：
-      - ``completed``：以 ``✅️`` 开头（后跟 1 空格），标题灰色带删除线。
-      - ``in_process``：以 ``🟧`` 开头（后跟 1 空格），标题粗体+白色。
-      - ``pending``：以 ``🔳`` 开头（后跟 1 空格），标题普通样式。
-
-    :param state: TODO 状态列表；``None`` 时取当前内存状态。
-    :returns: 形如 ``"✅️ 步骤 1\n🟧 步骤 2"`` 的字符串；空状态返回
-        ``"(TODO 列表为空)"``。
-    """
-    from mycode.tools.todo_write import get_todos
-    items = state if state is not None else get_todos()
-    if not items:
-        return "(TODO 列表为空)"
-    return "\n".join(
-        _TODO_FORMATS[it["status"]].format(
-            sym=_TODO_SYMBOL[it["status"]],
-            title=it["title"],
-        )
-        for it in items
-    )
-
-
-# ---------------------------------------------------------------------------
 # 导入工具
 # ---------------------------------------------------------------------------
 from mycode.tools_registry import ToolsRegistry
@@ -105,7 +59,6 @@ client = OpenAI(
 # ===================================================================
 
 from mycode.session import (
-    SessionRecord,
     UserMessage,
     AssistantMessage,
     ToolCallEvent,
@@ -116,10 +69,6 @@ from mycode.session import (
     AgentMessage,
     SessionHistory,
 )
-
-
-def assert_never(arg: NoReturn) -> NoReturn:
-    raise AssertionError(f"未处理的消息类型: {type(arg).__name__}")
 
 
 # ===================================================================
@@ -158,107 +107,6 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 
 
 # ===================================================================
-# 处理器 —— 渲染（分层委托消除重复）
-# ===================================================================
-
-def _code_fence(text: str) -> str:
-    """根据内容中最长连续反引号长度选择围栏定界符。
-
-    若内容中出现 3 重反引号，则定界符需用 4 重，以此类推，避免
-    内容中的反引号提前终止代码块。最短为 3 重。
-    """
-    longest = 0
-    cur = 0
-    for ch in text:
-        if ch == '`':
-            cur += 1
-            if cur > longest:
-                longest = cur
-        else:
-            cur = 0
-    return '`' * max(3, longest + 1)
-
-
-def _render_common(msg: AgentMessage) -> None:
-    """共享渲染逻辑：用户输入 / AI回复 / 工具调用 / 工具结果"""
-    match msg:
-        case SessionRecord():
-            # SessionRecord 仅用于文件标识，不渲染
-            pass
-        case UserMessage(message=message):
-            # 末尾补一个空行，与后续 AI 回复分隔
-            print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{message.get('content', '')}\n")
-        case AssistantMessage(message=message, model=model):
-            content = message.get("content")
-            if content and str(content).strip():
-                print(f"\x1B[35mAI【{model}】\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
-            else:
-                # 仅有 tool_calls、无文字输出时也展示标题
-                print(f"\x1B[35mAI【{model}】\x1B[0m")
-        case ToolCallEvent(tool_call=tool_call):
-            func_name = tool_call["function"]["name"]
-            args_ = tool_call["function"]["arguments"]
-            try:
-                parsed = json.loads(args_)
-            except (json.JSONDecodeError, TypeError):
-                yaml_text = args_
-            else:
-                import yaml
-
-                def _block_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
-                    """含换行的字符串用 block literal（`|-`）输出，避免换行折叠翻倍。"""
-                    style = '|' if '\n' in data else None
-                    return dumper.represent_scalar(
-                        'tag:yaml.org,2002:str', data, style=style)
-
-                class _BlockStrDumper(yaml.SafeDumper):
-                    pass
-                _BlockStrDumper.add_representer(str, _block_str)
-                yaml_text = yaml.dump(parsed, Dumper=_BlockStrDumper,
-                                      allow_unicode=True, sort_keys=False,
-                                      default_flow_style=False, width=64 * 1024)
-            print(f"\x1B[1;34m调用工具 - {func_name}\x1B[0m\n```yaml\n{yaml_text}```")
-        case ToolResultEvent(message=message, tool_name=tool_name):
-            # todo_write 特化渲染：先输出当前 TODO 列表再输出结果
-            if tool_name == "todo_write":
-                print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{_format_todos()}\n")
-            tool_result = message.get("content", "")
-            fence = _code_fence(tool_result)
-            print(f"\x1B[1;34m工具输出\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
-        case InterruptEvent():
-            # 交互状态输出空行
-            print('\n')
-        case ReminderEvent(content=content):
-            # 系统级提醒（陈旧 TODO 等）：黄色高亮
-            print(f"\x1B[1;33m{content}\x1B[0m\n")
-        case ExceptionEvent(exception=exc):
-            exc_type = exc.get("type", "Unknown")
-            exc_message = exc.get("message", "")
-            traceback_str = exc.get("traceback", str(exc))
-            print(f"\x1B[1;31m异常 - {exc_type} - {exc_message}\x1B[0m")
-            print("```")
-            print(traceback_str.rstrip("\n"))
-            print("```")
-        case _ as unreachable:
-            assert_never(unreachable)
-
-
-def render_terminal(msg: AgentMessage) -> None:
-    """实时交互渲染"""
-    _render_common(msg)
-
-
-def render_replay(msg: AgentMessage) -> None:
-    """历史重放渲染：所有类型均输出；InterruptEvent 输出 ^C 及空行"""
-    match msg:
-        case InterruptEvent():
-            print("^C")
-            print()
-        case _:
-            _render_common(msg)
-
-
-# ===================================================================
 # replay handlers —— 同步工具状态
 # ===================================================================
 
@@ -266,7 +114,7 @@ def make_replay_todo_sync_handler() -> Handler:
     """replay 时把 todo_write 的 ToolCallEvent 实时同步到 _todo_state。
 
     这样后续 dispatch 的对应 ToolResultEvent 渲染时，能看到调用
-    "那一刻"的 TODO 列表，而不是历史最终态。
+    "那一刻"的待办列表，而不是历史最终态。
     """
     from mycode.tools.todo_write import todo_write as todo_write_func
 
@@ -326,9 +174,9 @@ def agent_loop(
     )
     tools = ToolsRegistry.get_tools()
     while True:
-        # ---- 陈旧 TODO 提醒 ----
+        # ---- 陈旧待办提醒 ----
         # 每产生一个 assistant 消息前自增 stale；超过阈值且存在未完成
-        # TODO 时，往 messages 注入一条 user role 提示（让模型看到），
+        # 待办时，往 messages 注入一条 user role 提示（让模型看到），
         # 同时派发 ReminderEvent（让终端显示 + 持久化，与 replay 渲染一致），
         # 然后清零 stale（避免连续打扰）。
         bump_stale_rounds()
@@ -491,7 +339,9 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
     等待下一轮输入。EOF（Ctrl-D）则照常向上抛出。
     """
     try:
-        return session.prompt([('class:mycode-prompt', 'myc > ')])
+        # prompt 接受 list[tuple[str, str] | tuple[str,str,Callable]]，
+        # 此处仅含二元组，用 cast 让 mypy 通过（list 不变性）。
+        return session.prompt(cast(Any, _prompt_fragments()))
     except KeyboardInterrupt:
         return None
 
@@ -507,12 +357,39 @@ class MycCommandCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text), display=cmd)
 
 
+def _create_prompt_session() -> PromptSession[str]:
+    """创建 prompt_toolkit 输入会话（按渲染风格配置样式）。
+
+    default 风格输入区灰色背景说明：
+      - ``''`` 根样式：让有内容的单元格继承灰色背景；
+      - ``'mycode-input'``：挂到布局根容器上，借助
+        ``_Split.write_to_screen`` 下发 parent_style → 各
+        ``Window._apply_style → Screen.fill_area``，把「整块输入区」
+        （含空行、行尾空白以及向下延伸到终端底部的剩余空间）都填充
+        为灰色背景。单靠根样式只会给已渲染的字符上色，空白行不会覆盖。
+    """
+    renderer = _get_renderer()
+    session: PromptSession[str] = PromptSession(
+        history=FileHistory(HISTORY_FILE),
+        completer=MycCommandCompleter(),
+        multiline=True,
+        style=renderer.create_prompt_style(),
+        prompt_continuation='',
+        erase_when_done=True,
+    )
+    renderer.apply_input_style(session)
+    return session
+
+
 def parse_args():
     parser = argparse.ArgumentParser(prog='mycode', description='mycode - 编程智能体')
     parser.add_argument('-r', '--resume', type=str, metavar='SESSION_ID',
                         help='恢复指定会话')
     parser.add_argument('-c', '--continue', dest='continue_session', action='store_true',
                         help='恢复当前目录的最新会话')
+    parser.add_argument('-s', '--style', dest='style', default='default',
+                        choices=('default', 'classic'), metavar='{default,classic}',
+                        help='渲染风格：default（默认）或 classic')
     # 将 -h/--help 的 help 文本改为中文
     for action in parser._actions:
         if isinstance(action, argparse._HelpAction):
@@ -528,6 +405,9 @@ from mycode.session import find_latest_session_file, get_session_file
 
 def main():
     args = parse_args()
+
+    # 设置全局渲染风格
+    set_render_style(args.style)
 
     model = os.getenv('MODEL_NAME') or ''
 
@@ -573,21 +453,7 @@ def main():
 
     # ---- prompt_toolkit 配置 ----
 
-    # 定义提示符样式
-    prompt_style = Style.from_dict({
-        'mycode-prompt': '#00CC00 bold',
-    })
-
-    # 配置 prompt_toolkit session
-    completer = MycCommandCompleter()
-    session: PromptSession[str] = PromptSession(
-        history=FileHistory(HISTORY_FILE),
-        completer=completer,
-        multiline=True,
-        style=prompt_style,
-        prompt_continuation='',
-        erase_when_done=True,
-    )
+    session = _create_prompt_session()
 
     while True:
         try:

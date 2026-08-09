@@ -1,31 +1,28 @@
 """
-TDD tests for cli.py —— 聚焦 agent_loop 中工具执行被打断/异常时的消息补齐行为。
+cli.py 的测试：智能体自循环与 CLI 交互逻辑。
 
-agent_loop 的核心职责之一：每个 tool_call 都必须对应一个 tool 消息，
-否则下次恢复会话时模型供应商会因 "tool call result does not follow tool call"
-而校验失败（HTTP 400）。这些测试验证：
+渲染（renderer）相关测试见 test_renderer.py。本文件覆盖：
 
-1. 工具正常返回：补上正常的 tool 消息；
-2. 工具执行抛 KeyboardInterrupt：补上"中断"tool 消息，agent_loop 自然返回；
-3. 工具执行抛普通 Exception：补上"失败"tool 消息，agent_loop 自然返回；
-4. eval 解析参数失败：补上错误 tool 消息，agent_loop 自然返回。
+1. agent_loop 工具执行被打断/异常时的消息补齐行为：
+   - 每个 tool_call 都必须对应一个 tool 消息，避免供应商因
+     "tool call result does not follow tool call" 校验失败（HTTP 400）；
+   - 工具正常 / KeyboardInterrupt / 普通异常 / eval 参数失败的各分支。
+2. 用户输入读取（_prompt_user_input）：输入中 Ctrl-C 静默继续、Ctrl-D 退出。
+3. prompt_toolkit 会话创建（_create_prompt_session）：按渲染风格配置样式。
+4. 命令行参数解析（parse_args）：-s/--style 默认值等。
+5. 历史重放（replay_history）与 todo_write 状态同步。
+6. 陈旧待办提醒机制（阈值、重置、注入）。
+7. ReminderEvent 的渲染一致性与 JSONL 往返。
 """
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
-from openai.types.chat import (
-    ChatCompletionAssistantMessageParam,
-    ChatCompletionMessageFunctionToolCallParam,
-    ChatCompletionToolMessageParam,
-)
-from openai.types.chat.chat_completion_message_function_tool_call_param import Function
 
 import mycode.cli as cli
-from mycode.cli import _render_common
+import mycode.renderer as renderer
 from mycode.session import ToolResultEvent
 from mycode.session import (
     AssistantMessage,
@@ -33,35 +30,11 @@ from mycode.session import (
     ToolResultEvent,
 )
 
+from tests._helpers import make_tool_call, make_assistant_with_tool_calls
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def fake_env(monkeypatch, tmp_path):
-    """设置最小环境变量 + 临时 HOME，避免污染真实 ~/.mycode"""
-    monkeypatch.setenv("API_KEY", "test-key")
-    monkeypatch.setenv("BASE_URL", "https://example.com/v1")
-    monkeypatch.setenv("MODEL_NAME", "test-model")
-    monkeypatch.setenv("MYCODE_HOME_DIR", str(tmp_path / ".mycode"))
-    yield
-
-
-def _make_tool_call(call_id: str = "call_1", name: str = "boom", args: str = "{}"):
-    return ChatCompletionMessageFunctionToolCallParam(
-        id=call_id,
-        type="function",
-        function=Function(name=name, arguments=args),
-    )
-
-
-def _make_assistant_with_tool_calls(*tcs):
-    return ChatCompletionAssistantMessageParam(
-        role="assistant",
-        content="",
-        tool_calls=list(tcs),
-    )
+# 兼容旧名（_make_tool_call / _make_assistant_with_tool_calls）
+_make_tool_call = make_tool_call
+_make_assistant_with_tool_calls = make_assistant_with_tool_calls
 
 
 class _FakeChoice:
@@ -87,12 +60,6 @@ class _FakeMessage:
     def __init__(self, content, tool_calls=None):
         self.content = content
         self.tool_calls = tool_calls or []
-
-
-def _make_completion_message(*tcs, content=""):
-    return _FakeMessage(content=content, tool_calls=[
-        _FakeTC(tc) for tc in tcs
-    ])
 
 
 class _FakeTC:
@@ -592,194 +559,6 @@ class TestAgentLoopInterruptIndicatorDispatch:
 
 
 
-class TestRenderCommonToolResult:
-    """_render_common 中 ToolResultEvent 的渲染（含 todo_write 特化）。"""
-
-    def _capture(self, fn):
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            fn()
-        return buf.getvalue()
-
-    def test_todo_write_renders_list_before_result(self, monkeypatch):
-        """todo_write 工具结果渲染：先输出 TODO 列表，再输出结果。"""
-        from mycode.tools.todo_write import todo_write, reset_todos
-        reset_todos()
-        todo_write([
-            {"title": "步骤 1", "status": "completed"},
-            {"title": "步骤 2", "status": "in_process"},
-        ])
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c1", "content": "TODO 列表已更新（2 项）"},
-            tool_name="todo_write",
-        )
-        out = self._capture(lambda: _render_common(ev))
-        # TODO 列表标题 + 符号 + 内容应先出现
-        assert "TODO 列表:" in out
-        assert "✅️" in out
-        assert "步骤 1" in out
-        assert "🟧" in out
-        assert "步骤 2" in out
-        # 然后是工具输出
-        idx_list = out.index("TODO 列表:")
-        idx_result = out.index("工具输出")
-        assert idx_list < idx_result
-        assert "TODO 列表已更新（2 项）" in out
-
-    def test_other_tool_renders_only_result(self):
-        """非 todo_write 工具：只渲染工具输出，无 TODO 列表标题。"""
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c2", "content": "hello world"},
-            tool_name="bash",
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "TODO 列表:" not in out
-        assert "工具输出" in out
-        assert "工具输出:" not in out
-        # 工具输出标题为普通加粗蓝色
-        assert "\x1B[1;34m工具输出\x1B[0m" in out
-        assert "hello world" in out
-
-    def test_tool_result_without_tool_name_renders_only_result(self):
-        """旧历史无 tool_name 时也能正常渲染（向下兼容）。"""
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c3", "content": "ok"},
-            # tool_name 默认空
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "TODO 列表:" not in out
-        assert "ok" in out
-
-    def test_tool_result_without_backticks_uses_3_fence(self):
-        """无反引号内容：用 3 重反引号定界。"""
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c4", "content": "hello world"},
-            tool_name="bash",
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "\n```\nhello world\n```\n" in out
-
-    def test_tool_result_with_triple_backtick_uses_4_fence(self):
-        """内容含 3 重反引号：定界符升为 4 重。"""
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c5",
-                     "content": "代码块:\n```python\nprint(1)\n```\n结束"},
-            tool_name="bash",
-        )
-        out = self._capture(lambda: _render_common(ev))
-        # 4 重反引号包裹，且 3 重反引号保留在内容内
-        assert "````\n代码块:\n```python\nprint(1)\n```\n结束\n````\n" in out
-
-    def test_tool_result_with_longer_backtick_run_escalates(self):
-        """内容含 4 重反引号：定界符升为 5 重，以此类推。"""
-        ev = ToolResultEvent(
-            model="m",
-            message={"role": "tool", "tool_call_id": "c6",
-                     "content": "````\ninner\n````\n"},
-            tool_name="bash",
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "`````\n````\ninner\n````\n`````\n" in out
-
-    def test_code_fence_helper(self):
-        """_code_fence 辅助函数：根据最长连续反引号决定围栏长度。"""
-        from mycode.cli import _code_fence
-        assert _code_fence("no backticks") == "```"
-        assert _code_fence("a ``` b") == "````"
-        assert _code_fence("`````long") == "``````"
-        # 空内容也取最短 3 重
-        assert _code_fence("") == "```"
-
-
-
-class TestRenderCommonToolCall:
-    """_render_common 中 ToolCallEvent 的输出样式。"""
-
-    def _capture(self, fn):
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            fn()
-        return buf.getvalue()
-
-    def test_tool_call_title_blue_no_colon(self):
-        """调用工具标题为普通加粗蓝色，且不带冒号。"""
-        ev = ToolCallEvent(
-            model="m",
-            tool_call=_make_tool_call(call_id="c1", name="bash", args='{"command": "ls"}'),
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[1;34m调用工具 - bash\x1B[0m" in out
-        assert "调用工具 - bash:" not in out
-        assert "command" in out
-
-
-
-class TestRenderCommonAssistantUser:
-    """_render_common 中 AssistantMessage / UserMessage 的输出样式。"""
-
-    def _capture(self, fn):
-        import io
-        from contextlib import redirect_stdout
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            fn()
-        return buf.getvalue()
-
-    def test_assistant_with_content_still_renders_title_and_text(self):
-        """有文字输出的助手消息：标题 + 正文（原有行为不变）。"""
-        ev = AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
-            role="assistant", content="hello"))
-        out = self._capture(lambda: _render_common(ev))
-        # 标题为紫色（不加粗）、无冒号
-        assert "\x1B[35mAI【m】\x1B[0m" in out
-        assert "hello" in out
-
-    def test_assistant_tool_calls_only_renders_title(self):
-        """仅有 tool_calls、无文字输出的助手消息也要展示标题。"""
-        ev = AssistantMessage(
-            model="m",
-            message=_make_assistant_with_tool_calls(_make_tool_call()),
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "AI【m】" in out
-        assert "AI【m】:" not in out
-
-    def test_assistant_content_none_with_tool_calls_renders_title(self):
-        """content 为 None（纯 tool_calls）的助手消息同样展示标题。"""
-        ev = AssistantMessage(
-            model="m",
-            message=ChatCompletionAssistantMessageParam(
-                role="assistant", content=None,
-                tool_calls=[_make_tool_call()],
-            ),
-        )
-        out = self._capture(lambda: _render_common(ev))
-        assert "AI【m】" in out
-        assert "AI【m】:" not in out
-
-    def test_user_message_trailing_blank_line(self):
-        """用户消息输出之后要加一个空行。"""
-        from openai.types.chat import ChatCompletionUserMessageParam
-        from mycode.session import UserMessage
-
-        ev = UserMessage(model="m", message=ChatCompletionUserMessageParam(
-            role="user", content="hi"))
-        out = self._capture(lambda: _render_common(ev))
-        assert "hi" in out
-        # print 自身带一个换行，再加一个空行 => 结尾为 "\n\n"
-        assert out.endswith("\n\n")
-
-
-
 class TestPromptUserInput:
     """cli._prompt_user_input：Ctrl-C 发生在输入过程中的静默处理。"""
 
@@ -816,80 +595,73 @@ class TestPromptUserInput:
 
 
 
-class TestFormatTodos:
-    """cli._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。"""
+class TestCreatePromptSession:
+    """cli._create_prompt_session：按渲染风格配置输入会话。"""
 
-    def _reset(self):
-        from mycode.tools.todo_write import reset_todos
-        reset_todos()
+    @pytest.fixture(autouse=True)
+    def default_style(self, monkeypatch):
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
 
-    def test_empty_state_returns_placeholder(self):
-        from mycode.cli import _format_todos
-        self._reset()
-        out = _format_todos([])
-        assert out == "(TODO 列表为空)"
+    def test_classic_no_root_bg_and_no_layout_style(self, monkeypatch):
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        """classic：根样式无背景，布局根容器无额外样式。"""
+        from prompt_toolkit.utils import to_str
+        session = cli._create_prompt_session()
+        root_style = session.app.layout.container.style
+        assert to_str(root_style) == ""
+        # 提示符样式存在但根样式（''）不含背景
+        attrs = session.style.get_attrs_for_style_str("")
+        assert attrs.bgcolor in (None, "")
 
-    def test_empty_state_when_no_arg_uses_get_todos(self):
-        """无参时从 get_todos() 取值；空状态返回占位符。"""
-        from mycode.cli import _format_todos
-        self._reset()
-        assert _format_todos() == "(TODO 列表为空)"
+    def test_default_root_bg_and_layout_style(self):
+        """default：根样式有灰色背景，布局根容器挂 mycode-input 样式。"""
+        session = cli._create_prompt_session()
+        # 根样式带背景（使有内容的单元格继承）
+        attrs = session.style.get_attrs_for_style_str("")
+        assert attrs.bgcolor is not None and attrs.bgcolor != ""
+        # 布局根容器挂样式类，使整块输入区（含空白行）填充背景
+        assert session.app.layout.container.style == "class:mycode-input"
+        # mycode-input 类本身也定义灰色背景
+        inp_attrs = session.style.get_attrs_for_style_str("class:mycode-input")
+        assert inp_attrs.bgcolor is not None and inp_attrs.bgcolor != ""
 
-    def test_single_completed(self):
-        from mycode.cli import _format_todos
-        out = _format_todos([{"title": "做完了", "status": "completed"}])
-        # 已完成：emoji + 1 空格 + 标题灰色 + 删除线
-        assert out == "✅️ \x1B[90m\x1B[9m做完了\x1B[0m"
+    def test_default_prompt_symbol(self):
+        """default 提示符为居左竖线。"""
+        cli._create_prompt_session()  # 仅确保可创建
+        assert cli._prompt_fragments() == [('class:mycode-prompt', '│ ')]
 
-    def test_single_in_process(self):
-        from mycode.cli import _format_todos
-        out = _format_todos([{"title": "进行中", "status": "in_process"}])
-        # 进行中：🟧 + 1 空格 + 标题粗+白
-        assert out == "🟧 \x1B[1;37m进行中\x1B[0m"
 
-    def test_single_pending(self):
-        from mycode.cli import _format_todos
-        out = _format_todos([{"title": "待办", "status": "pending"}])
-        # 未开始：🔳 + 1 空格 + 普通文本
-        assert out == "🔳 待办"
 
-    def test_mixed_statuses_order_preserved(self):
-        from mycode.cli import _format_todos
-        items = [
-            {"title": "a", "status": "completed"},
-            {"title": "b", "status": "in_process"},
-            {"title": "c", "status": "pending"},
-        ]
-        out = _format_todos(items)
-        assert out == (
-            "✅️ \x1B[90m\x1B[9ma\x1B[0m\n"
-            "🟧 \x1B[1;37mb\x1B[0m\n"
-            "🔳 c"
-        )
+class TestStyleArg:
+    """命令行参数 -s/--style 的解析。"""
 
-    def test_explicit_state_overrides_get_todos(self):
-        """显式传入 state 时不读内存状态。"""
-        from mycode.cli import _format_todos
-        from mycode.tools.todo_write import todo_write, get_todos
-        self._reset()
-        todo_write([{"title": "ignored", "status": "completed"}])
-        # 显式传入不同内容，验证不读 get_todos
-        out = _format_todos([{"title": "explicit", "status": "pending"}])
-        assert out == "🔳 explicit"
-        # get_todos 不受影响（仍然是被 set 的）
-        assert get_todos()[0]["title"] == "ignored"
+    def _parse(self, argv):
+        from mycode.cli import parse_args
+        with patch("sys.argv", ["mycode"] + argv):
+            return parse_args()
 
-    def test_unknown_status_raises_keyerror(self):
-        """未知 status 抛 KeyError：上游 todo_write 已保证 status 合法。"""
+    def test_default_is_default(self):
+        assert self._parse([]).style == "default"
+
+    def test_short_flag(self):
+        assert self._parse(["-s", "default"]).style == "default"
+
+    def test_long_flag(self):
+        assert self._parse(["--style", "classic"]).style == "classic"
+
+    def test_invalid_choice_exits(self):
         import pytest
-        from mycode.cli import _format_todos
-        with pytest.raises(KeyError):
-            _format_todos([{"title": "x", "status": "weird"}])
+        with pytest.raises(SystemExit):
+            self._parse(["-s", "fancy"])
 
 
 
 class TestReplayTodoSync:
     """replay 时 todo_write 的 ToolCallEvent 同步 + 渲染验证。"""
+
+    @pytest.fixture(autouse=True)
+    def default_style(self, monkeypatch):
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
 
     def _capture(self, fn):
         import io
@@ -965,7 +737,7 @@ class TestReplayTodoSync:
         assert "✅️" in out
         assert "第一步" in out
         # 第二次渲染（对应 tc2）应显示 "🔳 新一步"，不再有 "第一步"
-        # 用相对位置判断：第一次渲染中的 TODO 列表只能有 "第一步"。
+        # 用相对位置判断：第一次渲染中的待办列表只能有 "第一步"。
         # 注意 completed 带 ANSI 样式（可影响符号与标题的紧邻匹配），
         # 因此分别断言「状态符号 + 标题」的存在性，并用两种符号做交叉鉴别：
         #   第一次只有 ✅️（completed），第二次只有 🔳（pending）。
@@ -1061,7 +833,7 @@ class TestReplayTodoSync:
 
 
 class TestStaleTodoReminder:
-    """TODO 陈旧度提醒机制：超过阈值轮数未更新时触发。"""
+    """待办陈旧度提醒机制：超过阈值轮数未更新时触发。"""
 
     def _reset(self):
         from mycode.tools.todo_write import (
@@ -1112,7 +884,7 @@ class TestStaleTodoReminder:
         )
         self._reset()
         todo_write([{"title": "A", "status": "in_process"}])
-        for _ in range(3):
+        for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
 
@@ -1150,7 +922,7 @@ class TestStaleTodoReminder:
         assert not should_remind_stale_todo()
 
     def test_reminder_format_is_simple_no_todo_list(self):
-        """提醒正文是简洁文本，不含 TODO 列表也不重复状态定义。
+        """提醒正文是简洁文本，不含待办列表也不重复状态定义。
 
         ``<reminder>`` 标签由 ``ReminderEvent.to_user_msg()`` 加，format
         输出纯文本。
@@ -1167,7 +939,7 @@ class TestStaleTodoReminder:
         # 标签由 to_user_msg 加，format 输出不含
         assert "<reminder>" not in text
         assert "</reminder>" not in text
-        # 不附带 TODO 项（避免依赖内存状态；模型须从历史读取）
+        # 不附带待办项（避免依赖内存状态；模型须从历史读取）
         assert "任务 B" not in text
         assert "任务 C" not in text
         # 不重复状态符号
@@ -1208,7 +980,7 @@ class TestStaleTodoReminder:
             {"title": "A", "status": "pending"},
             {"title": "B", "status": "pending"},
         ])
-        for _ in range(3):
+        for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
 
@@ -1232,8 +1004,13 @@ class TestReminderEvent:
     """ReminderEvent：系统级提醒事件，区别于 UserMessage。
 
     渲染一致性：实时与 replay 都走 ``_render_common`` 的黄色高亮分支，
-    不会被误渲染为用户输入。
+    不会被误渲染为用户输入。此处用 classic 风格（标题无 emoji）断言
+    纯文本内容。
     """
+
+    @pytest.fixture(autouse=True)
+    def classic_style(self, monkeypatch):
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
 
     def _capture(self, fn):
         import io
