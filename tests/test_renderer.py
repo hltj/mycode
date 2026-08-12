@@ -399,14 +399,14 @@ class TestRenderStyle:
     # ---- 用户消息 ----
 
     def test_user_message_classic(self, monkeypatch):
-        """classic：``myc > `` 前缀 + 末尾空行。"""
+        """classic：``myc[自动] > `` 前缀（跟随模式）+ 末尾空行。"""
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
         from openai.types.chat import ChatCompletionUserMessageParam
         from mycode.session import UserMessage
         ev = UserMessage(model="m", message=ChatCompletionUserMessageParam(
             role="user", content="hi"))
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[38;2;0;204;0;1mmyc > \x1B[0mhi" in out
+        assert "\x1B[38;2;0;204;0;1mmyc[自动] > \x1B[0mhi" in out
         assert out.endswith("\n\n")
 
     def test_user_message_default_bar_gray_bg(self, monkeypatch):
@@ -567,7 +567,7 @@ class TestRenderStyle:
 
     def test_prompt_fragments_classic(self, monkeypatch):
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
-        assert renderer._prompt_fragments() == [('class:mycode-prompt', 'myc > ')]
+        assert renderer._prompt_fragments() == [('class:mycode-prompt', 'myc[自动] > ')]
 
     def test_prompt_fragments_default(self):
         assert renderer._prompt_fragments() == [('class:mycode-prompt', '│ ')]

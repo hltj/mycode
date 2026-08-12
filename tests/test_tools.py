@@ -64,7 +64,7 @@ def test_bash_timeout():
     saved = os.environ.get('BASH_TIMEOUT')
     os.environ['BASH_TIMEOUT'] = '1'
     result = tools.bash("sleep 10")
-    assert "Timeout" in result
+    assert "超时" in result
     if saved is not None:
         os.environ['BASH_TIMEOUT'] = saved
     else:

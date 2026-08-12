@@ -166,7 +166,7 @@ class TestAgentLoopToolResultBackfill:
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "call_intr"
-        assert "interrupted" in tool_msgs[0]["content"].lower()
+        assert "中断" in tool_msgs[0]["content"]
         # 渲染事件：ToolCallEvent + ToolResultEvent + InterruptEvent 都已发出
         event_types = [type(e).__name__ for e in captured_holder]
         assert "ToolCallEvent" in event_types
@@ -230,7 +230,7 @@ class TestAgentLoopToolResultBackfill:
         tool_msgs = [m for m in messages if m.get("role") == "tool"]
         assert len(tool_msgs) == 1
         assert tool_msgs[0]["tool_call_id"] == "call_badargs"
-        assert "failed" in tool_msgs[0]["content"].lower() or "SyntaxError" in tool_msgs[0]["content"]
+        assert "失败" in tool_msgs[0]["content"] or "SyntaxError" in tool_msgs[0]["content"]
 
     def test_backfilled_tool_message_id_matches_tool_call_id(self):
         """补齐的 tool 消息的 tool_call_id 必须与对应 tool_call.id 一致——
@@ -343,9 +343,9 @@ class TestAgentLoopMultiToolCallBackfill:
         c1_msg = next(m for m in tool_msgs if m["tool_call_id"] == "c1")
         c2_msg = next(m for m in tool_msgs if m["tool_call_id"] == "c2")
         c3_msg = next(m for m in tool_msgs if m["tool_call_id"] == "c3")
-        assert "interrupted" in c1_msg["content"].lower()
-        assert "interrupted" in c2_msg["content"].lower() and "skipped" in c2_msg["content"].lower()
-        assert "interrupted" in c3_msg["content"].lower() and "skipped" in c3_msg["content"].lower()
+        assert "中断" in c1_msg["content"]
+        assert "中断" in c2_msg["content"] and "跳过" in c2_msg["content"]
+        assert "中断" in c3_msg["content"] and "跳过" in c3_msg["content"]
         # ToolCallEvent / ToolResultEvent 各 3 次
         tc_events = [e for e in captured if isinstance(e, ToolCallEvent)]
         tr_events = [e for e in captured if isinstance(e, ToolResultEvent)]
@@ -384,7 +384,7 @@ class TestAgentLoopMultiToolCallBackfill:
         c3_msg = next(m for m in tool_msgs if m["tool_call_id"] == "c3")
         assert c1_msg["content"] == "c1-result"
         assert "ValueError" in c2_msg["content"] and "c2-boom" in c2_msg["content"]
-        assert "skipped" in c3_msg["content"].lower() and "ValueError" in c3_msg["content"]
+        assert "跳过" in c3_msg["content"] and "ValueError" in c3_msg["content"]
         # ToolCallEvent / ToolResultEvent 各 3 次
         assert sum(1 for e in captured if isinstance(e, ToolCallEvent)) == 3
         assert sum(1 for e in captured if isinstance(e, ToolResultEvent)) == 3
@@ -1060,7 +1060,7 @@ class TestReminderEvent:
         assert msg["content"] == "<reminder>提醒正文</reminder>"
 
     def test_replay_user_message_still_uses_myc_prefix(self):
-        """UserMessage 在 replay 中仍然用 ``myc > `` 前缀（不受影响）。"""
+        """UserMessage 在 replay 中仍然用 ``myc[...] > `` 前缀（跟随模式）。"""
         from openai.types.chat import ChatCompletionUserMessageParam
         from mycode.session import UserMessage
         from mycode.cli import render_replay
@@ -1069,7 +1069,7 @@ class TestReminderEvent:
         event = UserMessage(model="m", message=msg)
         out = self._capture(lambda: render_replay(event))
 
-        assert "myc >" in out
+        assert "myc[自动] >" in out
         assert "hi" in out
 
     def test_reminder_event_roundtrips_through_jsonl(self, tmp_path):

@@ -28,6 +28,6 @@ def bash(command: Annotated[str, "要执行的 bash 命令"]) -> str:
         result = subprocess.run(command, cwd=os.getcwd(), shell=True, capture_output=True, text=True, timeout=timeout)
         return result.stdout + result.stderr
     except subprocess.TimeoutExpired:
-        return f"Error: Timeout ({timeout}s)"
+        return f"Error: 超时 ({timeout}s)"
     except Exception as e:
         return f"Error: {e}"

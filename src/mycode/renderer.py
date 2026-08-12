@@ -24,10 +24,12 @@ from mycode.session import (
     ToolResultEvent,
     InterruptEvent,
     ExceptionEvent,
+    ModeChangeEvent,
     ReminderEvent,
     AgentMessage,
     ExceptionData,
 )
+from mycode.mode import Mode, MODE_STATE, MODE_COLOR
 
 
 def assert_never(arg: NoReturn) -> NoReturn:
@@ -45,24 +47,36 @@ _BOLD_WHITE = "\x1B[1;37m"  # 粗+白（在多数终端等价于亮白，对中�
 _GREEN = "\x1B[32m"                  # 绿（classic 待办完成标记）
 _ORANGE = "\x1B[38;2;255;165;0m"     # 橙（classic 待办进行中标记）
 _INPUT_BG = "\x1B[48;2;51;51;51m"    # 灰背景（default 用户输入区）
-# default 提示符竖线颜色（与 mycode-prompt 样式 #00CC00 bold 一致）
-_PROMPT_FG = "\x1B[38;2;0;204;0;1m"
 # 仅复位前景色与粗体（39=默认前景，22=正常字重），保留背景色
 _FG_DEFAULT = "\x1B[39;22m"
 
 # 渲染风格：default / classic（main() 中根据命令行参数设置）
 RENDER_STYLE = "default"
 
+# 模式 → 提示符样式类（default / classic 共用）
+_MODE_PROMPT_STYLES: dict[Mode, str] = {
+    Mode.AUTO: 'mycode-prompt',
+    Mode.ASK: 'mycode-prompt-ask',
+    Mode.YOLO: 'mycode-prompt-yolo',
+}
+
+# default 风格：模式 → 提示符核心（竖线 + 标记，不含尾随空格）
+_DEFAULT_PROMPT_PREFIXES: dict[Mode, str] = {
+    Mode.AUTO: "│",
+    Mode.ASK: "│?",
+    Mode.YOLO: "│!",
+}
+
 # 状态符号（default 风格）：emoji 自带颜色，不依赖 ANSI 上色
 # （避免彩色 emoji 字体忽略 ANSI）。
-_TODO_SYMBOL: dict[str, str] = {
+_TODO_SYMBOLS: dict[str, str] = {
     "pending": "🔳",      # 白色方块
     "in_process": "🟧",   # 橙色方块
     "completed": "✅️",     # 绿色对勾
 }
 
 # 状态符号（classic 风格）：复选框形式
-_TODO_SYMBOL_CLASSIC: dict[str, str] = {
+_TODO_SYMBOLS_CLASSIC: dict[str, str] = {
     "pending": "- [ ]:",
     "in_process": f"- [{_ORANGE}>{_RESET}]:",
     "completed": f"- [{_GREEN}x{_RESET}]:",
@@ -244,11 +258,20 @@ class _Renderer:
         print('\n')
 
     # ---- 用户消息 / 提示符 / 输入区（子类差异点） ----
-    def render_user_message(self, text: str) -> None:
+    def render_user_message(self, text: str, mode: Mode) -> None:
+        raise NotImplementedError
+
+    def prompt_prefix(self, mode: Mode) -> str:
+        """返回提示符文本（不含尾随空格）。"""
         raise NotImplementedError
 
     def prompt_fragments(self) -> list[tuple[str, str]]:
-        raise NotImplementedError
+        mode = MODE_STATE.get()
+        return [(f"class:{_MODE_PROMPT_STYLES[mode]}", self.prompt_prefix(mode) + " ")]
+
+    def render_mode_change(self, mode: str) -> None:
+        # 模式切换：输出一行提示（保持简洁，不打扰流水）
+        print(f"\x1B[90m已切换到【{mode}】模式\x1B[0m\n")
 
     def create_prompt_style(self) -> Style:
         raise NotImplementedError
@@ -260,7 +283,7 @@ class _Renderer:
 class _DefaultRenderer(_Renderer):
     """默认渲染风格：emoji 标题 + 灰色输入区。"""
 
-    symbols = _TODO_SYMBOL
+    symbols = _TODO_SYMBOLS
 
     def ai_title(self, model: str) -> str:
         return f"🤖 {model}"
@@ -277,33 +300,38 @@ class _DefaultRenderer(_Renderer):
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"❌ 异常 - {exc_type} - {exc_message}"
 
-    def render_user_message(self, text: str) -> None:
-        """灰色背景输入块。竖线 ``│ ``（与提示符同色）仅出现在第一行
-        行首（同输入区提示符），其余行（含续行/换行行）无竖线且不缩进
-        （同输入区 ``prompt_continuation=''``）。按显示宽度自行分行，
+    def render_user_message(self, text: str, mode: Mode) -> None:
+        """灰色背景输入块。竖线（含模式标记 ?/!，与提示符同色）仅出现在
+        第一行行首（同输入区提示符），其余行（含续行/换行行）无竖线且
+        不缩进（同输入区 ``prompt_continuation=''``）。按显示宽度自行分行，
         每段均填充到终端宽度，保证背景从消息第一行到最后一行全量覆盖。
         """
         import shutil
         columns = shutil.get_terminal_size().columns
         lines = str(text).split('\n')
+        prompt_color = MODE_COLOR[mode]
+        bar = self.prompt_prefix(mode)  # "│" / "│?" / "│!"
         for i, line in enumerate(lines):
-            # 第一行带竖线（提示符），后续行顶格无前缀
-            prefix = "│ " if i == 0 else ""
+            # 第一行带提示符（含模式标记），后续行顶格无前缀
+            prefix = bar + " " if i == 0 else ""
             for seg in _wrap_by_display_width(f"{prefix}{line}", columns):
-                if i == 0 and seg.startswith("│"):
-                    # 竖线用提示符颜色渲染，正文恢复默认前景（保留背景）
-                    tail = seg[len("│"):]
-                    seg = f"{_PROMPT_FG}│{_FG_DEFAULT}{tail}"
+                if i == 0 and seg.startswith(bar):
+                    # 提示符（竖线+标记）用当前模式颜色渲染，空格+正文恢复默认前景
+                    tail = seg[len(bar):]
+                    seg = f"{prompt_color}{bar}{_FG_DEFAULT}{tail}"
                 print(f"{_INPUT_BG}{seg}{_RESET}")
         print()
 
-    def prompt_fragments(self) -> list[tuple[str, str]]:
-        return [('class:mycode-prompt', '│ ')]
+    def prompt_prefix(self, mode: Mode) -> str:
+        """default 风格提示符：竖线 + 模式标记（?/!），不含尾随空格。"""
+        return _DEFAULT_PROMPT_PREFIXES[mode]
 
     def create_prompt_style(self) -> Style:
         return Style.from_dict({
             '': 'bg:#333333',
             'mycode-prompt': '#00CC00 bold',
+            'mycode-prompt-ask': '#0000FF bold',
+            'mycode-prompt-yolo': '#FFA500 bold',
             'mycode-input': 'bg:#333333',
         })
 
@@ -318,7 +346,7 @@ class _DefaultRenderer(_Renderer):
 class _ClassicRenderer(_Renderer):
     """classic 渲染风格：复选框待办 + ``myc > `` 提示符。"""
 
-    symbols = _TODO_SYMBOL_CLASSIC
+    symbols = _TODO_SYMBOLS_CLASSIC
 
     def ai_title(self, model: str) -> str:
         return f"AI【{model}】"
@@ -335,15 +363,19 @@ class _ClassicRenderer(_Renderer):
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"异常 - {exc_type} - {exc_message}"
 
-    def render_user_message(self, text: str) -> None:
-        print(f"\x1B[38;2;0;204;0;1mmyc > \x1B[0m{text}\n")
+    def render_user_message(self, text: str, mode: Mode) -> None:
+        color = MODE_COLOR[mode]
+        print(f"{color}{self.prompt_prefix(mode)} \x1B[0m{text}\n")
 
-    def prompt_fragments(self) -> list[tuple[str, str]]:
-        return [('class:mycode-prompt', 'myc > ')]
+    def prompt_prefix(self, mode: Mode) -> str:
+        """classic 风格提示符：``myc[模式] >``，不含尾随空格。"""
+        return f"myc[{mode.label}] >"
 
     def create_prompt_style(self) -> Style:
         return Style.from_dict({
             'mycode-prompt': '#00CC00 bold',
+            'mycode-prompt-ask': '#0000FF bold',
+            'mycode-prompt-yolo': '#FFA500 bold',
         })
 
 
@@ -399,9 +431,9 @@ def _render_common(msg: AgentMessage) -> None:
         case SessionRecord():
             # SessionRecord 仅用于文件标识，不渲染
             pass
-        case UserMessage(message=message):
+        case UserMessage(message=message, mode=mode):
             # CLI 里用户消息 content 始终为 str，cast 掉 openai 的联合类型
-            renderer.render_user_message(cast(str, message.get('content', '')))
+            renderer.render_user_message(cast(str, message.get('content', '')), Mode(mode))
         case AssistantMessage(message=message, model=model):
             renderer.render_assistant(message, model)
         case ToolCallEvent(tool_call=tool_call):
@@ -412,6 +444,8 @@ def _render_common(msg: AgentMessage) -> None:
             renderer.render_interrupt()
         case ReminderEvent(content=content):
             renderer.render_reminder(content)
+        case ModeChangeEvent(mode=mode):
+            renderer.render_mode_change(mode)
         case ExceptionEvent(exception=exc):
             renderer.render_exception(exc)
         case _ as unreachable:
@@ -424,9 +458,14 @@ def render_terminal(msg: AgentMessage) -> None:
 
 
 def render_replay(msg: AgentMessage) -> None:
-    """历史重放渲染：所有类型均输出；InterruptEvent 输出 ^C 及空行"""
+    """历史重放渲染：所有类型均输出。
+
+    InterruptEvent 分两种：
+      - 真实 Ctrl-C（``abort=False``）：输出 ^C 及空行；
+      - abort（取消/无理由拒绝，``abort=True``）：不输出 ^C，仅空行。
+    """
     match msg:
-        case InterruptEvent():
+        case InterruptEvent(abort=False):
             print("^C")
             print()
         case _:

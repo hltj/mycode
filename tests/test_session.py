@@ -16,6 +16,7 @@ from mycode.session import (
     ToolResultEvent,
     InterruptEvent,
     _dict_to_agent_message,
+    _msg_to_dict,
     get_session_file,
     find_latest_session_file,
 )
@@ -140,6 +141,27 @@ class TestSessionEntry:
         }
         entry = _dict_to_agent_message(data)
         assert isinstance(entry, InterruptEvent)
+        assert entry.abort is False
+
+    def test_from_dict_interrupt_abort(self):
+        """abort 标记的 InterruptEvent 往返。"""
+        data = {
+            "time": "2026-04-08T16:06:55.000000+08:00",
+            "type": "interrupt",
+            "id": "b27efd38",
+            "parent_id": "ed66ff3e",
+            "model": "test-model",
+            "abort": True,
+        }
+        entry = _dict_to_agent_message(data)
+        assert isinstance(entry, InterruptEvent)
+        assert entry.abort is True
+        # 往返：msg_to_dict 再读回
+        d = _msg_to_dict(entry)
+        assert d.get("abort") is True
+        loaded = _dict_to_agent_message(d)
+        assert isinstance(loaded, InterruptEvent)
+        assert loaded.abort is True
 
     def test_from_dict_invalid_type(self):
         data = {"type": "unknown"}

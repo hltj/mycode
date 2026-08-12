@@ -65,9 +65,24 @@ from mycode.session import (
     ToolResultEvent,
     InterruptEvent,
     ExceptionEvent,
+    ModeChangeEvent,
     ReminderEvent,
     AgentMessage,
     SessionHistory,
+)
+from mycode.mode import (
+    MODE_STATE,
+    Mode,
+    ToolCategory,
+    classify_tool,
+    needs_confirmation,
+)
+from mycode.confirm import (
+    confirm_tool,
+    ConfirmAction,
+    format_reject,
+    format_reject_no_reason,
+    format_cancel,
 )
 
 
@@ -160,6 +175,60 @@ def replay_history(session_hist: SessionHistory) -> None:
 # ===================================================================
 # 智能体自循环
 # ===================================================================
+
+class _AbortLoop(BaseException):
+    """内部异常：用户取消 / 无理由拒绝工具调用时跳出 agent 循环。
+
+    ``tool_result`` 为要写入 tool 消息的结果文本（区分取消与无理由拒绝）。
+    """
+    def __init__(self, tool_result: str) -> None:
+        super().__init__(tool_result)
+        self.tool_result = tool_result
+
+
+def _run_tool_with_permission(
+    func_name: str,
+    args: dict,
+    handler: Callable,
+) -> str:
+    """按模式与操作分类决定工具是否执行，返回工具结果文本。
+
+    危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
+    编辑 / 取消（取消与无理由拒绝通过 ``_AbortLoop`` 抛出以跳出 agent 循环）。
+    """
+    category = classify_tool(func_name, args)
+
+    # 所有模式对【危险】操作一律拒绝
+    if category == ToolCategory.DANGEROUS:
+        return "Error: 拒绝执行危险命令"
+
+    # 无需确认：直接执行
+    if not needs_confirmation(MODE_STATE.get(), category):
+        return handler(**args)
+
+    # 需确认：弹出确认界面
+    command = args.get("command") if isinstance(args, dict) else None
+    action, extra = confirm_tool(func_name, category, command)
+
+    match action:
+        case ConfirmAction.REJECT_NO_REASON:
+            # 无理由拒绝 → 跳出 agent 循环
+            raise _AbortLoop(format_reject_no_reason())
+        case ConfirmAction.CANCEL:
+            # 取消 → 跳出 agent 循环
+            raise _AbortLoop(format_cancel())
+        case ConfirmAction.REJECT:
+            return format_reject(extra or "")
+        case ConfirmAction.EDIT:
+            # 仅 bash：替换命令后重新分类并执行
+            edited_args = dict(args)
+            edited_args["command"] = extra
+            if classify_tool(func_name, edited_args) == ToolCategory.DANGEROUS:
+                return "Error: 拒绝执行危险命令"
+            return handler(**edited_args)
+        case _:  # APPROVE
+            return handler(**args)
+
 
 def agent_loop(
     messages: list[ChatCompletionMessageParam],
@@ -255,20 +324,32 @@ def agent_loop(
             args_str = tool_call["function"]["arguments"]
             tool_result: str | None = None
             try:
+                # 解析工具参数（权限检查与执行在 _run_tool_with_permission 内）
+                # noinspection PyUnresolvedReferences
+                args_ = json.loads(args_str)
                 if handler is None:
-                    tool_result = f"Error: Unknown tool '{func_name}'"
+                    tool_result = f"Error: 未知工具 '{func_name}'"
                 else:
-                    # 解析工具参数并执行
-                    # noinspection PyUnresolvedReferences
-                    args_ = json.loads(args_str)
-                    tool_result = handler(**args_)
+                    tool_result = _run_tool_with_permission(
+                        func_name,
+                        args_ if isinstance(args_, dict) else {},
+                        handler,
+                    )
+            except _AbortLoop as e:
+                # 用户取消/无理由拒绝：跳出（结果文本区分两种情况）。
+                # 分发 abort 标记的 InterruptEvent，replay 时不渲染 ^C。
+                cause = e
+                interrupted_at = idx
+                tool_result = e.tool_result
+                bus.dispatch(InterruptEvent(model=model, abort=True))
+                break
             except KeyboardInterrupt as e:
                 # Ctrl-C 中断工具执行：先 dispatch InterruptEvent 让 ^C 后
                 # 立即换行，然后用占位错误信息补齐 tool 消息（finally 中），
                 # 最后跳出循环、agent_loop 自然返回。
                 cause = e
                 interrupted_at = idx
-                tool_result = "Error: Tool execution interrupted by user"
+                tool_result = "Error: 工具执行被用户中断"
                 bus.dispatch(InterruptEvent(model=model))
                 break
             except BaseException as e:
@@ -279,7 +360,7 @@ def agent_loop(
                 import traceback as _tb
                 cause = e
                 interrupted_at = idx
-                tool_result = f"Error: Tool execution failed: {type(e).__name__}: {e}"
+                tool_result = f"Error: 工具执行失败: {type(e).__name__}: {e}"
                 bus.dispatch(ExceptionEvent(model=model, exception={
                     "type": type(e).__name__,
                     "message": str(e),
@@ -292,7 +373,7 @@ def agent_loop(
                 # （tool call result does not follow tool call）。
                 # finally 在 break 前执行，能保证补上消息后再跳出循环。
                 if tool_result is None:
-                    tool_result = "Error: Tool execution terminated abnormally"
+                    tool_result = "Error: 工具异常终止"
                 tool_msg = ChatCompletionToolMessageParam(
                     role='tool', tool_call_id=tool_call["id"], content=tool_result
                 )
@@ -307,9 +388,9 @@ def agent_loop(
             # 提示事件（InterruptEvent / ExceptionEvent）已在各 except 块内
             # dispatch —— 此处仅构造 skip_message 并补齐剩余 tool_call。
             skip_message = (
-                "Error: Tool execution skipped: interrupted by user"
+                "Error: 因用户中断操作跳过工具执行"
                 if isinstance(cause, KeyboardInterrupt)
-                else f"Error: Tool execution skipped due to previous error: "
+                else f"Error: 因先前错误跳过工具执行: "
                      f"{type(cause).__name__}: {cause}"
             )
 
@@ -347,7 +428,7 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
 
 
 class MycCommandCompleter(Completer):
-    COMMANDS = ["/q", "/quit"]
+    COMMANDS = ["/q", "/quit", "/ask", "/auto", "/yolo"]
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -369,6 +450,19 @@ def _create_prompt_session() -> PromptSession[str]:
         为灰色背景。单靠根样式只会给已渲染的字符上色，空白行不会覆盖。
     """
     renderer = _get_renderer()
+
+    # shift-tab 切换模式（自动 → 全权 → 询问 → 自动）
+    from prompt_toolkit.key_binding import KeyBindings
+    kb = KeyBindings()
+
+    @kb.add("s-tab")
+    def _cycle_mode(event):
+        old = MODE_STATE.get()
+        new = MODE_STATE.cycle()
+        # 模式切换作为一个事件分发（交由 main 的 bus 处理）。
+        # 此处仅记录待派发标志，由 main 在下一轮读取。
+        event.app.exit(result="__mode_cycle__")
+
     session: PromptSession[str] = PromptSession(
         history=FileHistory(HISTORY_FILE),
         completer=MycCommandCompleter(),
@@ -376,6 +470,7 @@ def _create_prompt_session() -> PromptSession[str]:
         style=renderer.create_prompt_style(),
         prompt_continuation='',
         erase_when_done=True,
+        key_bindings=kb,
     )
     renderer.apply_input_style(session)
     return session
@@ -402,6 +497,12 @@ def parse_args():
 # ===================================================================
 
 from mycode.session import find_latest_session_file, get_session_file
+
+def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
+    """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
+    MODE_STATE.set(mode)
+    bus.dispatch(ModeChangeEvent(model=model, mode=mode.value))
+
 
 def main():
     args = parse_args()
@@ -438,6 +539,9 @@ def main():
     else:
         session_hist = SessionHistory(cwd=os.getcwd(), model=model)
 
+    # 恢复会话时同步模式（session 公共字段），新会话默认自动
+    MODE_STATE.set(session_hist.mode)
+
     # ---- 组装事件总线（CLI 场景：持久化 + 终端渲染） ----
     bus = AgentEventBus(session_hist=session_hist)
     bus.register(make_persist_handler(session_hist))
@@ -461,7 +565,24 @@ def main():
             if user_input is None:
                 # Ctrl-C 发生在输入过程中：不输出任何内容，直接继续
                 continue
-            if user_input.strip() in {"/q", "/quit"}:
+
+            stripped = user_input.strip()
+
+            # ---- shift-tab 循环切换模式 ----
+            if stripped == "__mode_cycle__":
+                _switch_mode(model, bus, MODE_STATE.get())
+                continue
+
+            # ---- 模式切换命令 ----
+            if stripped in {"/ask", "/auto", "/yolo"}:
+                _switch_mode(model, bus, {
+                    "/ask": Mode.ASK,
+                    "/auto": Mode.AUTO,
+                    "/yolo": Mode.YOLO,
+                }[stripped])
+                continue
+
+            if stripped in {"/q", "/quit"}:
                 break
 
             # 消息列表追加用户输入并进入智能体循环

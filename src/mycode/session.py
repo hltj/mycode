@@ -18,6 +18,8 @@ from openai.types.chat import ChatCompletionAssistantMessageParam
 from openai.types.chat import ChatCompletionToolMessageParam
 from openai.types.chat import ChatCompletionMessageFunctionToolCallParam
 
+from mycode.mode import Mode, MODE_STATE
+
 
 # 应用目录
 APP_HOME_DIR = Path(os.getenv('MYCODE_HOME_DIR', os.path.expanduser('~/.mycode')))
@@ -28,6 +30,7 @@ class SessionData(TypedDict):
     """会话元数据"""
     id: str
     cwd: str
+    mode: str
 
 
 class ExceptionData(TypedDict):
@@ -80,6 +83,7 @@ class MessageProtocol(Protocol):
     model: str
     entry_type: str
     time: str
+    mode: str
 
 
 @dataclass
@@ -87,6 +91,7 @@ class SessionRecord(MessageProtocol):
     """session 记录，仅用于文件标识"""
     session: SessionData
     model: str
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "session"
@@ -97,6 +102,7 @@ class SessionRecord(MessageProtocol):
 class UserMessage(MessageProtocol):
     model: str
     message: ChatCompletionUserMessageParam
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "message"
@@ -107,6 +113,7 @@ class UserMessage(MessageProtocol):
 class AssistantMessage(MessageProtocol):
     model: str
     message: ChatCompletionAssistantMessageParam
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "message"
@@ -117,6 +124,7 @@ class AssistantMessage(MessageProtocol):
 class ToolCallEvent(MessageProtocol):
     model: str
     tool_call: ChatCompletionMessageFunctionToolCallParam
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "tool_call"
@@ -127,6 +135,7 @@ class ToolCallEvent(MessageProtocol):
 class ToolResultEvent(MessageProtocol):
     model: str
     message: ChatCompletionToolMessageParam
+    mode: str = Mode.AUTO.value
     tool_name: str = ""
     id: str = ""
     parent_id: Optional[str] = None
@@ -136,7 +145,15 @@ class ToolResultEvent(MessageProtocol):
 
 @dataclass
 class InterruptEvent(MessageProtocol):
+    """中断事件。
+
+    ``abort`` 标记区分两类用户操作引起的中断：
+      - ``abort=False``（默认）：真实 Ctrl-C，replay 时模拟渲染 ``^C``；
+      - ``abort=True``：确认界面取消 / 无理由拒绝，replay 时不渲染 ``^C``。
+    """
     model: str
+    mode: str = Mode.AUTO.value
+    abort: bool = False
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "interrupt"
@@ -148,9 +165,21 @@ class InterruptEvent(MessageProtocol):
 class ExceptionEvent(MessageProtocol):
     model: str
     exception: ExceptionData
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "exception"
+    time: str = ""
+
+
+@dataclass
+class ModeChangeEvent(MessageProtocol):
+    """模式切换事件（session 公共字段记录）。"""
+    model: str
+    mode: str
+    id: str = ""
+    parent_id: Optional[str] = None
+    entry_type: str = "mode_change"
     time: str = ""
 
 
@@ -164,6 +193,7 @@ class ReminderEvent(MessageProtocol):
     """
     model: str
     content: str
+    mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "reminder"
@@ -187,6 +217,7 @@ AgentMessage = (
     | ToolResultEvent
     | InterruptEvent
     | ExceptionEvent
+    | ModeChangeEvent
     | ReminderEvent
 )
 
@@ -203,6 +234,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
         "id": msg.id,
         "parent_id": msg.parent_id,
         "model": msg.model,
+        "mode": msg.mode,
     }
     match msg:
         case SessionRecord(session=session_data):
@@ -217,10 +249,13 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["message"] = message
             if tool_name:
                 d["tool_name"] = tool_name
-        case InterruptEvent():
-            pass
+        case InterruptEvent(abort=abort):
+            if abort:
+                d["abort"] = True
         case ExceptionEvent(exception=exc_data):
             d["exception"] = exc_data
+        case ModeChangeEvent():
+            pass  # mode 已由 base dict 记录
         case ReminderEvent(content=content):
             d["content"] = content
         case _ as unreachable:
@@ -231,13 +266,14 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
 def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     """将 JSONL 字典转为 AgentMessage"""
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder"):
+    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder", "mode_change"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
         "parent_id": data.get("parent_id"),
         "model": data["model"],
         "time": data["time"],
+        "mode": data.get("mode", Mode.AUTO.value),
     }
     if entry_type == "session":
         return SessionRecord(session=cast(SessionData, data["session"]), **base_kwargs)
@@ -263,10 +299,12 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
             **base_kwargs,
         )
     elif entry_type == "interrupt":
-        return InterruptEvent(**base_kwargs)
+        return InterruptEvent(abort=bool(data.get("abort", False)), **base_kwargs)
     elif entry_type == "exception":
         exc_data = data.get("exception", {})
         return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
+    elif entry_type == "mode_change":
+        return ModeChangeEvent(**base_kwargs)
     elif entry_type == "reminder":
         content = data.get("content", "")
         return ReminderEvent(content=content, **base_kwargs)
@@ -280,6 +318,7 @@ class SessionHistory:
     def __init__(self, cwd: str, model: str):
         self.cwd = cwd
         self.model = model
+        self.mode: Mode = Mode.AUTO
         sanitized_cwd = sanitize_path(cwd)
         self.directory = SESSIONS_DIR / sanitized_cwd
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -293,7 +332,7 @@ class SessionHistory:
         self.entries: List[AgentMessage] = []
 
         # 写入初始 session 记录
-        session_data = SessionData(id=self.session_uuid, cwd=cwd)
+        session_data = SessionData(id=self.session_uuid, cwd=cwd, mode=Mode.AUTO.value)
         session_record = SessionRecord(
             session=session_data,
             model=model,
@@ -317,10 +356,11 @@ class SessionHistory:
         return short_id if short_id not in existing_ids else full_uuid
 
     def inject_meta(self, msg: AgentMessage) -> None:
-        """注入 id、parent_id、time 元数据"""
+        """注入 id、parent_id、time、mode 元数据"""
         msg.id = self._next_id()
         msg.parent_id = self.entries[-1].id if self.entries else None
         msg.time = get_iso_timestamp()
+        msg.mode = MODE_STATE.get().value
 
     def append(self, msg: AgentMessage) -> None:
         """追加一条 AgentMessage（元数据需在调用前注入好）"""
@@ -349,10 +389,21 @@ class SessionHistory:
                         instance.cwd = session_data.get("cwd", os.getcwd())
                         instance.directory = file_path.parent
                         instance.model = data["model"]
+                        instance.mode = Mode(session_data.get("mode", Mode.AUTO.value))
                     # 所有类型都加入 entries
                     agent_msg = _dict_to_agent_message(data)
                     if agent_msg is not None:
                         instance.entries.append(agent_msg)
+
+        # 恢复模式：取最后一条消息自带的模式（覆盖 session 记录初值）
+        if instance.entries:
+            last = instance.entries[-1]
+            mode_val = getattr(last, "mode", None)
+            if mode_val:
+                try:
+                    instance.mode = Mode(mode_val)
+                except ValueError:
+                    pass
 
         if not instance.entries:
             raise ValueError(f"无法加载空会话文件: {file_path}")
