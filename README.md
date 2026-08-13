@@ -10,6 +10,8 @@
 - **文件检索**：内置 `ls`、`glob`、`grep`，按行号/KiB 截断输出
 - **文件读写**：内置 `read`、`write`、`edit`、`patch`，统一走路径安全检查
 - **任务跟踪**：内置 `todo_write`，搭配陈旧度自动提醒与重放同步
+- **模式权限**：询问/自动/全权三种模式 + 确认界面（同意/编辑/拒绝），按操作分类决定是否需人工确认
+- **双渲染风格**：default（emoji 标题 + 灰色输入区）/ classic（无 emoji + `myc[模式] >` 提示符）
 - **会话管理**：完整的对话上下文管理，支持多轮交互与断点续接
 - **命令历史**：持久化保存输入历史，支持上下键翻阅
 - **自动补全**：内置命令补全功能
@@ -26,6 +28,8 @@ myc/
 │   ├── __init__.py
 │   ├── __main__.py         # 支持 `python -m mycode`
 │   ├── cli.py              # CLI 入口逻辑
+│   ├── confirm.py          # 确认交互界面（同意/编辑/拒绝）
+│   ├── mode.py             # 模式与权限系统
 │   ├── renderer.py         # 渲染器（default/classic 风格）
 │   ├── session.py          # 会话管理与 ADT 事件类型
 │   ├── tools_registry.py   # 工具注册表（ToolsRegistry）
@@ -47,13 +51,19 @@ myc/
 │   ├── _helpers.py         # 测试辅助工具
 │   ├── conftest.py         # pytest 共享 fixtures
 │   ├── test_cli.py
+│   ├── test_confirm.py
+│   ├── test_mode.py
 │   ├── test_renderer.py
 │   ├── test_safe_path.py
 │   ├── test_session.py
 │   ├── test_tools.py
 │   ├── test_tools_registry.py
 │   └── test_truncate.py
-├── docs/dev/event_design.md         # 事件架构设计文档
+├── docs/dev/
+│   ├── event_design.md            # 事件架构设计
+│   ├── mode_permission_design.md  # 模式与权限系统设计
+│   ├── tools_registry_design.md   # 工具注册系统设计
+│   └── cli_render_design.md       # CLI 渲染设计
 ├── LICENSE
 └── README.md
 ```
@@ -127,6 +137,16 @@ uv run myc -r <session_uuid>
 # 或
 uv run myc -c   # 恢复当前目录的最新会话
 ```
+
+### 渲染风格
+
+```bash
+uv run myc -s classic      # 经典风格（myc[模式] > 提示符 + 复选框待办）
+uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区）
+```
+
+默认 `default`；`classic` 提供无 emoji 的标题与 `myc[模式] >` 提示符。
+模式切换（shift-tab 或 `/ask` `/auto` `/yolo`）与确认界面在两种风格下均可用。
 
 ## 内置工具一览
 
@@ -244,6 +264,8 @@ uv run pytest
 - 行数/KiB 联合截断（`test_truncate.py`）
 - 会话历史与 ADT 序列化往返（`test_session.py`）
 - 渲染器 default/classic 风格输出（`test_renderer.py`）
+- 确认交互界面：同意/拒绝/无理由拒绝/取消/编辑 与布局（`test_confirm.py`）
+- 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 
 ### 类型检查
