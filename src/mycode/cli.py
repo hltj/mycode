@@ -190,11 +190,18 @@ def _run_tool_with_permission(
     func_name: str,
     args: dict,
     handler: Callable,
+    model: str = "",
+    bus: AgentEventBus | None = None,
+    messages: list[ChatCompletionMessageParam] | None = None,
 ) -> str:
     """按模式与操作分类决定工具是否执行，返回工具结果文本。
 
     危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
     编辑 / 取消（取消与无理由拒绝通过 ``_AbortLoop`` 抛出以跳出 agent 循环）。
+
+    编辑（EDIT）命令时：与陈旧提醒一样先分发 ``ReminderEvent``（渲染 +
+    持久化）再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能
+    看到命令被用户修改；命令无变化时直接继续执行。
     """
     category = classify_tool(func_name, args)
 
@@ -223,8 +230,26 @@ def _run_tool_with_permission(
             # 仅 bash：替换命令后重新分类并执行
             edited_args = dict(args)
             edited_args["command"] = extra
+            # 命令有变化：先分发提醒事件（渲染 + 持久化），并注入模型，
+            # 让终端与模型都能看到命令被用户修改。
+            # 展示文案与 LLM 文案不同：提醒文本分别用提醒样式渲染 /
+            # 包 <reminder> 标签，附加内容代码块照常输出。
+            if extra != command:
+                new_cmd = cast(str, extra)
+                event = ReminderEvent(
+                    model=model,
+                    content="用户将命令修改为：",
+                    display_content="命令修改为：",
+                    additional_content=f"```bash\n{new_cmd.rstrip(chr(0x0A))}\n```",
+                )
+                if bus is not None:
+                    bus.dispatch(event)
+                if messages is not None:
+                    messages.append(event.to_user_msg())
+            # 编辑后的命令若是危险命令，一律拒绝
             if classify_tool(func_name, edited_args) == ToolCategory.DANGEROUS:
                 return "Error: 拒绝执行危险命令"
+            # 执行编辑后的命令
             return handler(**edited_args)
         case _:  # APPROVE
             return handler(**args)
@@ -333,6 +358,9 @@ def agent_loop(
                         func_name,
                         args_ if isinstance(args_, dict) else {},
                         handler,
+                        model=model,
+                        bus=bus,
+                        messages=messages,
                     )
             except _AbortLoop as e:
                 # 用户取消/无理由拒绝：跳出（结果文本区分两种情况）。

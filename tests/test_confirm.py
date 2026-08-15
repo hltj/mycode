@@ -561,3 +561,32 @@ class TestRejectInputDisabledWhenNotSelected:
         assert action == "reject"
         assert text == "abc"
         assert "xyz" not in text
+
+
+class TestConfirmApplicationEraseWhenDone:
+    """确认/编辑界面退出时擦除自己渲染的画面（不残留上屏）。"""
+
+    def test_application_has_erase_when_done(self):
+        """_run_confirm_menu 构造的 Application 带 erase_when_done=True。"""
+        from unittest.mock import patch
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        seen: dict = {}
+
+        class _FakeApplication(Application):
+            def __init__(self, *args, **kwargs):
+                seen.update(kwargs)
+                super().__init__(*args, **kwargs)
+            def run(self):
+                return None
+
+        st = confirm_mod._ConfirmState(show_edit=True)
+        # 直接进编辑并回车确认（模拟编辑完确认）
+        with create_pipe_input() as inp:
+            inp.send_text("\x0e\r\r")
+            with patch.object(confirm_mod, "Application", _FakeApplication):
+                confirm_mod._run_confirm_menu(
+                    st, "echo hi", input=inp, output=DummyOutput())
+        assert seen.get("erase_when_done") is True

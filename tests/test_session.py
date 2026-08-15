@@ -201,6 +201,53 @@ class TestSessionEntry:
         assert isinstance(entry, ToolResultEvent)
         assert entry.tool_name == ""  # 默认空字符串
 
+    def test_reminder_roundtrips_new_fields(self):
+        """ReminderEvent 的 display_content/additional_content 可经 JSONL 往返。"""
+        from mycode.session import (
+            ReminderEvent, _msg_to_dict, _dict_to_agent_message,
+        )
+        ev = ReminderEvent(
+            model="m",
+            content="用户将命令修改为：",
+            display_content="命令修改为：",
+            additional_content="```bash\nls -la\n```",
+            id="r1",
+        )
+        d = _msg_to_dict(ev)
+        assert d["type"] == "reminder"
+        assert d["display_content"] == "命令修改为："
+        assert d["additional_content"] == "```bash\nls -la\n```"
+        loaded = _dict_to_agent_message(d)
+        assert isinstance(loaded, ReminderEvent)
+        assert loaded.content == ev.content
+        assert loaded.display_content == ev.display_content
+        assert loaded.additional_content == ev.additional_content
+
+    def test_reminder_old_jsonl_no_new_fields(self):
+        """旧 session 文件的 ReminderEvent 无新字段也能加载（向后兼容）。"""
+        from mycode.session import _dict_to_agent_message, ReminderEvent
+        data = {
+            "time": "2026-04-08T16:06:54+08:00",
+            "type": "reminder",
+            "id": "r",
+            "parent_id": None,
+            "model": "m",
+            "content": "有未完成的 todo",
+        }
+        entry = _dict_to_agent_message(data)
+        assert isinstance(entry, ReminderEvent)
+        assert entry.content == "有未完成的 todo"
+        assert entry.display_content == ""
+        assert entry.additional_content == ""
+
+    def test_reminder_empty_fields_not_written(self):
+        """新字段为空时不写入 JSONL（不含多余键）。"""
+        from mycode.session import ReminderEvent, _msg_to_dict
+        ev = ReminderEvent(model="m", content="hi")
+        d = _msg_to_dict(ev)
+        assert "display_content" not in d
+        assert "additional_content" not in d
+
 
 class TestSessionHistory:
     @pytest.fixture

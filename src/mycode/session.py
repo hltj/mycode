@@ -185,14 +185,22 @@ class ModeChangeEvent(MessageProtocol):
 
 @dataclass
 class ReminderEvent(MessageProtocol):
-    """系统注入的提醒（如陈旧待办提醒）。
+    """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。
 
-    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，渲染时
-    显示 ``myc > `` 前缀；ReminderEvent 表示系统级注入，渲染时按
-    提醒样式（如黄色高亮）展示。
+    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，ReminderEvent
+    表示系统级注入；二者渲染方式不同（见 renderer.py）。
+
+    文案分开三部分：
+      - ``content``：发给 LLM 的提醒，``to_user_msg()`` 用 ``<reminder>``
+        标签整体包裹后喂给模型；
+      - ``display_content``：展示渲染用的提醒，非空时优先于 ``content``；
+      - ``additional_content``：附加内容，如代码块，渲染与 LLM
+        均照常输出。
     """
     model: str
-    content: str
+    content: str = ""
+    display_content: str = ""
+    additional_content: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -202,11 +210,17 @@ class ReminderEvent(MessageProtocol):
     def to_user_msg(self) -> ChatCompletionUserMessageParam:
         """转为 ``ChatCompletionUserMessageParam``（喂给模型）。
 
-        提示内容用 ``<reminder>`` 标签包裹，便于模型识别为系统注入。
+        ``content`` 整体用 ``<reminder>`` 标签包裹后喂给模型；
+        ``additional_content``，如代码块，照常输出在标签之后。
         """
-        return ChatCompletionUserMessageParam(
-            role='user', content=f"<reminder>{self.content}</reminder>"
-        )
+        if self.additional_content:
+            content = (
+                f"<reminder>{self.content}</reminder>\n"
+                f"{self.additional_content.rstrip(chr(0x0A))}"
+            )
+        else:
+            content = f"<reminder>{self.content}</reminder>"
+        return ChatCompletionUserMessageParam(role='user', content=content)
 
 
 AgentMessage = (
@@ -256,8 +270,14 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["exception"] = exc_data
         case ModeChangeEvent():
             pass  # mode 已由 base dict 记录
-        case ReminderEvent(content=content):
+        case ReminderEvent(content=content, display_content=display_content,
+                           additional_content=additional_content):
             d["content"] = content
+            # 旧会话文件无这些字段，仅在新字段非空时写入
+            if display_content:
+                d["display_content"] = display_content
+            if additional_content:
+                d["additional_content"] = additional_content
         case _ as unreachable:
             assert_never(unreachable)
     return d
@@ -306,8 +326,12 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     elif entry_type == "mode_change":
         return ModeChangeEvent(**base_kwargs)
     elif entry_type == "reminder":
-        content = data.get("content", "")
-        return ReminderEvent(content=content, **base_kwargs)
+        return ReminderEvent(
+            content=data.get("content", ""),
+            display_content=data.get("display_content", ""),
+            additional_content=data.get("additional_content", ""),
+            **base_kwargs,
+        )
     # unreachable
     raise ValueError(f"未知的条目类型: {entry_type}")
 

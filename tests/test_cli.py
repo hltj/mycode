@@ -1116,6 +1116,23 @@ class TestReminderEvent:
         assert msg["role"] == "user"
         assert msg["content"] == "<reminder>提醒正文</reminder>"
 
+    def test_to_user_msg_heading_and_body_separate(self):
+        """命令已更新：content 整体包 <reminder>，附加内容代码块照常输出。"""
+        from mycode.session import ReminderEvent
+
+        event = ReminderEvent(
+            model="m",
+            content="用户将命令修改为：",
+            display_content="命令修改为：",
+            additional_content="```bash\nls -la\n```",
+        )
+        msg = event.to_user_msg()
+        assert msg["role"] == "user"
+        assert msg["content"] == (
+            "<reminder>用户将命令修改为：</reminder>\n"
+            "```bash\nls -la\n```"
+        )
+
     def test_replay_user_message_still_uses_myc_prefix(self):
         """UserMessage 在 replay 中仍然用 ``myc[...] > `` 前缀（跟随模式）。"""
         from openai.types.chat import ChatCompletionUserMessageParam
@@ -1184,6 +1201,26 @@ class TestReminderInGetMessages:
         assert len(msgs) == 1
         assert msgs[0]["role"] == "user"
         assert msgs[0]["content"] == "<reminder>hi</reminder>"
+
+    def test_get_messages_restores_edited_command_reminder(self, tmp_path):
+        """命令已更新提醒经 JSONL 往返后 get_messages() 还原完整文案。"""
+        from mycode.session import ReminderEvent, SessionHistory
+        sh = self._make_history(tmp_path)
+        ev = ReminderEvent(
+            model="m",
+            content="用户将命令修改为：",
+            display_content="命令修改为：",
+            additional_content="```bash\nls -la\n```",
+        )
+        sh.append(ev)
+        # 写入后再从文件加载，模拟 -r 恢复
+        loaded = SessionHistory.load(sh.file_path)
+        msgs = loaded.get_messages()
+        assert len(msgs) == 1
+        assert msgs[0]["content"] == (
+            "<reminder>用户将命令修改为：</reminder>\n"
+            "```bash\nls -la\n```"
+        )
 
     def test_get_messages_order_matches_entries(self, tmp_path):
         """get_messages() 输出顺序与 entries 一致（reminder 保留时间位置）。"""

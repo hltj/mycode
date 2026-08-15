@@ -33,7 +33,7 @@ CLI 的终端展示由 `mycode.renderer`（渲染器）与 `mycode.cli`（prompt
 | `render_assistant(message, model)` | AI 标题（紫）+ 正文；无正文（纯 tool_calls）仅标题 |
 | `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（代码围栏） |
 | `render_tool_result(message, tool_name)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果 |
-| `render_reminder(content)` | 黄色高亮提醒 |
+| `render_reminder(content, display_content="", additional_content="")` | 黄色高亮提醒（仅标题用提醒格式，附加内容照常输出） |
 | `render_exception(exc)` | 红色异常标题 + traceback 围栏 |
 | `render_interrupt()` | 输出空行 |
 | `render_mode_change(mode)` | 灰色提示「已切换到【{mode}】模式」 |
@@ -61,7 +61,7 @@ def _render_common(msg: AgentMessage) -> None:
         case ToolCallEvent(tool_call): renderer.render_tool_call(...)
         case ToolResultEvent(message, tool_name): renderer.render_tool_result(...)
         case InterruptEvent(): renderer.render_interrupt()
-        case ReminderEvent(content): renderer.render_reminder(content)
+        case ReminderEvent(content, display_content, additional_content): renderer.render_reminder(content, display_content, additional_content)
         case ModeChangeEvent(mode): renderer.render_mode_change(mode)
         case ExceptionEvent(exception): renderer.render_exception(exception)
         case _ as unreachable: assert_never(unreachable)
@@ -145,6 +145,27 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 
 单行：`{模式色}{myc[模式] >} \x1B[0m{text}`，末尾空行。
 
+### 3.7 ReminderEvent 文案结构
+
+`ReminderEvent` 承载系统级提醒（陈旧待办、命令已更新等），文案分三部分
+（`session.py`）：
+
+| 字段 | 说明 |
+|------|------|
+| `content` | 发给 LLM 的提醒，`to_user_msg()` 用 `<reminder>` 标签整体包裹后喂给模型 |
+| `display_content` | 展示渲染用的提醒，非空时优先于 `content` |
+| `additional_content` | 附加内容，如代码块，渲染与 LLM 均照常输出 |
+
+`to_user_msg()` 把 `content` 整体包进 `<reminder>` 标签，附加内容代码块
+按原样跟在标签之后，避免整块被标签包裹。渲染时 `render_reminder` 把提醒
+文本整体用黄色高亮渲染，附加内容照常输出。
+
+典型场景「编辑 bash 命令」：
+- 渲染标题：`命令修改为：`（`display_content`）
+- LLM 标题：`用户将命令修改为：`（`content`）
+- 附加内容（`additional_content`）：`` ```bash\n{新命令}\n``` ``
+- 触发逻辑：编辑后命令与原文不一致才派发事件并注入模型；一致则直接执行。
+
 ---
 
 ## 四、输入区（prompt_toolkit）
@@ -158,6 +179,10 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 4. `key_bindings`：`shift-tab` 绑定模式循环切换，以 `__mode_cycle__` 退出 prompt，
    由 `main` 下一轮读取后派发 `ModeChangeEvent`；
 5. `erase_when_done=True`：下一轮渲染前擦除上一行输入。
+
+确认界面（`mycode.confirm` 的 `Application`）同样设 `erase_when_done=True`：
+确认 / 编辑界面退出时立即擦除自己渲染的画面，编辑完成的命令不会残留，
+随后由 `ReminderEvent` 提醒统一展示。
 
 提示符片段：
 
@@ -199,7 +224,7 @@ bus.register(render_terminal)                     # 再渲染
 
 **渲染顺序**（`agent_loop`）：
 
-1. `bus.dispatch(ReminderEvent)`（陈旧待办提醒，如有）
+1. `bus.dispatch(ReminderEvent)`（陈旧待办提醒 / 编辑命令已更新提醒，如有）
 2. `bus.dispatch(AssistantMessage)` → AI 标题 + 正文
 3. 每个 pending tool_call：`bus.dispatch(ToolCallEvent)` → 渲染「🔧 调用工具」
    与 YAML 参数；执行后 `bus.dispatch(ToolResultEvent)` → 渲染「📤 工具输出」

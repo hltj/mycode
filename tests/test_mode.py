@@ -403,6 +403,109 @@ class TestAgentLoopModePolicy:
         assert content == "wrote"
 
 
+class TestAgentLoopEditCommand:
+    """编辑（EDIT）bash 命令：有变化分发提醒事件并注入模型，无变化直接执行。"""
+
+    def _run_edit(self, original, edited, confirm_side_effect):
+        MODE_STATE.set(Mode.ASK)
+        captured: list = []
+        messages: list = []
+        bus = cli.AgentEventBus()
+        bus.register(lambda m: captured.append(m))
+        confirm_mock = MagicMock()
+        confirm_mock.side_effect = confirm_side_effect
+        with patch.object(cli, "confirm_tool", confirm_mock):
+            result = cli._run_tool_with_permission(
+                "bash",
+                {"command": original},
+                lambda **kwargs: f"ran:{kwargs.get('command')}",
+                model="test-model",
+                bus=bus,
+                messages=messages,
+            )
+        MODE_STATE.set(Mode.AUTO)
+        return result, captured, messages
+
+    def test_edit_changed_dispatches_reminder_and_injects(self):
+        """编辑后命令有变化：分发 ReminderEvent（渲染+持久化）并注入模型消息。"""
+        from mycode.session import ReminderEvent
+
+        result, captured, messages = self._run_edit(
+            "echo a", "echo b",
+            [(confirm_mod.ConfirmAction.EDIT, "echo b")],
+        )
+        # 执行新命令
+        assert result == "ran:echo b"
+        # 恰好一条 ReminderEvent
+        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
+        assert len(reminders) == 1, captured
+        ev = reminders[0]
+        assert ev.display_content == "命令修改为："
+        assert ev.content == "用户将命令修改为："
+        assert "```bash\necho b\n```" in ev.additional_content
+        # 注入 messages：content 整体包 <reminder>，附加内容代码块照常
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1, messages
+        assert ev.to_user_msg() in messages
+        assert "<reminder>用户将命令修改为：</reminder>" in user_msgs[0]["content"]
+        assert "```bash\necho b\n```" in user_msgs[0]["content"]
+
+    def test_edit_unchanged_directly_executes_no_reminder(self):
+        """编辑后命令无变化：不分发 ReminderEvent，直接继续执行。"""
+        from mycode.session import ReminderEvent
+
+        result, captured, messages = self._run_edit(
+            "echo a", "echo a",
+            [(confirm_mod.ConfirmAction.EDIT, "echo a")],
+        )
+        assert result == "ran:echo a"
+        assert not [e for e in captured if isinstance(e, ReminderEvent)]
+        assert not [m for m in messages if m.get("role") == "user"]
+
+    def test_edit_nonexistent_bus_messages_ok(self):
+        """bus / messages 未提供（默认 None）时不报错。"""
+        MODE_STATE.set(Mode.ASK)
+        with patch.object(cli, "confirm_tool",
+                          return_value=(confirm_mod.ConfirmAction.EDIT, "echo new")):
+            result = cli._run_tool_with_permission(
+                "bash",
+                {"command": "echo old"},
+                lambda **kwargs: f"ran:{kwargs.get('command')}",
+            )
+        assert result == "ran:echo new"
+        MODE_STATE.set(Mode.AUTO)
+
+    def test_edit_to_dangerous_still_dispatches_reminder(self, monkeypatch):
+        """编辑成危险命令：先分发提醒事件，再以危险拒绝（危险判断在提醒之后）。"""
+        from mycode.session import ReminderEvent
+        monkeypatch.setenv("BASH_DANGEROUS", "sudo")
+        MODE_STATE.set(Mode.ASK)
+        captured: list = []
+        messages: list = []
+        bus = cli.AgentEventBus()
+        bus.register(lambda m: captured.append(m))
+        with patch.object(cli, "confirm_tool",
+                          return_value=(confirm_mod.ConfirmAction.EDIT, "sudo make")):
+            result = cli._run_tool_with_permission(
+                "bash",
+                {"command": "echo hi"},
+                lambda **kwargs: f"ran:{kwargs.get('command')}",
+                model="test-model",
+                bus=bus,
+                messages=messages,
+            )
+        MODE_STATE.set(Mode.AUTO)
+        # 拒绝执行危险命令
+        assert "拒绝执行危险命令" in result
+        # 但仍先分发 ReminderEvent 并注入模型
+        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
+        assert len(reminders) == 1, captured
+        assert reminders[0].display_content == "命令修改为："
+        assert "```bash\nsudo make\n```" in reminders[0].additional_content
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1, messages
+
+
 class TestAgentLoopAbortBreaksLoop:
     def test_abort_breaks_loop(self):
         """无理由拒绝/取消应跳出 agent 循环，不再继续第二轮交互。"""

@@ -524,6 +524,23 @@ class TestRenderStyle:
         out = self._capture(lambda: _render_common(ev))
         assert "💡 提醒" in out
 
+    def test_default_reminder_body_plain_output(self):
+        """命令已更新提醒：提醒文本整体用提醒格式，附加内容代码块照常输出。"""
+        from mycode.session import ReminderEvent
+        ev = ReminderEvent(
+            model="m",
+            content="用户将命令修改为：",
+            display_content="命令修改为：",
+            additional_content="```bash\nls -la\n```",
+        )
+        out = self._capture(lambda: _render_common(ev))
+        # 提醒文本用提醒格式（黄色 + 💡），不带 <reminder> 标签
+        assert "\x1B[1;33m💡 命令修改为：\x1B[0m" in out
+        # 附加内容代码块照常输出，不套用提醒样式
+        assert "```bash\nls -la\n```" in out
+        assert "用户将命令修改为：" not in out
+        assert "<reminder>" not in out
+
     def test_default_exception_renders_emoji(self):
         """default 模式异常标题带 ❌。"""
         from mycode.session import ExceptionEvent

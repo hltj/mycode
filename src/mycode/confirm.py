@@ -261,6 +261,7 @@ def _run_confirm_menu(
         layout=Layout(_view()),
         key_bindings=kb,
         full_screen=False,
+        erase_when_done=True,
         input=input,
         output=output,
     )
