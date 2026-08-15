@@ -149,7 +149,7 @@ action, extra = confirm_tool(func_name, category, command)
 | `EDIT` | 编辑命令后**重新分类**，若变为危险则拒绝，否则执行 |
 | `APPROVE` | 执行 handler |
 
-`_AbortLoop` 是内部信号异常：取消 / 无理由拒绝时被 `agent_loop` 捕获，写入对应 tool 结果文本并分发 `InterruptEvent(abort=True)`（replay 时不渲染 `^C`）。
+`_AbortLoop` 是内部信号异常：取消 / 无理由拒绝时被 `agent_loop` 捕获，写入对应 tool 结果文本并分发 `InterruptEvent(interrupt={"abort": True})`（replay 时不渲染 `^C`）。
 
 ---
 

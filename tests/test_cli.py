@@ -692,9 +692,11 @@ class TestReplayTodoSync:
             ),
             ToolResultEvent(
                 model="m",
-                message={"role": "tool", "tool_call_id": "tc1",
-                          "content": "TODO 列表已更新（1 项）"},
-                tool_name="todo_write",
+                tool_result={
+                    "tool_call_id": "tc1",
+                    "content": "TODO 列表已更新（1 项）",
+                    "tool_name": "todo_write",
+                },
             ),
             ToolCallEvent(
                 model="m",
@@ -711,9 +713,11 @@ class TestReplayTodoSync:
             ),
             ToolResultEvent(
                 model="m",
-                message={"role": "tool", "tool_call_id": "tc2",
-                          "content": "TODO 列表已更新（1 项）"},
-                tool_name="todo_write",
+                tool_result={
+                    "tool_call_id": "tc2",
+                    "content": "TODO 列表已更新（1 项）",
+                    "tool_name": "todo_write",
+                },
             ),
         ]
         return sh
@@ -776,8 +780,11 @@ class TestReplayTodoSync:
             ),
             ToolResultEvent(
                 model="m",
-                message={"role": "tool", "tool_call_id": "b1", "content": "x"},
-                tool_name="bash",
+                tool_result={
+                    "tool_call_id": "b1",
+                    "content": "x",
+                    "tool_name": "bash",
+                },
             ),
         ]
         bus = AgentEventBus()
@@ -869,7 +876,7 @@ class TestStaleTodoReminder:
             get_stale_rounds,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         # todo_write 后 stale 已清零
         assert get_stale_rounds() == 0
         bump_stale_rounds()
@@ -883,7 +890,7 @@ class TestStaleTodoReminder:
             bump_stale_rounds, should_remind_stale_todo, todo_write,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
@@ -894,12 +901,12 @@ class TestStaleTodoReminder:
             bump_stale_rounds, should_remind_stale_todo, todo_write,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
         # 再次调用 todo_write
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         assert not should_remind_stale_todo()
         for _ in range(2):
             bump_stale_rounds()
@@ -912,7 +919,7 @@ class TestStaleTodoReminder:
             reset_stale_rounds,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
@@ -930,7 +937,7 @@ class TestStaleTodoReminder:
         from mycode.tools.todo_write import format_stale_reminder, todo_write
         self._reset()
         todo_write([
-            {"title": "任务 B", "status": "in_process"},
+            {"title": "任务 B", "status": "in_progress"},
             {"title": "任务 C", "status": "pending"},
         ])
         text = format_stale_reminder()
@@ -947,7 +954,7 @@ class TestStaleTodoReminder:
         assert "[ ]" not in text
         # 不重复状态名（工具描述里已有）
         assert "completed" not in text
-        assert "in_process" not in text
+        assert "in_progress" not in text
         assert "pending" not in text
 
     def test_threshold_read_from_env(self, monkeypatch):
@@ -961,7 +968,7 @@ class TestStaleTodoReminder:
             bump_stale_rounds, should_remind_stale_todo, todo_write,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         # 阈值 5：4 次不触发
         for _ in range(4):
             bump_stale_rounds()
@@ -971,7 +978,7 @@ class TestStaleTodoReminder:
         assert should_remind_stale_todo()
 
     def test_pending_only_still_triggers_reminder(self):
-        """只有 pending 也能触发提醒（in_process 不是必要条件）。"""
+        """只有 pending 也能触发提醒（in_progress 不是必要条件）。"""
         from mycode.tools.todo_write import (
             bump_stale_rounds, should_remind_stale_todo, todo_write,
         )
@@ -991,7 +998,7 @@ class TestStaleTodoReminder:
         )
         self._reset()
         todo_write([
-            {"title": "A", "status": "in_process"},
+            {"title": "A", "status": "in_progress"},
         ])
         todo_write([])  # 清空
         for _ in range(10):
@@ -1008,7 +1015,7 @@ class TestStaleTodoReminder:
             todo_write,
         )
         self._reset()
-        todo_write([{"title": "A", "status": "in_process"}])
+        todo_write([{"title": "A", "status": "in_progress"}])
         for _ in range(5):
             bump_stale_rounds()
         assert should_remind_stale_todo()
@@ -1042,12 +1049,12 @@ class TestStaleTodoReminder:
             cli.agent_loop(messages, bus, model="test-model")
 
         # 1) 先派发 NoticeEvent（渲染 + 持久化），content 为纯文本提醒，
-        #    tag_name 默认 reminder
+        #    tag_name="reminder"（陈旧提醒显式传入）
         notices = [e for e in captured if isinstance(e, NoticeEvent)]
         assert len(notices) == 1, captured
-        assert notices[0].content == reminder_text
-        assert notices[0].tag_name == "reminder"
-        assert "<reminder>" not in notices[0].content
+        assert notices[0].notice["content"] == reminder_text
+        assert notices[0].notice["tag_name"] == "reminder"
+        assert "<reminder>" not in notices[0].notice["content"]
         # 派发时刻提醒尚未 append 进 messages
         assert user_count_at_dispatch.get("count") == 0
 
@@ -1082,13 +1089,15 @@ class TestNoticeEvent:
     def test_replay_renders_notice(self):
         """replay 时 NoticeEvent 显示为黄色高亮，不是 ``myc > `` 前缀。
 
-        注意：NoticeEvent.content 不含标签文本（标签只在 ``to_user_msg()``
-        喂给模型时加），渲染纯文本更友好。
+        注意：NoticeEvent.notice["content"] 不含标签文本（标签只在
+        ``to_user_msg()`` 喂给模型时加），渲染纯文本更友好。
         """
         from mycode.session import NoticeEvent
         from mycode.cli import render_replay
 
-        event = NoticeEvent(model="m", tag_name="reminder", content="hello")
+        event = NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "hello"}
+        )
         out = self._capture(lambda: render_replay(event))
 
         # 黄色 ANSI + 纯文本 content（不含标签）
@@ -1103,7 +1112,9 @@ class TestNoticeEvent:
         from mycode.session import NoticeEvent
         from mycode.cli import render_terminal
 
-        event = NoticeEvent(model="m", tag_name="reminder", content="hello")
+        event = NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "hello"}
+        )
         out = self._capture(lambda: render_terminal(event))
 
         assert "\x1B[1;33mhello\x1B[0m" in out
@@ -1115,7 +1126,9 @@ class TestNoticeEvent:
         """to_user_msg() 默认用 ``<reminder>`` 标签包裹 content。"""
         from mycode.session import NoticeEvent
 
-        event = NoticeEvent(model="m", tag_name="reminder", content="提醒正文")
+        event = NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "提醒正文"}
+        )
         msg = event.to_user_msg()
         assert msg["role"] == "user"
         assert msg["content"] == "<reminder>提醒正文</reminder>"
@@ -1124,7 +1137,9 @@ class TestNoticeEvent:
         """tag_name="notice" 时 to_user_msg() 用 ``<notice>`` 标签包裹。"""
         from mycode.session import NoticeEvent
 
-        event = NoticeEvent(model="m", content="用户将命令修改为：", tag_name="notice")
+        event = NoticeEvent(
+            model="m", notice={"tag_name": "notice", "content": "用户将命令修改为："}
+        )
         msg = event.to_user_msg()
         assert msg["role"] == "user"
         assert msg["content"] == "<notice>用户将命令修改为：</notice>"
@@ -1135,10 +1150,12 @@ class TestNoticeEvent:
 
         event = NoticeEvent(
             model="m",
-            content="用户将命令修改为：",
-            display_content="命令修改为：",
-            additional_content="```bash\nls -la\n```",
-            tag_name="notice",
+            notice={
+                "tag_name": "notice",
+                "content": "用户将命令修改为：",
+                "display_content": "命令修改为：",
+                "additional_content": "```bash\nls -la\n```",
+            },
         )
         msg = event.to_user_msg()
         assert msg["role"] == "user"
@@ -1161,11 +1178,13 @@ class TestNoticeEvent:
         assert "hi" in out
 
     def test_notice_event_roundtrips_through_jsonl(self, tmp_path):
-        """NoticeEvent 写入 JSONL 后能正确读回。"""
+        """NoticeEvent 写入 JSONL 后能正确读回（扩展字段在 notice key 下）。"""
         import json
         from mycode.session import NoticeEvent, _dict_to_agent_message
 
-        original = NoticeEvent(model="gpt-4", content="x", tag_name="notice")
+        original = NoticeEvent(
+            model="gpt-4", notice={"tag_name": "notice", "content": "x"}
+        )
         original.id = "r1"
         original.time = "2026-01-01T00:00:00Z"
 
@@ -1177,8 +1196,10 @@ class TestNoticeEvent:
                 "id": original.id,
                 "parent_id": None,
                 "model": original.model,
-                "content": original.content,
-                "tag_name": original.tag_name,
+                "notice": {
+                    "content": original.notice["content"],
+                    "tag_name": original.notice["tag_name"],
+                },
             }, ensure_ascii=False) + "\n")
 
         with open(path, "r", encoding="utf-8") as f:
@@ -1187,33 +1208,9 @@ class TestNoticeEvent:
 
         assert isinstance(loaded, NoticeEvent)
         assert loaded.model == original.model
-        assert loaded.content == original.content
+        assert loaded.notice["content"] == original.notice["content"]
         assert loaded.id == original.id
-        assert loaded.tag_name == "notice"
-
-    def test_notice_event_roundtrips_old_reminder_type(self, tmp_path):
-        """旧 type "reminder" 的 JSONL 能读回为 NoticeEvent（tag_name 默认 reminder）。"""
-        import json
-        from mycode.session import NoticeEvent, _dict_to_agent_message
-
-        path = tmp_path / "reminder.jsonl"
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "time": "2026-01-01T00:00:00Z",
-                "type": "reminder",
-                "id": "r1",
-                "parent_id": None,
-                "model": "gpt-4",
-                "content": "有未完成的 todo",
-            }, ensure_ascii=False) + "\n")
-
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.loads(f.readline())
-        loaded = _dict_to_agent_message(data)
-
-        assert isinstance(loaded, NoticeEvent)
-        assert loaded.tag_name == "reminder"
-        assert loaded.content == "有未完成的 todo"
+        assert loaded.notice["tag_name"] == "notice"
 
 
 
@@ -1235,7 +1232,9 @@ class TestNoticeInGetMessages:
         """
         from mycode.session import NoticeEvent
         sh = self._make_history(tmp_path)
-        sh.append(NoticeEvent(model="m", tag_name="reminder", content="hi"))
+        sh.append(NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "hi"}
+        ))
 
         msgs = sh.get_messages()
         assert len(msgs) == 1
@@ -1248,10 +1247,12 @@ class TestNoticeInGetMessages:
         sh = self._make_history(tmp_path)
         ev = NoticeEvent(
             model="m",
-            content="用户将命令修改为：",
-            display_content="命令修改为：",
-            additional_content="```bash\nls -la\n```",
-            tag_name="notice",
+            notice={
+                "tag_name": "notice",
+                "content": "用户将命令修改为：",
+                "display_content": "命令修改为：",
+                "additional_content": "```bash\nls -la\n```",
+            },
         )
         sh.append(ev)
         # 写入后再从文件加载，模拟 -r 恢复
@@ -1278,7 +1279,9 @@ class TestNoticeInGetMessages:
         sh.append(UserMessage(model="m", message=ChatCompletionUserMessageParam(
             role="user", content="ask"
         )))
-        sh.append(NoticeEvent(model="m", tag_name="reminder", content="r"))
+        sh.append(NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "r"}
+        ))
         sh.append(AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
             role="assistant", content="answer"
         )))
@@ -1298,7 +1301,9 @@ class TestNoticeInGetMessages:
             NoticeEvent, UserMessage, AssistantMessage, ToolResultEvent,
         )
         sh = self._make_history(tmp_path)
-        sh.append(NoticeEvent(model="m", tag_name="reminder", content="<reminder>r</reminder>"))
+        sh.append(NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "<reminder>r</reminder>"}
+        ))
 
         # 跟 cli.py 退出时的判定一致
         entry_count = len([e for e in sh.entries if isinstance(

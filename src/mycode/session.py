@@ -40,6 +40,31 @@ class ExceptionData(TypedDict):
     traceback: str
 
 
+class InterruptData(TypedDict):
+    """中断数据：abort 标记取消/无理由拒绝（区别于真实 Ctrl-C）。"""
+    abort: bool
+
+
+class NoticeData(TypedDict, total=False):
+    """提醒数据：tag_name 为标签名，content 为发给 LLM 的提醒文本，
+    display_content 为展示渲染用的提醒（非空时优先于 content），
+    additional_content 为附加内容（如代码块）。
+    """
+    content: str
+    display_content: str
+    additional_content: str
+    tag_name: str
+
+
+class ToolResultData(TypedDict):
+    """工具结果数据：tool_call_id 关联对应的工具调用，
+    content 为结果文本，tool_name 为工具名。
+    """
+    tool_call_id: str
+    content: str
+    tool_name: str
+
+
 def sanitize_path(path: str) -> str:
     r"""将路径中的元字符替换为减号：/ : ? * " < > |（路径分隔符、Windows盘符分隔符及非法文件名字符）"""
     if not path:
@@ -133,27 +158,30 @@ class ToolCallEvent(MessageProtocol):
 
 @dataclass
 class ToolResultEvent(MessageProtocol):
+    """工具执行结果。"""
     model: str
-    message: ChatCompletionToolMessageParam
+    tool_result: ToolResultData
     mode: str = Mode.AUTO.value
-    tool_name: str = ""
     id: str = ""
     parent_id: Optional[str] = None
-    entry_type: str = "message"
+    entry_type: str = "tool_result"
     time: str = ""
+
+    def to_tool_msg(self) -> ChatCompletionToolMessageParam:
+        """转为 ``ChatCompletionToolMessageParam``（喂给模型）。"""
+        return ChatCompletionToolMessageParam(
+            role='tool',
+            tool_call_id=self.tool_result["tool_call_id"],
+            content=self.tool_result["content"],
+        )
 
 
 @dataclass
 class InterruptEvent(MessageProtocol):
-    """中断事件。
-
-    ``abort`` 标记区分两类用户操作引起的中断：
-      - ``abort=False``（默认）：真实 Ctrl-C，replay 时模拟渲染 ``^C``；
-      - ``abort=True``：确认界面取消 / 无理由拒绝，replay 时不渲染 ``^C``。
-    """
+    """中断事件。"""
     model: str
+    interrupt: InterruptData
     mode: str = Mode.AUTO.value
-    abort: bool = False
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "interrupt"
@@ -185,27 +213,9 @@ class ModeChangeEvent(MessageProtocol):
 
 @dataclass
 class NoticeEvent(MessageProtocol):
-    """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。
-
-    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，NoticeEvent
-    表示系统级注入；二者渲染方式不同（见 renderer.py）。
-
-    ``tag_name`` 指定喂给模型时包裹 ``content`` 的标签名
-    （如 ``reminder`` / ``notice``），``to_user_msg()`` 据此生成
-    ``<tag_name>...</tag_name>``，需显式传入。
-
-    文案分开三部分：
-      - ``content``：发给 LLM 的提醒，``to_user_msg()`` 用 ``<tag_name>``
-        标签整体包裹后喂给模型；
-      - ``display_content``：展示渲染用的提醒，非空时优先于 ``content``；
-      - ``additional_content``：附加内容，如代码块，渲染与 LLM
-        均照常输出。
-    """
+    """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。"""
     model: str
-    tag_name: str
-    content: str = ""
-    display_content: str = ""
-    additional_content: str = ""
+    notice: NoticeData
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -215,18 +225,20 @@ class NoticeEvent(MessageProtocol):
     def to_user_msg(self) -> ChatCompletionUserMessageParam:
         """转为 ``ChatCompletionUserMessageParam``（喂给模型）。
 
-        ``content`` 整体用 ``<tag_name>`` 标签包裹后喂给模型；
-        ``additional_content``，如代码块，照常输出在标签之后。
+        ``notice.content`` 整体用 ``<tag_name>`` 标签包裹后喂给模型；
+        ``notice.additional_content``，如代码块，照常输出在标签之后。
         """
-        tag = self.tag_name
-        if self.additional_content:
-            content = (
-                f"<{tag}>{self.content}</{tag}>\n"
-                f"{self.additional_content.rstrip(chr(0x0A))}"
+        tag = self.notice["tag_name"]
+        content = self.notice.get("content", "")
+        additional = self.notice.get("additional_content", "")
+        if additional:
+            content_full = (
+                f"<{tag}>{content}</{tag}>\n"
+                f"{additional.rstrip(chr(0x0A))}"
             )
         else:
-            content = f"<{tag}>{self.content}</{tag}>"
-        return ChatCompletionUserMessageParam(role='user', content=content)
+            content_full = f"<{tag}>{content}</{tag}>"
+        return ChatCompletionUserMessageParam(role='user', content=content_full)
 
 
 AgentMessage = (
@@ -247,7 +259,14 @@ def assert_never(arg: NoReturn) -> NoReturn:
 
 
 def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
-    """将 AgentMessage 转为 JSONL 字典"""
+    """将 AgentMessage 转为 JSONL 字典。
+
+    序列化规范：只有 ``MessageProtocol`` 定义的公共字段
+    （time / type / id / parent_id / model / mode）平铺在顶层；
+    各事件自己的扩展字段聚合在以 ``entry_type`` 为名的 key 下
+    （如 ``notice`` / ``interrupt`` / ``exception``），
+    与 ``type`` 值保持一致。
+    """
     d: Dict[str, Any] = {
         "time": msg.time,
         "type": msg.entry_type,
@@ -265,36 +284,28 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["message"] = message
         case ToolCallEvent(tool_call=tool_call):
             d["tool_call"] = tool_call
-        case ToolResultEvent(message=message, tool_name=tool_name):
-            d["message"] = message
-            if tool_name:
-                d["tool_name"] = tool_name
-        case InterruptEvent(abort=abort):
-            if abort:
-                d["abort"] = True
+        case ToolResultEvent(tool_result=tool_result):
+            d["tool_result"] = tool_result
+        case InterruptEvent(interrupt=interrupt):
+            d["interrupt"] = interrupt
         case ExceptionEvent(exception=exc_data):
             d["exception"] = exc_data
         case ModeChangeEvent():
             pass  # mode 已由 base dict 记录
-        case NoticeEvent(content=content, display_content=display_content,
-                         additional_content=additional_content,
-                         tag_name=tag_name):
-            d["content"] = content
-            d["tag_name"] = tag_name
-            # 旧会话文件无这些字段，仅在新字段非空时写入
-            if display_content:
-                d["display_content"] = display_content
-            if additional_content:
-                d["additional_content"] = additional_content
+        case NoticeEvent(notice=notice):
+            d["notice"] = notice
         case _ as unreachable:
             assert_never(unreachable)
     return d
 
 
 def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
-    """将 JSONL 字典转为 AgentMessage"""
+    """将 JSONL 字典转为 AgentMessage。
+
+    反序列化时从事务扩展字段读取，结构见 ``_msg_to_dict``。
+    """
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder", "notice", "mode_change"):
+    if entry_type not in ("message", "tool_call", "tool_result", "interrupt", "session", "exception", "notice", "mode_change"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
@@ -312,12 +323,6 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
             return UserMessage(message=cast(ChatCompletionUserMessageParam, msg), **base_kwargs)
         elif role == "assistant":
             return AssistantMessage(message=cast(ChatCompletionAssistantMessageParam, msg), **base_kwargs)
-        elif role == "tool":
-            return ToolResultEvent(
-                message=cast(ChatCompletionToolMessageParam, msg),
-                tool_name=data.get("tool_name", ""),
-                **base_kwargs,
-            )
     elif entry_type == "tool_call":
         tc_data = data.get("tool_call")
         if not isinstance(tc_data, dict) or tc_data.get("type") != "function":
@@ -326,21 +331,30 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
             tool_call=cast(ChatCompletionMessageFunctionToolCallParam, cast(Any, tc_data)),
             **base_kwargs,
         )
+    elif entry_type == "tool_result":
+        tr = data.get("tool_result")
+        if not isinstance(tr, dict):
+            raise ValueError(f"无效的 tool_result 数据: {data}")
+        return ToolResultEvent(
+            tool_result=cast(ToolResultData, tr),
+            **base_kwargs,
+        )
     elif entry_type == "interrupt":
-        return InterruptEvent(abort=bool(data.get("abort", False)), **base_kwargs)
+        return InterruptEvent(
+            interrupt=cast(InterruptData, data.get("interrupt", {"abort": False})),
+            **base_kwargs,
+        )
     elif entry_type == "exception":
         exc_data = data.get("exception", {})
         return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
     elif entry_type == "mode_change":
         return ModeChangeEvent(**base_kwargs)
-    elif entry_type in ("reminder", "notice"):
-        # 兼容旧 type: reminder；新 type: notice（tag_name 从文件读取，
-        # 旧文件无 tag_name 字段 → 默认 reminder，与旧行为一致）
+    elif entry_type == "notice":
+        nt = data.get("notice")
+        if not isinstance(nt, dict) or not nt.get("tag_name"):
+            raise ValueError(f"无效的 notice 数据：缺少 tag_name ({data})")
         return NoticeEvent(
-            content=data.get("content", ""),
-            display_content=data.get("display_content", ""),
-            additional_content=data.get("additional_content", ""),
-            tag_name=data.get("tag_name", "reminder"),
+            notice=cast(NoticeData, nt),
             **base_kwargs,
         )
     # unreachable
@@ -449,16 +463,18 @@ class SessionHistory:
         return instance
 
     def get_messages(self) -> List[ChatCompletionMessageParam]:
-        """获取所有消息（不含 session/interrupt/tool_call/exception 记录）。
+        """获取发送给模型的消息列表。
 
-        ``NoticeEvent``（系统级提醒）会通过 ``to_user_msg()`` 转成
-        ``ChatCompletionUserMessageParam`` 加入返回列表，确保会话恢复后
-        提醒仍能进入模型上下文。
+        ``NoticeEvent`` 经 ``to_user_msg()``、``ToolResultEvent`` 经
+        ``to_tool_msg()`` 转成对应 ``ChatCompletion...Param`` 加入列表，
+        确保会话恢复后提醒与工具结果仍能进入模型上下文。
         """
         result: List[ChatCompletionMessageParam] = []
         for e in self.entries:
-            if isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent)):
+            if isinstance(e, (UserMessage, AssistantMessage)):
                 result.append(e.message)
+            elif isinstance(e, ToolResultEvent):
+                result.append(e.to_tool_msg())
             elif isinstance(e, NoticeEvent):
                 result.append(e.to_user_msg())
         return result

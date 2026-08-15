@@ -16,7 +16,7 @@ _todo_state: list[dict] = []
 _STALE_THRESHOLD: int = int(os.getenv("MYCODE_STALE_THRESHOLD", "5"))
 _stale_rounds: int = 0
 
-VALID_STATUS = ("pending", "in_process", "completed")
+VALID_STATUS = ("pending", "in_progress", "completed")
 
 
 def reset_todos() -> None:
@@ -51,8 +51,8 @@ def get_stale_rounds() -> int:
 
 
 def get_unfinished_todos() -> list[dict]:
-    """返回未完成的待办（status 为 pending 或 in_process）。"""
-    return [it for it in _todo_state if it.get("status") in ("pending", "in_process")]
+    """返回未完成的待办（status 为 pending 或 in_progress）。"""
+    return [it for it in _todo_state if it.get("status") in ("pending", "in_progress")]
 
 
 def should_remind_stale_todo() -> bool:
@@ -98,8 +98,8 @@ def rebuild_from_history(entries: Iterable) -> None:
 @ToolsRegistry.tool(
     description=(
         "整体替换内存中的待办列表。items 是 dict 数组，每个 dict 含"
-        " title (str) 与 status (str，pending/in_process/completed 之一；"
-        "同时只能有一项 in_process)。状态仅保存在内存，不持久化到磁盘，"
+        " title (str) 与 status (str，pending/in_progress/completed 之一；"
+        "同时只能有一项 in_progress)。状态仅保存在内存，不持久化到磁盘，"
         "会话恢复时由历史工具调用重建。"
     )
 )
@@ -121,10 +121,10 @@ def todo_write(
             return f"Error: 第 {i} 项 status 必须是 {VALID_STATUS} 之一，实际为 {status!r}"
         new_state.append({"title": title, "status": status})
 
-    # 校验：status 为 in_process 应有且仅有一项
-    in_process_count = sum(1 for it in new_state if it["status"] == "in_process")
-    if in_process_count > 1:
-        return f"Error: 同时只能有一项 in_process，实际 {in_process_count} 项"
+    # 校验：status 为 in_progress 应有且仅有一项
+    in_progress_count = sum(1 for it in new_state if it["status"] == "in_progress")
+    if in_progress_count > 1:
+        return f"Error: 同时只能有一项 in_progress，实际 {in_progress_count} 项"
 
     _todo_state.clear()
     _todo_state.extend(new_state)

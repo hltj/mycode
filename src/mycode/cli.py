@@ -199,9 +199,9 @@ def _run_tool_with_permission(
     危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
     编辑 / 取消（取消与无理由拒绝通过 ``_AbortLoop`` 抛出以跳出 agent 循环）。
 
-    编辑（EDIT）命令时：与陈旧提醒一样先分发 ``NoticeEvent``（渲染 +
-    持久化）再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能
-    看到命令被用户修改；命令无变化时直接继续执行。
+    编辑命令时：与陈旧提醒一样先分发 ``NoticeEvent``（渲染 + 持久化），
+    再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能看到命令被
+    用户修改；命令无变化时直接继续执行。
     """
     category = classify_tool(func_name, args)
 
@@ -238,10 +238,12 @@ def _run_tool_with_permission(
                 new_cmd = cast(str, extra)
                 event = NoticeEvent(
                     model=model,
-                    content="用户将命令修改为：",
-                    display_content="命令修改为：",
-                    additional_content=f"```bash\n{new_cmd.rstrip(chr(0x0A))}\n```",
-                    tag_name="notice",
+                    notice={
+                        "tag_name": "notice",
+                        "content": "用户将命令修改为：",
+                        "display_content": "命令修改为：",
+                        "additional_content": f"```bash\n{new_cmd.rstrip(chr(0x0A))}\n```",
+                    },
                 )
                 if bus is not None:
                     bus.dispatch(event)
@@ -281,7 +283,10 @@ def agent_loop(
             # （用 NoticeEvent 而非 UserMessage，避免按用户消息格式再输出一遍）
             # 陈旧提醒使用 tag_name="reminder"，经 to_user_msg() 生成
             # <reminder>...</reminder> 标签。
-            event = NoticeEvent(model=model, tag_name="reminder", content=reminder_text)
+            event = NoticeEvent(
+                model=model,
+                notice={"tag_name": "reminder", "content": reminder_text},
+            )
             bus.dispatch(event)
             # 再发给模型：通过 to_user_msg() 转成用户消息并带 <reminder> 标签
             messages.append(event.to_user_msg())
@@ -371,7 +376,7 @@ def agent_loop(
                 cause = e
                 interrupted_at = idx
                 tool_result = e.tool_result
-                bus.dispatch(InterruptEvent(model=model, abort=True))
+                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": True}))
                 break
             except KeyboardInterrupt as e:
                 # Ctrl-C 中断工具执行：先 dispatch InterruptEvent 让 ^C 后
@@ -380,7 +385,7 @@ def agent_loop(
                 cause = e
                 interrupted_at = idx
                 tool_result = "Error: 工具执行被用户中断"
-                bus.dispatch(InterruptEvent(model=model))
+                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
                 break
             except BaseException as e:
                 # 工具执行抛异常：补一条 tool 错误消息、dispatch ExceptionEvent
@@ -408,7 +413,14 @@ def agent_loop(
                     role='tool', tool_call_id=tool_call["id"], content=tool_result
                 )
                 messages.append(tool_msg)
-                bus.dispatch(ToolResultEvent(model=model, message=tool_msg, tool_name=func_name))
+                bus.dispatch(ToolResultEvent(
+                    model=model,
+                    tool_result={
+                        "tool_call_id": tool_call["id"],
+                        "content": tool_result,
+                        "tool_name": func_name,
+                    },
+                ))
 
         # 如果因为异常/Ctrl-C 提前跳出循环，assistant 消息里仍包含所有
         # pending 中的 tool_calls，但只到 interrupted_at（含）的项补上了
@@ -432,7 +444,14 @@ def agent_loop(
                     role='tool', tool_call_id=remaining["id"], content=skip_message
                 )
                 messages.append(tool_msg)
-                bus.dispatch(ToolResultEvent(model=model, message=tool_msg, tool_name=func_name))
+                bus.dispatch(ToolResultEvent(
+                    model=model,
+                    tool_result={
+                        "tool_call_id": remaining["id"],
+                        "content": skip_message,
+                        "tool_name": func_name,
+                    },
+                ))
             # 所有提示事件已 dispatch、补齐已完成。让 agent_loop 自然返回，
             # 由外层 main() 继续接受下一轮用户输入。
             return

@@ -630,7 +630,7 @@ def test_todo_write_basic():
     reset_todos()
     out = todo_write([
         {"title": "第一步", "status": "completed"},
-        {"title": "第二步", "status": "in_process"},
+        {"title": "第二步", "status": "in_progress"},
         {"title": "第三步", "status": "pending"},
     ])
     # todo_write 返回成功概要，不含渲染符号
@@ -640,7 +640,7 @@ def test_todo_write_basic():
     state = get_todos()
     assert [it["title"] for it in state] == ["第一步", "第二步", "第三步"]
     assert len(state) == 3
-    assert state[1]["status"] == "in_process"
+    assert state[1]["status"] == "in_progress"
 
 
 def test_todo_write_replaces_state():
@@ -661,15 +661,15 @@ def test_todo_write_invalid_status():
     assert "Error" in out
 
 
-def test_todo_write_multiple_in_process():
+def test_todo_write_multiple_in_progress():
     from mycode.tools.todo_write import todo_write, reset_todos
     reset_todos()
     out = todo_write([
-        {"title": "a", "status": "in_process"},
-        {"title": "b", "status": "in_process"},
+        {"title": "a", "status": "in_progress"},
+        {"title": "b", "status": "in_progress"},
     ])
     assert "Error" in out
-    assert "in_process" in out
+    assert "in_progress" in out
 
 
 def test_todo_write_empty():
@@ -706,7 +706,7 @@ def test_rebuild_from_history_replays_in_order():
     todo_write([{"title": "临时", "status": "pending"}])  # 重建前先污染
     entries = [
         _make_todo_call("c1", [{"title": "a", "status": "completed"},
-                                {"title": "b", "status": "in_process"}]),
+                                {"title": "b", "status": "in_progress"}]),
         # 中间穿插一个其他工具的调用，不应影响
         type("Other", (), {"tool_call": {"id": "x", "type": "function",
                                           "function": {"name": "bash", "arguments": "{}"}}})(),

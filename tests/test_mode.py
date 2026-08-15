@@ -404,7 +404,7 @@ class TestAgentLoopModePolicy:
 
 
 class TestAgentLoopEditCommand:
-    """编辑（EDIT）bash 命令：有变化分发提醒事件并注入模型，无变化直接执行。"""
+    """编辑 bash 命令：有变化分发提醒事件并注入模型，无变化直接执行。"""
 
     def _run_edit(self, original, edited, confirm_side_effect):
         MODE_STATE.set(Mode.ASK)
@@ -440,10 +440,10 @@ class TestAgentLoopEditCommand:
         notices = [e for e in captured if isinstance(e, NoticeEvent)]
         assert len(notices) == 1, captured
         ev = notices[0]
-        assert ev.display_content == "命令修改为："
-        assert ev.content == "用户将命令修改为："
-        assert ev.tag_name == "notice"
-        assert "```bash\necho b\n```" in ev.additional_content
+        assert ev.notice["display_content"] == "命令修改为："
+        assert ev.notice["content"] == "用户将命令修改为："
+        assert ev.notice["tag_name"] == "notice"
+        assert "```bash\necho b\n```" in ev.notice["additional_content"]
         # 注入 messages：content 整体包 <notice>，附加内容代码块照常
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1, messages
@@ -501,9 +501,9 @@ class TestAgentLoopEditCommand:
         # 但仍先分发 NoticeEvent 并注入模型
         notices = [e for e in captured if isinstance(e, NoticeEvent)]
         assert len(notices) == 1, captured
-        assert notices[0].tag_name == "notice"
-        assert notices[0].display_content == "命令修改为："
-        assert "```bash\nsudo make\n```" in notices[0].additional_content
+        assert notices[0].notice["tag_name"] == "notice"
+        assert notices[0].notice["display_content"] == "命令修改为："
+        assert "```bash\nsudo make\n```" in notices[0].notice["additional_content"]
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1, messages
 
@@ -588,13 +588,13 @@ class TestInterruptAbortReplay:
 
     def test_ctrl_c_replay_renders_caret_c(self):
         from mycode.session import InterruptEvent
-        ev = InterruptEvent(model="m", abort=False)
+        ev = InterruptEvent(model="m", interrupt={"abort": False})
         out = self._capture(lambda: cli.render_replay(ev))
         assert "^C" in out
 
     def test_abort_replay_no_caret_c(self):
         from mycode.session import InterruptEvent
-        ev = InterruptEvent(model="m", abort=True)
+        ev = InterruptEvent(model="m", interrupt={"abort": True})
         out = self._capture(lambda: cli.render_replay(ev))
         assert "^C" not in out
 
@@ -602,12 +602,12 @@ class TestInterruptAbortReplay:
         from mycode.session import (
             SessionHistory, InterruptEvent, _msg_to_dict, _dict_to_agent_message,
         )
-        ev = InterruptEvent(model="m", abort=True)
+        ev = InterruptEvent(model="m", interrupt={"abort": True})
         d = _msg_to_dict(ev)
-        assert d.get("abort") is True
+        assert d["interrupt"]["abort"] is True
         loaded = _dict_to_agent_message(d)
         assert isinstance(loaded, InterruptEvent)
-        assert loaded.abort is True
+        assert loaded.interrupt["abort"] is True
 
 class TestReplayModeSync:
     """用户消息自带模式字段，渲染按其 mode（无需依赖全局 MODE_STATE）。"""

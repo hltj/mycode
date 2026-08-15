@@ -10,7 +10,6 @@ from typing import Any, NoReturn, cast
 
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
-    ChatCompletionToolMessageParam,
     ChatCompletionMessageFunctionToolCallParam,
 )
 from prompt_toolkit import PromptSession
@@ -28,6 +27,8 @@ from mycode.session import (
     NoticeEvent,
     AgentMessage,
     ExceptionData,
+    NoticeData,
+    ToolResultData,
 )
 from mycode.mode import Mode, MODE_STATE, MODE_COLOR
 
@@ -71,14 +72,14 @@ _DEFAULT_PROMPT_PREFIXES: dict[Mode, str] = {
 # （避免彩色 emoji 字体忽略 ANSI）。
 _TODO_SYMBOLS: dict[str, str] = {
     "pending": "🔳",      # 白色方块
-    "in_process": "🟧",   # 橙色方块
+    "in_progress": "🟧",   # 橙色方块
     "completed": "✅️",     # 绿色对勾
 }
 
 # 状态符号（classic 风格）：复选框形式
 _TODO_SYMBOLS_CLASSIC: dict[str, str] = {
     "pending": "- [ ]:",
-    "in_process": f"- [{_ORANGE}>{_RESET}]:",
+    "in_progress": f"- [{_ORANGE}>{_RESET}]:",
     "completed": f"- [{_GREEN}x{_RESET}]:",
 }
 
@@ -89,7 +90,7 @@ _TODO_FORMATS: dict[str, str] = {
     # 已完成：标题灰色 + 删除线
     "completed": f"{{sym}} {_GRAY}{_STRIKE}{{title}}{_RESET}",
     # 进行中：标题粗+白（视觉强调）
-    "in_process": f"{{sym}} {_BOLD_WHITE}{{title}}{_RESET}",
+    "in_progress": f"{{sym}} {_BOLD_WHITE}{{title}}{_RESET}",
     # 未开始：全部普通样式
     "pending": "{sym} {title}",
 }
@@ -231,31 +232,26 @@ class _Renderer:
                                   default_flow_style=False, width=64 * 1024)
         print(f"\x1B[1;34m{self.tool_call_title(func_name)}\x1B[0m\n```yaml\n{yaml_text}```")
 
-    def render_tool_result(self, message: ChatCompletionToolMessageParam, tool_name: str) -> None:
+    def render_tool_result(self, tool_result: ToolResultData) -> None:
         # todo_write 特化渲染：先输出当前待办列表再输出结果
-        if tool_name == "todo_write":
+        if tool_result.get("tool_name") == "todo_write":
             print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{self.format_todos()}\n")
-        # 工具结果 content 由我方内部构造，始终为 str，cast 掉联合类型
-        tool_result = cast(str, message.get("content", ""))
-        fence = _code_fence(tool_result)
-        print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
+        tool_result_content = tool_result.get("content", "")
+        fence = _code_fence(tool_result_content)
+        print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result_content}'.rstrip(chr(0x0A))}\n{fence}")
 
-    def render_notice(
-        self,
-        content: str,
-        display_content: str = "",
-        additional_content: str = "",
-    ) -> None:
+    def render_notice(self, notice: NoticeData) -> None:
         """系统级提醒（陈旧待办、命令已更新等）：黄色高亮。
 
         提醒文本（``display_content`` 非空时优先于 ``content``）整体用提醒
         样式渲染（``notice_text``，子类可加 💡 前缀等）；
         ``additional_content``，如代码块，照常原样输出，不带提醒样式。
         """
-        heading = display_content or content
+        heading = notice.get("display_content") or notice.get("content", "")
         lines: list[str] = [f"\x1B[1;33m{self.notice_text(heading)}\x1B[0m"]
-        if additional_content:
-            lines.append(additional_content.rstrip(chr(0x0A)))
+        additional = notice.get("additional_content", "")
+        if additional:
+            lines.append(additional.rstrip(chr(0x0A)))
         print("\n".join(lines) + "\n")
 
     def render_exception(self, exc: ExceptionData) -> None:
@@ -421,9 +417,9 @@ def _format_todos(state: list[dict] | None = None) -> str:
     """将待办列表格式化为带状态符号与样式的可读字符串。
 
     渲染使用的符号与模板由当前渲染处理器（``_get_renderer``）提供：
-      - ``default``：``completed`` 以 ``✅️`` 开头，``in_process`` 以
+      - ``default``：``completed`` 以 ``✅️`` 开头，``in_progress`` 以
         ``🟧`` 开头，``pending`` 以 ``🔳`` 开头（均后跟 1 空格）。
-      - ``classic``：``completed`` → ``- [x]:``（x 绿色），``in_process``
+      - ``classic``：``completed`` → ``- [x]:``（x 绿色），``in_progress``
         → ``- [>]:``（> 橙色），``pending`` → ``- [ ]:``。
 
     :param state: 待办状态列表；``None`` 时取当前内存状态。
@@ -452,13 +448,12 @@ def _render_common(msg: AgentMessage) -> None:
             renderer.render_assistant(message, model)
         case ToolCallEvent(tool_call=tool_call):
             renderer.render_tool_call(tool_call)
-        case ToolResultEvent(message=message, tool_name=tool_name):
-            renderer.render_tool_result(message, tool_name)
+        case ToolResultEvent(tool_result=tool_result):
+            renderer.render_tool_result(tool_result)
         case InterruptEvent():
             renderer.render_interrupt()
-        case NoticeEvent(content=content, display_content=display_content,
-                         additional_content=additional_content):
-            renderer.render_notice(content, display_content, additional_content)
+        case NoticeEvent(notice=notice):
+            renderer.render_notice(notice)
         case ModeChangeEvent(mode=mode):
             renderer.render_mode_change(mode)
         case ExceptionEvent(exception=exc):
@@ -476,11 +471,11 @@ def render_replay(msg: AgentMessage) -> None:
     """历史重放渲染：所有类型均输出。
 
     InterruptEvent 分两种：
-      - 真实 Ctrl-C（``abort=False``）：输出 ^C 及空行；
-      - abort（取消/无理由拒绝，``abort=True``）：不输出 ^C，仅空行。
+      - 真实 Ctrl-C（``interrupt.abort False``）：输出 ^C 及空行；
+      - abort（取消/无理由拒绝，``interrupt.abort True``）：不输出 ^C。
     """
     match msg:
-        case InterruptEvent(abort=False):
+        case InterruptEvent(interrupt={"abort": False}):
             print("^C")
             print()
         case _:

@@ -165,7 +165,7 @@ uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区）
 | `write`       | 覆盖写入文件，自动创建父目录                                         |
 | `edit`        | 按 `old_text`/`new_text` 替换；`replace_all` 控制全部替换            |
 | `patch`       | 应用 unified diff（自动检测 `-p0`/`-p1`，先 dry-run 再正式应用）      |
-| `todo_write`  | 整体替换内存待办事项列表；同时只能有一项 `in_process`                  |
+| `todo_write`  | 整体替换内存待办事项列表；同时只能有一项 `in_progress`                  |
 
 > **路径安全**：所有文件类工具在处理前都会通过 `safe_path()`，拒绝超出
 > CWD 的路径（含跟随软链接后越界）以及命中 `MYCODE_PROTECTED_PATH_PATTERN`

@@ -15,7 +15,7 @@ mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作�
 所有交互事件统一为 `AgentMessage` 联合类型，定义在 `session.py`：
 
 ```python
-AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent | ExceptionEvent
+AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | ToolResultEvent | InterruptEvent | ExceptionEvent | ModeChangeEvent | NoticeEvent
 ```
 
 ### MessageProtocol
@@ -27,7 +27,7 @@ class MessageProtocol(Protocol):
     id: str                  # 记录 ID（短 ID，通常为 UUID 前 8 位）
     parent_id: Optional[str] # 前一条记录的 id，构成链表
     model: str               # 使用的模型名称
-    entry_type: str          # session / message / tool_call / interrupt / exception
+    entry_type: str          # session / message / tool_call / tool_result / interrupt / exception / mode_change / notice
     time: str                # ISO8601 时间戳
 ```
 
@@ -41,9 +41,11 @@ class MessageProtocol(Protocol):
 | `UserMessage` | `message: ChatCompletionUserMessageParam` | `"message"` | 用户输入 |
 | `AssistantMessage` | `message: ChatCompletionAssistantMessageParam` | `"message"` | AI 回复 |
 | `ToolCallEvent` | `tool_call: ChatCompletionMessageFunctionToolCallParam` | `"tool_call"` | 工具调用发起 |
-| `ToolResultEvent` | `message: ChatCompletionToolMessageParam` | `"message"` | 工具执行结果 |
-| `InterruptEvent` | （无额外字段） | `"interrupt"` | Ctrl-C 中断 |
+| `ToolResultEvent` | `tool_result: ToolResultData`（tool_call_id / content / tool_name） | `"tool_result"` | 工具执行结果 |
+| `InterruptEvent` | `abort: bool` | `"interrupt"` | Ctrl-C 中断（abort 标记取消/无理由拒绝） |
 | `ExceptionEvent` | `exception: ExceptionData` | `"exception"` | 异常 |
+| `ModeChangeEvent` | （无额外字段，模式见公共 `mode`） | `"mode_change"` | 模式切换 |
+| `NoticeEvent` | `content` / `display_content` / `additional_content` / `tag_name` | `"notice"` | 系统级提醒注入 |
 
 > **注意**：`entry_type` 在 dataclass 中通过默认值硬编码，不可修改。联合类型顺序固定为 SessionRecord → UserMessage → ... → InterruptEvent → ExceptionEvent，所有 match-case 必须按此顺序处理并在末尾添加 `case _ as unreachable: assert_never(unreachable)` 确保 exhaustiveness。
 
@@ -114,7 +116,7 @@ class SessionHistory:
 
 - `inject_meta()` — 注入元数据（id/parent_id/time）
 - `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
-- `get_messages()` — 过滤出所有 message 类型的消息（排除 session/tool_call/interrupt/exception）
+- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception）
 
 ### 内存结构
 
@@ -136,11 +138,19 @@ entries[4] = ToolResultEvent   # 工具结果
 ```json
 {"time":"...","type":"session","id":"a1b2c3d4","parent_id":null,"model":"gpt-4o","session":{"id":"full-uuid...","cwd":"/path"}}
 {"time":"...","type":"message","id":"e5f6g7h8","parent_id":"a1b2c3d4","model":"gpt-4o","message":{"role":"user","content":"hello"}}
+{"time":"...","type":"interrupt","id":"...","parent_id":"...","model":"gpt-4o","interrupt":{"abort":true}}
+{"time":"...","type":"notice","id":"...","parent_id":"...","model":"gpt-4o","notice":{"content":"...","tag_name":"notice","display_content":"...","additional_content":"..."}}
+{"time":"...","type":"tool_result","id":"...","parent_id":"...","model":"gpt-4o","tool_result":{"tool_call_id":"...","content":"...","tool_name":"bash"}}
 ```
 
-- `type` 字段对应 `entry_type`
-- 不同类型的定制数据放在 `type` 值（`session` / `message` / `tool_call` / `exception`） 对应的 key 下
-- `parent_id` 链构成完整的消息树
+**序列化规范**：
+
+1. 只有 `MessageProtocol` 定义的公共字段（`time` / `type` / `id` /
+   `parent_id` / `model` / `mode`）平铺在 JSON 顶层；
+2. 每个事件**自己的扩展字段**聚合在 JSON 中 `type` 值对应的 key 下
+   （`session` / `message` / `tool_call` / `interrupt` / `exception` /
+   `notice` / `tool_result`），即扩展字段的 key 名与 `type` 值一致；
+3. `parent_id` 链构成完整的消息树。
 
 ### ID 生成策略
 
@@ -163,8 +173,8 @@ class _Renderer:
     # 公共流程（基类实现，复用给所有风格）
     def format_todos(self, state=None) -> str: ...
     def render_tool_call(self, tool_call) -> None: ...   # YAML 参数 + 代码围栏
-    def render_tool_result(self, message, tool_name) -> None: ...
-    def render_notice(self, content) -> None: ...
+    def render_tool_result(self, tool_result) -> None: ...
+    def render_notice(self, notice) -> None: ...
     def render_exception(self, exc) -> None: ...         # traceback 围栏
     def render_interrupt(self) -> None: ...
 
@@ -197,9 +207,9 @@ def _render_common(msg: AgentMessage) -> None:
         case UserMessage(message): renderer.render_user_message(content)
         case AssistantMessage(message, model): ...  # renderer.ai_title + 正文
         case ToolCallEvent(tool_call): renderer.render_tool_call(tool_call)
-        case ToolResultEvent(message, tool_name): renderer.render_tool_result(...)
+        case ToolResultEvent(tool_result): renderer.render_tool_result(tool_result)
         case InterruptEvent(): renderer.render_interrupt()
-        case NoticeEvent(content): renderer.render_notice(content)
+        case NoticeEvent(notice): renderer.render_notice(notice)
         case ExceptionEvent(exception): renderer.render_exception(exception)
         case _ as unreachable: assert_never(unreachable)
 ```
@@ -243,5 +253,5 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 2. **match-case 顺序**：必须与联合类型顺序一致，末尾必须加 `case _ as unreachable: assert_never(unreachable)`
 3. **构造消息**：只传业务字段 + model，id/parent_id/time 由 bus dispatch 自动注入
 4. **直接调用 append**（如测试场景）：必须先手动调用 `inject_meta()`
-5. **entries 包含 SessionRecord 等全部类型**：过滤 LLM 消息时用 `isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent))`
+5. **entries 包含 SessionRecord 等全部类型**：过滤消息时 `UserMessage` / `AssistantMessage` 直接取 `message`，`ToolResultEvent` / `NoticeEvent` 则分别经 `to_tool_msg()` / `to_user_msg()` 转成 OpenAI 消息（见 `get_messages`）
 6. **render_replay 委托原则**：若某事件在 render_replay 中的行为与 `_render_common` 完全相同，则不在 render_replay 中单独处理，统一交由 `_render_common` 处理

@@ -32,8 +32,8 @@ CLI 的终端展示由 `mycode.renderer`（渲染器）与 `mycode.cli`（prompt
 | `format_todos(state)` | 用子类 `symbols` + 共用 `formats` 模板渲染待办列表 |
 | `render_assistant(message, model)` | AI 标题（紫）+ 正文；无正文（纯 tool_calls）仅标题 |
 | `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（代码围栏） |
-| `render_tool_result(message, tool_name)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果 |
-| `render_notice(content, display_content="", additional_content="")` | 黄色高亮提醒（仅标题用提醒格式，附加内容照常输出） |
+| `render_tool_result(tool_result)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果 |
+| `render_notice(notice)` | 黄色高亮提醒（仅标题用提醒格式，附加内容照常输出） |
 | `render_exception(exc)` | 红色异常标题 + traceback 围栏 |
 | `render_interrupt()` | 输出空行 |
 | `render_mode_change(mode)` | 灰色提示「已切换到【{mode}】模式」 |
@@ -59,9 +59,9 @@ def _render_common(msg: AgentMessage) -> None:
         case UserMessage(message, mode): renderer.render_user_message(...)
         case AssistantMessage(message, model): renderer.render_assistant(...)
         case ToolCallEvent(tool_call): renderer.render_tool_call(...)
-        case ToolResultEvent(message, tool_name): renderer.render_tool_result(...)
+        case ToolResultEvent(tool_result): renderer.render_tool_result(tool_result)
         case InterruptEvent(): renderer.render_interrupt()
-        case NoticeEvent(content, display_content, additional_content): renderer.render_notice(content, display_content, additional_content)
+        case NoticeEvent(notice): renderer.render_notice(notice)
         case ModeChangeEvent(mode): renderer.render_mode_change(mode)
         case ExceptionEvent(exception): renderer.render_exception(exception)
         case _ as unreachable: assert_never(unreachable)
@@ -77,14 +77,14 @@ def render_terminal(msg):  # 实时交互：全部委托 _render_common
 
 def render_replay(msg):    # 历史重放
     match msg:
-        case InterruptEvent(abort=False):
+        case InterruptEvent(interrupt={"abort": False}):
             print("^C"); print()   # 真实 Ctrl-C：模拟 ^C
         case _:
             _render_common(msg)
 ```
 
-`InterruptEvent` 按 `abort` 标记区分：真实 Ctrl-C（`abort=False`）重放时输出 `^C`；
-确认界面取消 / 无理由拒绝（`abort=True`）不输出 `^C`。
+`InterruptEvent.interrupt["abort"]` 标记区分：真实 Ctrl-C（`abort=False`）
+重放时输出 `^C`；确认界面取消 / 无理由拒绝（`abort=True`）不输出 `^C`。
 
 ---
 
@@ -125,7 +125,7 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 | 状态 | default 符号 | classic 符号 | 标题样式 |
 |------|--------------|--------------|----------|
 | completed | `✅️` | `- [{x}]:`（x 绿） | 灰 + 删除线 |
-| in_process | `🟧` | `- [{>}]:`（> 橙） | 粗 + 白 |
+| in_progress | `🟧` | `- [{>}]:`（> 橙） | 粗 + 白 |
 | pending | `🔳` | `- [ ]:` | 普通 |
 
 ### 3.5 default 用户消息（灰色背景块）

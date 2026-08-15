@@ -138,10 +138,11 @@ class TestSessionEntry:
             "id": "b27efd38",
             "parent_id": "ed66ff3e",
             "model": "test-model",
+            "interrupt": {"abort": False},
         }
         entry = _dict_to_agent_message(data)
         assert isinstance(entry, InterruptEvent)
-        assert entry.abort is False
+        assert entry.interrupt["abort"] is False
 
     def test_from_dict_interrupt_abort(self):
         """abort 标记的 InterruptEvent 往返。"""
@@ -151,17 +152,17 @@ class TestSessionEntry:
             "id": "b27efd38",
             "parent_id": "ed66ff3e",
             "model": "test-model",
-            "abort": True,
+            "interrupt": {"abort": True},
         }
         entry = _dict_to_agent_message(data)
         assert isinstance(entry, InterruptEvent)
-        assert entry.abort is True
+        assert entry.interrupt["abort"] is True
         # 往返：msg_to_dict 再读回
         d = _msg_to_dict(entry)
-        assert d.get("abort") is True
+        assert d["interrupt"]["abort"] is True
         loaded = _dict_to_agent_message(d)
         assert isinstance(loaded, InterruptEvent)
-        assert loaded.abort is True
+        assert loaded.interrupt["abort"] is True
 
     def test_from_dict_invalid_type(self):
         data = {"type": "unknown"}
@@ -171,95 +172,121 @@ class TestSessionEntry:
     def test_tool_result_event_with_tool_name(self):
         """ToolResultEvent 持久化 tool_name 字段。"""
         from mycode.session import ToolResultEvent, _msg_to_dict, _dict_to_agent_message
-        from mycode.tools_registry import ToolsRegistry
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c1", "content": "ok"},
-            tool_name="todo_write",
+            tool_result={
+                "tool_call_id": "c1",
+                "content": "ok",
+                "tool_name": "todo_write",
+            },
             id="t1",
         )
         d = _msg_to_dict(ev)
-        assert d["tool_name"] == "todo_write"
+        assert d["type"] == "tool_result"
+        assert d["tool_result"]["tool_name"] == "todo_write"
         # 反向：tool_name 应被恢复
         roundtrip = _dict_to_agent_message(d)
         assert isinstance(roundtrip, ToolResultEvent)
-        assert roundtrip.tool_name == "todo_write"
+        assert roundtrip.tool_result["tool_name"] == "todo_write"
 
-    def test_tool_result_event_without_tool_name_backward_compat(self):
-        """旧 session 数据无 tool_name 字段也能正常加载（向后兼容）。"""
+    def test_tool_result_event_without_tool_name(self):
+        """tool_name 缺省时通过 get 取默认空字符串。"""
         from mycode.session import _dict_to_agent_message, ToolResultEvent
         data = {
             "time": "2026-04-08T16:06:54+08:00",
-            "type": "message",
+            "type": "tool_result",
             "id": "x",
             "parent_id": None,
             "model": "m",
-            "message": {"role": "tool", "tool_call_id": "c1", "content": "ok"},
-            # 无 tool_name
+            "tool_result": {"tool_call_id": "c1", "content": "ok"},
         }
         entry = _dict_to_agent_message(data)
         assert isinstance(entry, ToolResultEvent)
-        assert entry.tool_name == ""  # 默认空字符串
+        assert entry.tool_result.get("tool_name", "") == ""
 
     def test_notice_roundtrips_new_fields(self):
-        """NoticeEvent 的 display_content/additional_content/tag_name 可经 JSONL 往返。"""
+        """NoticeEvent 的 notice 字段可经 JSONL 往返。"""
         from mycode.session import (
             NoticeEvent, _msg_to_dict, _dict_to_agent_message,
         )
         ev = NoticeEvent(
             model="m",
-            tag_name="notice",
-            content="用户将命令修改为：",
-            display_content="命令修改为：",
-            additional_content="```bash\nls -la\n```",
+            notice={
+                "tag_name": "notice",
+                "content": "用户将命令修改为：",
+                "display_content": "命令修改为：",
+                "additional_content": "```bash\nls -la\n```",
+            },
             id="r1",
         )
         d = _msg_to_dict(ev)
         assert d["type"] == "notice"
-        assert d["display_content"] == "命令修改为："
-        assert d["additional_content"] == "```bash\nls -la\n```"
-        assert d["tag_name"] == "notice"
+        assert d["notice"]["display_content"] == "命令修改为："
+        assert d["notice"]["additional_content"] == "```bash\nls -la\n```"
+        assert d["notice"]["tag_name"] == "notice"
+        # 公共字段仍平铺顶层
+        assert d["id"] == "r1"
+        assert d["model"] == "m"
         loaded = _dict_to_agent_message(d)
         assert isinstance(loaded, NoticeEvent)
-        assert loaded.content == ev.content
-        assert loaded.display_content == ev.display_content
-        assert loaded.additional_content == ev.additional_content
-        assert loaded.tag_name == "notice"
+        assert loaded.notice == ev.notice
 
-    def test_reminder_old_jsonl_no_new_fields(self):
-        """旧 session 文件的 reminder type 也能加载为 NoticeEvent（向后兼容）。"""
-        from mycode.session import _dict_to_agent_message, NoticeEvent
+    def test_notice_loads_from_notice_key(self):
+        """notice 扩展字段从 notice key 读取。"""
+        from mycode.session import NoticeEvent, _dict_to_agent_message
         data = {
             "time": "2026-04-08T16:06:54+08:00",
-            "type": "reminder",
+            "type": "notice",
             "id": "r",
             "parent_id": None,
             "model": "m",
-            "content": "有未完成的 todo",
+            "notice": {
+                "content": "有未完成的 todo",
+                "tag_name": "reminder",
+            },
         }
         entry = _dict_to_agent_message(data)
         assert isinstance(entry, NoticeEvent)
-        assert entry.content == "有未完成的 todo"
-        assert entry.display_content == ""
-        assert entry.additional_content == ""
-        # 旧文件无 tag_name → 默认 reminder
-        assert entry.tag_name == "reminder"
+        assert entry.notice["content"] == "有未完成的 todo"
+        assert entry.notice["tag_name"] == "reminder"
+
+    def test_notice_without_tag_name_raises(self):
+        """notice 数据缺 tag_name 时反序列化报错（tag_name 必填）。"""
+        from mycode.session import _dict_to_agent_message
+        data = {
+            "time": "2026-04-08T16:06:54+08:00",
+            "type": "notice",
+            "id": "r",
+            "parent_id": None,
+            "model": "m",
+            "notice": {
+                "content": "有未完成的 todo",
+            },
+        }
+        with pytest.raises(ValueError, match="缺少 tag_name"):
+            _dict_to_agent_message(data)
 
     def test_notice_empty_fields_not_written(self):
-        """新字段为空时不写入 JSONL（不含多余键）。"""
+        """空字段不写入，公共字段平铺顶层。"""
         from mycode.session import NoticeEvent, _msg_to_dict
-        ev = NoticeEvent(model="m", tag_name="reminder", content="hi")
+        ev = NoticeEvent(
+            model="m",
+            notice={"tag_name": "reminder", "content": "hi"},
+        )
         d = _msg_to_dict(ev)
         assert d["type"] == "notice"
-        assert "display_content" not in d
-        assert "additional_content" not in d
-        # tag_name 总是显式写入
-        assert d["tag_name"] == "reminder"
+        assert "display_content" not in d["notice"]
+        assert "additional_content" not in d["notice"]
+        # tag_name 总是显式写入 notice 内
+        assert d["notice"]["tag_name"] == "reminder"
+        assert d["notice"]["content"] == "hi"
 
     def test_notice_tag_reminder_to_user_msg(self):
         """tag_name="reminder" 时 to_user_msg() 用 <reminder> 包裹。"""
         from mycode.session import NoticeEvent
-        ev = NoticeEvent(model="m", tag_name="reminder", content="有未完成的 todo")
+        ev = NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "有未完成的 todo"}
+        )
         msg = ev.to_user_msg()
         assert msg["content"] == "<reminder>有未完成的 todo</reminder>"
 
@@ -374,7 +401,7 @@ class TestSessionHistory:
 
     def test_append_interrupt(self, session_history):
         """测试追加中断记录"""
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(interrupt)
         session_history.append(interrupt)
 
@@ -387,7 +414,7 @@ class TestSessionHistory:
     def test_append_interrupt_parent_id(self, session_history):
         """测试中断记录的父节点ID链"""
         session_history.append_message(ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(interrupt)
         session_history.append(interrupt)
 
@@ -401,7 +428,7 @@ class TestSessionHistory:
         user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
         session_history.inject_meta(user_msg)
         session_history.append(user_msg)
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(interrupt)
         session_history.append(interrupt)
 
@@ -412,7 +439,7 @@ class TestSessionHistory:
 
     def test_append_interrupt(self, session_history):
         """测试追加中断记录"""
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(interrupt)
         session_history.append(interrupt)
 
@@ -425,7 +452,7 @@ class TestSessionHistory:
     def test_append_interrupt_parent_id(self, session_history):
         """测试中断记录的父节点ID链"""
         user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="msg1"), model="test-model")
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(user_msg)
         session_history.append(user_msg)
         session_history.inject_meta(interrupt)
@@ -442,7 +469,7 @@ class TestSessionHistory:
     def test_load_interrupt(self, session_history):
         """测试中断记录的加载"""
         user_msg = UserMessage(message=ChatCompletionUserMessageParam(role="user", content="test"), model="test-model")
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(user_msg)
         session_history.append(user_msg)
         session_history.inject_meta(interrupt)
@@ -612,7 +639,7 @@ class TestSessionHistoryFileStructure:
 
     def test_interrupt_entry_structure(self, session_history):
         """interrupt条目应包含所有必需字段"""
-        interrupt = InterruptEvent(model="test-model")
+        interrupt = InterruptEvent(model="test-model", interrupt={"abort": False})
         session_history.inject_meta(interrupt)
         session_history.append(interrupt)
 
@@ -806,9 +833,14 @@ class TestToolCallsSerialization:
             history.append(tool_call_evt)
 
             # tool result
-            tool_result = ToolResultEvent(message=ChatCompletionToolMessageParam(
-                role="tool", tool_call_id="call_work", content="/home"
-            ), model="gpt-4o")
+            tool_result = ToolResultEvent(
+                tool_result={
+                    "tool_call_id": "call_work",
+                    "content": "/home",
+                    "tool_name": "bash",
+                },
+                model="gpt-4o",
+            )
             history.inject_meta(tool_result)
             history.append(tool_result)
 
@@ -822,7 +854,7 @@ class TestToolCallsSerialization:
 
         # 验证 entries 顺序
         entry_types = [e.entry_type for e in loaded.entries if e.entry_type != "session"]
-        assert entry_types == ["message", "tool_call", "message"]
+        assert entry_types == ["message", "tool_call", "tool_result"]
 
 
 

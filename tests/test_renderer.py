@@ -58,12 +58,15 @@ class TestRenderCommonToolResult:
         reset_todos()
         todo_write([
             {"title": "步骤 1", "status": "completed"},
-            {"title": "步骤 2", "status": "in_process"},
+            {"title": "步骤 2", "status": "in_progress"},
         ])
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c1", "content": "TODO 列表已更新（2 项）"},
-            tool_name="todo_write",
+            tool_result={
+                "tool_call_id": "c1",
+                "content": "TODO 列表已更新（2 项）",
+                "tool_name": "todo_write",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         # 待办列表标题 + 符号 + 内容应先出现
@@ -83,8 +86,11 @@ class TestRenderCommonToolResult:
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c2", "content": "hello world"},
-            tool_name="bash",
+            tool_result={
+                "tool_call_id": "c2",
+                "content": "hello world",
+                "tool_name": "bash",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         assert "TODO 列表:" not in out
@@ -98,8 +104,11 @@ class TestRenderCommonToolResult:
         """旧历史无 tool_name 时也能正常渲染（向下兼容）。"""
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c3", "content": "ok"},
-            # tool_name 默认空
+            tool_result={
+                "tool_call_id": "c3",
+                "content": "ok",
+                "tool_name": "",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         assert "TODO 列表:" not in out
@@ -109,8 +118,11 @@ class TestRenderCommonToolResult:
         """无反引号内容：用 3 重反引号定界。"""
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c4", "content": "hello world"},
-            tool_name="bash",
+            tool_result={
+                "tool_call_id": "c4",
+                "content": "hello world",
+                "tool_name": "bash",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         assert "\n```\nhello world\n```\n" in out
@@ -119,9 +131,11 @@ class TestRenderCommonToolResult:
         """内容含 3 重反引号：定界符升为 4 重。"""
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c5",
-                     "content": "代码块:\n```python\nprint(1)\n```\n结束"},
-            tool_name="bash",
+            tool_result={
+                "tool_call_id": "c5",
+                "content": "代码块:\n```python\nprint(1)\n```\n结束",
+                "tool_name": "bash",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         # 4 重反引号包裹，且 3 重反引号保留在内容内
@@ -131,9 +145,11 @@ class TestRenderCommonToolResult:
         """内容含 4 重反引号：定界符升为 5 重，以此类推。"""
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c6",
-                     "content": "````\ninner\n````\n"},
-            tool_name="bash",
+            tool_result={
+                "tool_call_id": "c6",
+                "content": "````\ninner\n````\n",
+                "tool_name": "bash",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         assert "`````\n````\ninner\n````\n`````\n" in out
@@ -270,9 +286,9 @@ class TestFormatTodos:
         # 已完成：emoji + 1 空格 + 标题灰色 + 删除线
         assert out == "✅️ \x1B[90m\x1B[9m做完了\x1B[0m"
 
-    def test_single_in_process(self):
+    def test_single_in_progress(self):
         from mycode.renderer import _format_todos
-        out = _format_todos([{"title": "进行中", "status": "in_process"}])
+        out = _format_todos([{"title": "进行中", "status": "in_progress"}])
         # 进行中：🟧 + 1 空格 + 标题粗+白
         assert out == "🟧 \x1B[1;37m进行中\x1B[0m"
 
@@ -286,7 +302,7 @@ class TestFormatTodos:
         from mycode.renderer import _format_todos
         items = [
             {"title": "a", "status": "completed"},
-            {"title": "b", "status": "in_process"},
+            {"title": "b", "status": "in_progress"},
             {"title": "c", "status": "pending"},
         ]
         out = _format_todos(items)
@@ -330,10 +346,10 @@ class TestFormatTodosClassic:
         out = _format_todos([{"title": "做完了", "status": "completed"}])
         assert out == "- [\x1B[32mx\x1B[0m]: \x1B[90m\x1B[9m做完了\x1B[0m"
 
-    def test_in_process_checkbox_orange_arrow(self):
-        """in_process → ``- [>]:``，其中 > 为橙色；标题粗+白。"""
+    def test_in_progress_checkbox_orange_arrow(self):
+        """in_progress → ``- [>]:``，其中 > 为橙色；标题粗+白。"""
         from mycode.renderer import _format_todos
-        out = _format_todos([{"title": "进行中", "status": "in_process"}])
+        out = _format_todos([{"title": "进行中", "status": "in_progress"}])
         assert out == "- [\x1B[38;2;255;165;0m>\x1B[0m]: \x1B[1;37m进行中\x1B[0m"
 
     def test_pending_checkbox_empty(self):
@@ -346,7 +362,7 @@ class TestFormatTodosClassic:
         from mycode.renderer import _format_todos
         items = [
             {"title": "a", "status": "completed"},
-            {"title": "b", "status": "in_process"},
+            {"title": "b", "status": "in_progress"},
             {"title": "c", "status": "pending"},
         ]
         out = _format_todos(items)
@@ -511,8 +527,11 @@ class TestRenderStyle:
         """default 模式工具输出标题带 📤。"""
         ev = ToolResultEvent(
             model="m",
-            message={"role": "tool", "tool_call_id": "c2", "content": "hello"},
-            tool_name="bash",
+            tool_result={
+                "tool_call_id": "c2",
+                "content": "hello",
+                "tool_name": "bash",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         assert "📤 工具输出" in out
@@ -520,7 +539,9 @@ class TestRenderStyle:
     def test_default_notice_renders_emoji(self):
         """default 模式系统提醒带 💡。"""
         from mycode.session import NoticeEvent
-        ev = NoticeEvent(model="m", tag_name="reminder", content="提醒")
+        ev = NoticeEvent(
+            model="m", notice={"tag_name": "reminder", "content": "提醒"}
+        )
         out = self._capture(lambda: _render_common(ev))
         assert "💡 提醒" in out
 
@@ -529,10 +550,12 @@ class TestRenderStyle:
         from mycode.session import NoticeEvent
         ev = NoticeEvent(
             model="m",
-            tag_name="notice",
-            content="用户将命令修改为：",
-            display_content="命令修改为：",
-            additional_content="```bash\nls -la\n```",
+            notice={
+                "tag_name": "notice",
+                "content": "用户将命令修改为：",
+                "display_content": "命令修改为：",
+                "additional_content": "```bash\nls -la\n```",
+            },
         )
         out = self._capture(lambda: _render_common(ev))
         # 提醒文本用提醒格式（黄色 + 💡），不带 <reminder> 标签
