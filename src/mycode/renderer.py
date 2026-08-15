@@ -25,7 +25,7 @@ from mycode.session import (
     InterruptEvent,
     ExceptionEvent,
     ModeChangeEvent,
-    ReminderEvent,
+    NoticeEvent,
     AgentMessage,
     ExceptionData,
 )
@@ -191,7 +191,7 @@ class _Renderer:
     def tool_result_title(self) -> str:
         raise NotImplementedError
 
-    def reminder_text(self, content: str) -> str:
+    def notice_text(self, content: str) -> str:
         raise NotImplementedError
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
@@ -240,7 +240,7 @@ class _Renderer:
         fence = _code_fence(tool_result)
         print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result}'.rstrip(chr(0x0A))}\n{fence}")
 
-    def render_reminder(
+    def render_notice(
         self,
         content: str,
         display_content: str = "",
@@ -249,11 +249,11 @@ class _Renderer:
         """系统级提醒（陈旧待办、命令已更新等）：黄色高亮。
 
         提醒文本（``display_content`` 非空时优先于 ``content``）整体用提醒
-        样式渲染（``reminder_text``，子类可加 💡 前缀等）；
+        样式渲染（``notice_text``，子类可加 💡 前缀等）；
         ``additional_content``，如代码块，照常原样输出，不带提醒样式。
         """
         heading = display_content or content
-        lines: list[str] = [f"\x1B[1;33m{self.reminder_text(heading)}\x1B[0m"]
+        lines: list[str] = [f"\x1B[1;33m{self.notice_text(heading)}\x1B[0m"]
         if additional_content:
             lines.append(additional_content.rstrip(chr(0x0A)))
         print("\n".join(lines) + "\n")
@@ -308,7 +308,7 @@ class _DefaultRenderer(_Renderer):
     def tool_result_title(self) -> str:
         return "📤 工具输出"
 
-    def reminder_text(self, content: str) -> str:
+    def notice_text(self, content: str) -> str:
         return f"💡 {content}"
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
@@ -371,7 +371,7 @@ class _ClassicRenderer(_Renderer):
     def tool_result_title(self) -> str:
         return "工具输出"
 
-    def reminder_text(self, content: str) -> str:
+    def notice_text(self, content: str) -> str:
         return content
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
@@ -456,9 +456,9 @@ def _render_common(msg: AgentMessage) -> None:
             renderer.render_tool_result(message, tool_name)
         case InterruptEvent():
             renderer.render_interrupt()
-        case ReminderEvent(content=content, display_content=display_content,
-                           additional_content=additional_content):
-            renderer.render_reminder(content, display_content, additional_content)
+        case NoticeEvent(content=content, display_content=display_content,
+                         additional_content=additional_content):
+            renderer.render_notice(content, display_content, additional_content)
         case ModeChangeEvent(mode=mode):
             renderer.render_mode_change(mode)
         case ExceptionEvent(exception=exc):

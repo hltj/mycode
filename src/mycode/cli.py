@@ -66,7 +66,7 @@ from mycode.session import (
     InterruptEvent,
     ExceptionEvent,
     ModeChangeEvent,
-    ReminderEvent,
+    NoticeEvent,
     AgentMessage,
     SessionHistory,
 )
@@ -199,7 +199,7 @@ def _run_tool_with_permission(
     危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
     编辑 / 取消（取消与无理由拒绝通过 ``_AbortLoop`` 抛出以跳出 agent 循环）。
 
-    编辑（EDIT）命令时：与陈旧提醒一样先分发 ``ReminderEvent``（渲染 +
+    编辑（EDIT）命令时：与陈旧提醒一样先分发 ``NoticeEvent``（渲染 +
     持久化）再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能
     看到命令被用户修改；命令无变化时直接继续执行。
     """
@@ -233,14 +233,15 @@ def _run_tool_with_permission(
             # 命令有变化：先分发提醒事件（渲染 + 持久化），并注入模型，
             # 让终端与模型都能看到命令被用户修改。
             # 展示文案与 LLM 文案不同：提醒文本分别用提醒样式渲染 /
-            # 包 <reminder> 标签，附加内容代码块照常输出。
+            # 包 <notice> 标签，附加内容代码块照常输出。
             if extra != command:
                 new_cmd = cast(str, extra)
-                event = ReminderEvent(
+                event = NoticeEvent(
                     model=model,
                     content="用户将命令修改为：",
                     display_content="命令修改为：",
                     additional_content=f"```bash\n{new_cmd.rstrip(chr(0x0A))}\n```",
+                    tag_name="notice",
                 )
                 if bus is not None:
                     bus.dispatch(event)
@@ -270,15 +271,17 @@ def agent_loop(
     while True:
         # ---- 陈旧待办提醒 ----
         # 每产生一个 assistant 消息前自增 stale；超过阈值且存在未完成
-        # 待办时先派发 ReminderEvent（让终端显示 + 持久化，与 replay 渲染
+        # 待办时先派发 NoticeEvent（让终端显示 + 持久化，与 replay 渲染
         # 一致），再通过 to_user_msg() 注入 messages 供模型看到，然后清零
         # stale（避免连续打扰）。
         bump_stale_rounds()
         if should_remind_stale_todo():
             reminder_text = format_stale_reminder()
             # 先分发事件：走 bus 渲染 + 持久化
-            # （用 ReminderEvent 而非 UserMessage，避免按用户消息格式再输出一遍）
-            event = ReminderEvent(model=model, content=reminder_text)
+            # （用 NoticeEvent 而非 UserMessage，避免按用户消息格式再输出一遍）
+            # 陈旧提醒使用 tag_name="reminder"，经 to_user_msg() 生成
+            # <reminder>...</reminder> 标签。
+            event = NoticeEvent(model=model, tag_name="reminder", content=reminder_text)
             bus.dispatch(event)
             # 再发给模型：通过 to_user_msg() 转成用户消息并带 <reminder> 标签
             messages.append(event.to_user_msg())

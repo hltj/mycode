@@ -426,9 +426,9 @@ class TestAgentLoopEditCommand:
         MODE_STATE.set(Mode.AUTO)
         return result, captured, messages
 
-    def test_edit_changed_dispatches_reminder_and_injects(self):
-        """编辑后命令有变化：分发 ReminderEvent（渲染+持久化）并注入模型消息。"""
-        from mycode.session import ReminderEvent
+    def test_edit_changed_dispatches_notice_and_injects(self):
+        """编辑后命令有变化：分发 NoticeEvent（渲染+持久化）并注入模型消息。"""
+        from mycode.session import NoticeEvent
 
         result, captured, messages = self._run_edit(
             "echo a", "echo b",
@@ -436,30 +436,31 @@ class TestAgentLoopEditCommand:
         )
         # 执行新命令
         assert result == "ran:echo b"
-        # 恰好一条 ReminderEvent
-        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
-        assert len(reminders) == 1, captured
-        ev = reminders[0]
+        # 恰好一条 NoticeEvent
+        notices = [e for e in captured if isinstance(e, NoticeEvent)]
+        assert len(notices) == 1, captured
+        ev = notices[0]
         assert ev.display_content == "命令修改为："
         assert ev.content == "用户将命令修改为："
+        assert ev.tag_name == "notice"
         assert "```bash\necho b\n```" in ev.additional_content
-        # 注入 messages：content 整体包 <reminder>，附加内容代码块照常
+        # 注入 messages：content 整体包 <notice>，附加内容代码块照常
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1, messages
         assert ev.to_user_msg() in messages
-        assert "<reminder>用户将命令修改为：</reminder>" in user_msgs[0]["content"]
+        assert "<notice>用户将命令修改为：</notice>" in user_msgs[0]["content"]
         assert "```bash\necho b\n```" in user_msgs[0]["content"]
 
-    def test_edit_unchanged_directly_executes_no_reminder(self):
-        """编辑后命令无变化：不分发 ReminderEvent，直接继续执行。"""
-        from mycode.session import ReminderEvent
+    def test_edit_unchanged_directly_executes_no_notice(self):
+        """编辑后命令无变化：不分发 NoticeEvent，直接继续执行。"""
+        from mycode.session import NoticeEvent
 
         result, captured, messages = self._run_edit(
             "echo a", "echo a",
             [(confirm_mod.ConfirmAction.EDIT, "echo a")],
         )
         assert result == "ran:echo a"
-        assert not [e for e in captured if isinstance(e, ReminderEvent)]
+        assert not [e for e in captured if isinstance(e, NoticeEvent)]
         assert not [m for m in messages if m.get("role") == "user"]
 
     def test_edit_nonexistent_bus_messages_ok(self):
@@ -475,9 +476,9 @@ class TestAgentLoopEditCommand:
         assert result == "ran:echo new"
         MODE_STATE.set(Mode.AUTO)
 
-    def test_edit_to_dangerous_still_dispatches_reminder(self, monkeypatch):
+    def test_edit_to_dangerous_still_dispatches_notice(self, monkeypatch):
         """编辑成危险命令：先分发提醒事件，再以危险拒绝（危险判断在提醒之后）。"""
-        from mycode.session import ReminderEvent
+        from mycode.session import NoticeEvent
         monkeypatch.setenv("BASH_DANGEROUS", "sudo")
         MODE_STATE.set(Mode.ASK)
         captured: list = []
@@ -497,11 +498,12 @@ class TestAgentLoopEditCommand:
         MODE_STATE.set(Mode.AUTO)
         # 拒绝执行危险命令
         assert "拒绝执行危险命令" in result
-        # 但仍先分发 ReminderEvent 并注入模型
-        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
-        assert len(reminders) == 1, captured
-        assert reminders[0].display_content == "命令修改为："
-        assert "```bash\nsudo make\n```" in reminders[0].additional_content
+        # 但仍先分发 NoticeEvent 并注入模型
+        notices = [e for e in captured if isinstance(e, NoticeEvent)]
+        assert len(notices) == 1, captured
+        assert notices[0].tag_name == "notice"
+        assert notices[0].display_content == "命令修改为："
+        assert "```bash\nsudo make\n```" in notices[0].additional_content
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1, messages
 

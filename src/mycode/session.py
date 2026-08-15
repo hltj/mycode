@@ -184,42 +184,48 @@ class ModeChangeEvent(MessageProtocol):
 
 
 @dataclass
-class ReminderEvent(MessageProtocol):
+class NoticeEvent(MessageProtocol):
     """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。
 
-    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，ReminderEvent
+    与 ``UserMessage`` 区分：UserMessage 表示真实用户输入，NoticeEvent
     表示系统级注入；二者渲染方式不同（见 renderer.py）。
 
+    ``tag_name`` 指定喂给模型时包裹 ``content`` 的标签名
+    （如 ``reminder`` / ``notice``），``to_user_msg()`` 据此生成
+    ``<tag_name>...</tag_name>``，需显式传入。
+
     文案分开三部分：
-      - ``content``：发给 LLM 的提醒，``to_user_msg()`` 用 ``<reminder>``
+      - ``content``：发给 LLM 的提醒，``to_user_msg()`` 用 ``<tag_name>``
         标签整体包裹后喂给模型；
       - ``display_content``：展示渲染用的提醒，非空时优先于 ``content``；
       - ``additional_content``：附加内容，如代码块，渲染与 LLM
         均照常输出。
     """
     model: str
+    tag_name: str
     content: str = ""
     display_content: str = ""
     additional_content: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
-    entry_type: str = "reminder"
+    entry_type: str = "notice"
     time: str = ""
 
     def to_user_msg(self) -> ChatCompletionUserMessageParam:
         """转为 ``ChatCompletionUserMessageParam``（喂给模型）。
 
-        ``content`` 整体用 ``<reminder>`` 标签包裹后喂给模型；
+        ``content`` 整体用 ``<tag_name>`` 标签包裹后喂给模型；
         ``additional_content``，如代码块，照常输出在标签之后。
         """
+        tag = self.tag_name
         if self.additional_content:
             content = (
-                f"<reminder>{self.content}</reminder>\n"
+                f"<{tag}>{self.content}</{tag}>\n"
                 f"{self.additional_content.rstrip(chr(0x0A))}"
             )
         else:
-            content = f"<reminder>{self.content}</reminder>"
+            content = f"<{tag}>{self.content}</{tag}>"
         return ChatCompletionUserMessageParam(role='user', content=content)
 
 
@@ -232,7 +238,7 @@ AgentMessage = (
     | InterruptEvent
     | ExceptionEvent
     | ModeChangeEvent
-    | ReminderEvent
+    | NoticeEvent
 )
 
 
@@ -270,9 +276,11 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["exception"] = exc_data
         case ModeChangeEvent():
             pass  # mode 已由 base dict 记录
-        case ReminderEvent(content=content, display_content=display_content,
-                           additional_content=additional_content):
+        case NoticeEvent(content=content, display_content=display_content,
+                         additional_content=additional_content,
+                         tag_name=tag_name):
             d["content"] = content
+            d["tag_name"] = tag_name
             # 旧会话文件无这些字段，仅在新字段非空时写入
             if display_content:
                 d["display_content"] = display_content
@@ -286,7 +294,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
 def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     """将 JSONL 字典转为 AgentMessage"""
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder", "mode_change"):
+    if entry_type not in ("message", "tool_call", "interrupt", "session", "exception", "reminder", "notice", "mode_change"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
@@ -325,11 +333,14 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
     elif entry_type == "mode_change":
         return ModeChangeEvent(**base_kwargs)
-    elif entry_type == "reminder":
-        return ReminderEvent(
+    elif entry_type in ("reminder", "notice"):
+        # 兼容旧 type: reminder；新 type: notice（tag_name 从文件读取，
+        # 旧文件无 tag_name 字段 → 默认 reminder，与旧行为一致）
+        return NoticeEvent(
             content=data.get("content", ""),
             display_content=data.get("display_content", ""),
             additional_content=data.get("additional_content", ""),
+            tag_name=data.get("tag_name", "reminder"),
             **base_kwargs,
         )
     # unreachable
@@ -440,14 +451,14 @@ class SessionHistory:
     def get_messages(self) -> List[ChatCompletionMessageParam]:
         """获取所有消息（不含 session/interrupt/tool_call/exception 记录）。
 
-        ``ReminderEvent``（系统级提醒）会通过 ``to_user_msg()`` 转成
+        ``NoticeEvent``（系统级提醒）会通过 ``to_user_msg()`` 转成
         ``ChatCompletionUserMessageParam`` 加入返回列表，确保会话恢复后
-        reminder 仍能进入模型上下文。
+        提醒仍能进入模型上下文。
         """
         result: List[ChatCompletionMessageParam] = []
         for e in self.entries:
             if isinstance(e, (UserMessage, AssistantMessage, ToolResultEvent)):
                 result.append(e.message)
-            elif isinstance(e, ReminderEvent):
+            elif isinstance(e, NoticeEvent):
                 result.append(e.to_user_msg())
         return result

@@ -223,6 +223,9 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 ```
 
 - 【编辑】进入命令行编辑界面，`↵` 执行、`⎋` 返回菜单。
+  编辑后命令有变化时，派发 `NoticeEvent`（终端黄色高亮显示、写入会话
+  历史，并经 `to_user_msg()` 注入一条 `<notice>` 文本给模型）；命令
+  无变化时直接执行。
 - 选【拒绝】时可直接输入拒绝理由，`↵` 确认、`⎋` 取消。
 - 无理由拒绝 → 跳出 Agent 循环。
 
@@ -231,7 +234,7 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 - `todo_write(items)` 整体替换当前待办事项列表；空列表表示清空。
 - 每产生一个 assistant 消息时自增一次陈旧度计数；
   - 超过 `MYCODE_STALE_THRESHOLD` 且存在未完成项时，往 `messages` 注入一条
-    `<reminder>` 文本（模型下次 API 调用可见），同时派发 `ReminderEvent`
+    `<reminder>` 文本（模型下次 API 调用可见），同时派发 `NoticeEvent`
     在终端以黄色高亮显示并写入会话历史；
   - 调用 `todo_write` 成功后陈旧度计数自动清零。
 - 重放历史时，`replay_history` 会在派发 `todo_write` 的 `ToolCallEvent`

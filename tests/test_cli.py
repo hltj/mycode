@@ -12,7 +12,7 @@ cli.py 的测试：智能体自循环与 CLI 交互逻辑。
 4. 命令行参数解析（parse_args）：-s/--style 默认值等。
 5. 历史重放（replay_history）与 todo_write 状态同步。
 6. 陈旧待办提醒机制（阈值、重置、注入）。
-7. ReminderEvent 的渲染一致性与 JSONL 往返。
+7. NoticeEvent 的渲染一致性与 JSONL 往返（reminder / notice 标签）。
 """
 
 from __future__ import annotations
@@ -924,7 +924,7 @@ class TestStaleTodoReminder:
     def test_reminder_format_is_simple_no_todo_list(self):
         """提醒正文是简洁文本，不含待办列表也不重复状态定义。
 
-        ``<reminder>`` 标签由 ``ReminderEvent.to_user_msg()`` 加，format
+        ``<reminder>`` 标签由 ``NoticeEvent.to_user_msg()`` 加，format
         输出纯文本。
         """
         from mycode.tools.todo_write import format_stale_reminder, todo_write
@@ -999,10 +999,10 @@ class TestStaleTodoReminder:
         assert not should_remind_stale_todo()
 
     def test_agent_loop_injects_reminder_via_to_user_msg(self):
-        """agent_loop 触发提醒时：先派发 ReminderEvent，再经 to_user_msg()
+        """agent_loop 触发陈旧提醒时：先派发 NoticeEvent，再经 to_user_msg()
         注入 messages（带 <reminder> 标签），与 get_messages() 恢复路径一致。
         """
-        from mycode.session import ReminderEvent
+        from mycode.session import NoticeEvent
         from mycode.tools.todo_write import (
             bump_stale_rounds, format_stale_reminder, should_remind_stale_todo,
             todo_write,
@@ -1021,7 +1021,7 @@ class TestStaleTodoReminder:
         user_count_at_dispatch: dict = {}
 
         def watching(msg):
-            if isinstance(msg, ReminderEvent):
+            if isinstance(msg, NoticeEvent):
                 user_count_at_dispatch["count"] = sum(
                     1 for m in messages if m.get("role") == "user"
                 )
@@ -1041,24 +1041,26 @@ class TestStaleTodoReminder:
              patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
             cli.agent_loop(messages, bus, model="test-model")
 
-        # 1) 先派发 ReminderEvent（渲染 + 持久化），content 为纯文本提醒
-        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
-        assert len(reminders) == 1, captured
-        assert reminders[0].content == reminder_text
-        assert "<reminder>" not in reminders[0].content
+        # 1) 先派发 NoticeEvent（渲染 + 持久化），content 为纯文本提醒，
+        #    tag_name 默认 reminder
+        notices = [e for e in captured if isinstance(e, NoticeEvent)]
+        assert len(notices) == 1, captured
+        assert notices[0].content == reminder_text
+        assert notices[0].tag_name == "reminder"
+        assert "<reminder>" not in notices[0].content
         # 派发时刻提醒尚未 append 进 messages
         assert user_count_at_dispatch.get("count") == 0
 
         # 2) 再经 to_user_msg() 注入 messages：带 <reminder> 标签
         user_msgs = [m for m in messages if m.get("role") == "user"]
         assert len(user_msgs) == 1, messages
-        assert user_msgs[0] == reminders[0].to_user_msg()
+        assert user_msgs[0] == notices[0].to_user_msg()
         assert user_msgs[0]["content"] == f"<reminder>{reminder_text}</reminder>"
 
 
 
-class TestReminderEvent:
-    """ReminderEvent：系统级提醒事件，区别于 UserMessage。
+class TestNoticeEvent:
+    """NoticeEvent：系统级提醒事件，区别于 UserMessage。
 
     渲染一致性：实时与 replay 都走 ``_render_common`` 的黄色高亮分支，
     不会被误渲染为用户输入。此处用 classic 风格（标题无 emoji）断言
@@ -1077,59 +1079,71 @@ class TestReminderEvent:
             fn()
         return buf.getvalue()
 
-    def test_replay_renders_reminder_as_reminder(self):
-        """replay 时 ReminderEvent 显示为黄色高亮，不是 ``myc > `` 前缀。
+    def test_replay_renders_notice(self):
+        """replay 时 NoticeEvent 显示为黄色高亮，不是 ``myc > `` 前缀。
 
-        注意：ReminderEvent.content 不含 ``<reminder>`` 标签（标签只在
-        ``to_user_msg()`` 喂给模型时加），渲染纯文本更友好。
+        注意：NoticeEvent.content 不含标签文本（标签只在 ``to_user_msg()``
+        喂给模型时加），渲染纯文本更友好。
         """
-        from mycode.session import ReminderEvent
+        from mycode.session import NoticeEvent
         from mycode.cli import render_replay
 
-        event = ReminderEvent(model="m", content="hello")
+        event = NoticeEvent(model="m", tag_name="reminder", content="hello")
         out = self._capture(lambda: render_replay(event))
 
-        # 黄色 ANSI + 纯文本 content（不含 <reminder> 标签）
+        # 黄色 ANSI + 纯文本 content（不含标签）
         assert "\x1B[1;33mhello\x1B[0m" in out
         assert "<reminder>" not in out
+        assert "<notice>" not in out
         # 关键：不出现用户输入前缀
         assert "myc >" not in out
 
-    def test_terminal_render_skips_user_but_renders_reminder(self):
-        """实时路径（render_terminal）也渲染 ReminderEvent。"""
-        from mycode.session import ReminderEvent
+    def test_terminal_render_skips_user_but_renders_notice(self):
+        """实时路径（render_terminal）也渲染 NoticeEvent。"""
+        from mycode.session import NoticeEvent
         from mycode.cli import render_terminal
 
-        event = ReminderEvent(model="m", content="hello")
+        event = NoticeEvent(model="m", tag_name="reminder", content="hello")
         out = self._capture(lambda: render_terminal(event))
 
         assert "\x1B[1;33mhello\x1B[0m" in out
         assert "<reminder>" not in out
+        assert "<notice>" not in out
         assert "myc >" not in out
 
     def test_to_user_msg_wraps_content_in_reminder_tag(self):
-        """to_user_msg() 把 content 用 ``<reminder>`` 标签包裹后返回。"""
-        from mycode.session import ReminderEvent
+        """to_user_msg() 默认用 ``<reminder>`` 标签包裹 content。"""
+        from mycode.session import NoticeEvent
 
-        event = ReminderEvent(model="m", content="提醒正文")
+        event = NoticeEvent(model="m", tag_name="reminder", content="提醒正文")
         msg = event.to_user_msg()
         assert msg["role"] == "user"
         assert msg["content"] == "<reminder>提醒正文</reminder>"
 
-    def test_to_user_msg_heading_and_body_separate(self):
-        """命令已更新：content 整体包 <reminder>，附加内容代码块照常输出。"""
-        from mycode.session import ReminderEvent
+    def test_to_user_msg_wraps_content_in_notice_tag(self):
+        """tag_name="notice" 时 to_user_msg() 用 ``<notice>`` 标签包裹。"""
+        from mycode.session import NoticeEvent
 
-        event = ReminderEvent(
+        event = NoticeEvent(model="m", content="用户将命令修改为：", tag_name="notice")
+        msg = event.to_user_msg()
+        assert msg["role"] == "user"
+        assert msg["content"] == "<notice>用户将命令修改为：</notice>"
+
+    def test_to_user_msg_heading_and_body_separate(self):
+        """命令修改：content 整体包 <notice>，附加内容代码块照常输出。"""
+        from mycode.session import NoticeEvent
+
+        event = NoticeEvent(
             model="m",
             content="用户将命令修改为：",
             display_content="命令修改为：",
             additional_content="```bash\nls -la\n```",
+            tag_name="notice",
         )
         msg = event.to_user_msg()
         assert msg["role"] == "user"
         assert msg["content"] == (
-            "<reminder>用户将命令修改为：</reminder>\n"
+            "<notice>用户将命令修改为：</notice>\n"
             "```bash\nls -la\n```"
         )
 
@@ -1146,71 +1160,98 @@ class TestReminderEvent:
         assert "myc[自动] >" in out
         assert "hi" in out
 
-    def test_reminder_event_roundtrips_through_jsonl(self, tmp_path):
-        """ReminderEvent 写入 JSONL 后能正确读回。"""
+    def test_notice_event_roundtrips_through_jsonl(self, tmp_path):
+        """NoticeEvent 写入 JSONL 后能正确读回。"""
         import json
-        from mycode.session import ReminderEvent, _dict_to_agent_message
+        from mycode.session import NoticeEvent, _dict_to_agent_message
 
-        original = ReminderEvent(model="gpt-4", content="<reminder>x</reminder>")
+        original = NoticeEvent(model="gpt-4", content="x", tag_name="notice")
         original.id = "r1"
         original.time = "2026-01-01T00:00:00Z"
 
-        path = tmp_path / "reminder.jsonl"
+        path = tmp_path / "notice.jsonl"
         with open(path, "w", encoding="utf-8") as f:
             f.write(json.dumps({
                 "time": original.time,
-                "type": "reminder",
+                "type": "notice",
                 "id": original.id,
                 "parent_id": None,
                 "model": original.model,
                 "content": original.content,
+                "tag_name": original.tag_name,
             }, ensure_ascii=False) + "\n")
 
         with open(path, "r", encoding="utf-8") as f:
             data = json.loads(f.readline())
         loaded = _dict_to_agent_message(data)
 
-        assert isinstance(loaded, ReminderEvent)
+        assert isinstance(loaded, NoticeEvent)
         assert loaded.model == original.model
         assert loaded.content == original.content
         assert loaded.id == original.id
+        assert loaded.tag_name == "notice"
+
+    def test_notice_event_roundtrips_old_reminder_type(self, tmp_path):
+        """旧 type "reminder" 的 JSONL 能读回为 NoticeEvent（tag_name 默认 reminder）。"""
+        import json
+        from mycode.session import NoticeEvent, _dict_to_agent_message
+
+        path = tmp_path / "reminder.jsonl"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "time": "2026-01-01T00:00:00Z",
+                "type": "reminder",
+                "id": "r1",
+                "parent_id": None,
+                "model": "gpt-4",
+                "content": "有未完成的 todo",
+            }, ensure_ascii=False) + "\n")
+
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.loads(f.readline())
+        loaded = _dict_to_agent_message(data)
+
+        assert isinstance(loaded, NoticeEvent)
+        assert loaded.tag_name == "reminder"
+        assert loaded.content == "有未完成的 todo"
 
 
 
-class TestReminderInGetMessages:
-    """会话恢复时 ``get_messages()`` 把 ReminderEvent 包成 user message 返回。
+class TestNoticeInGetMessages:
+    """会话恢复时 ``get_messages()`` 把 NoticeEvent 包成 user message 返回。
 
-    目的：``-r`` / ``--continue`` 恢复会话后，模型仍能看到 reminder
-    内容（与实时注入一致），不会因为 reminder 被存为 ReminderEvent 而丢失。
+    目的：``-r`` / ``--continue`` 恢复会话后，模型仍能看到提醒
+    内容（与实时注入一致），不会因为提醒被存为 NoticeEvent 而丢失。
     """
 
     def _make_history(self, tmp_path) -> "SessionHistory":
         from mycode.session import SessionHistory
         return SessionHistory(cwd=str(tmp_path), model="m")
 
-    def test_get_messages_includes_reminder_as_user_message(self, tmp_path):
-        """ReminderEvent 在 get_messages() 里转为 ChatCompletionUserMessageParam。
+    def test_get_messages_includes_notice_as_user_message(self, tmp_path):
+        """NoticeEvent 在 get_messages() 里转为 ChatCompletionUserMessageParam。
 
-        content 字段不带 ``<reminder>`` 标签，由 ``to_user_msg()`` 加上。
+        content 字段不带标签，由 ``to_user_msg()`` 按 tag_name 加上。
         """
-        from mycode.session import ReminderEvent
+        from mycode.session import NoticeEvent
         sh = self._make_history(tmp_path)
-        sh.append(ReminderEvent(model="m", content="hi"))
+        sh.append(NoticeEvent(model="m", tag_name="reminder", content="hi"))
 
         msgs = sh.get_messages()
         assert len(msgs) == 1
         assert msgs[0]["role"] == "user"
         assert msgs[0]["content"] == "<reminder>hi</reminder>"
 
-    def test_get_messages_restores_edited_command_reminder(self, tmp_path):
-        """命令已更新提醒经 JSONL 往返后 get_messages() 还原完整文案。"""
-        from mycode.session import ReminderEvent, SessionHistory
+    def test_get_messages_restores_edited_command_notice(self, tmp_path):
+        """命令已更新提醒（notice 标签）经 JSONL 往返后 get_messages() 还原。"""
+        from mycode.session import NoticeEvent, SessionHistory
         sh = self._make_history(tmp_path)
-        ev = ReminderEvent(
+        ev = NoticeEvent(
             model="m",
             content="用户将命令修改为：",
             display_content="命令修改为：",
             additional_content="```bash\nls -la\n```",
+            tag_name="notice",
         )
         sh.append(ev)
         # 写入后再从文件加载，模拟 -r 恢复
@@ -1218,26 +1259,26 @@ class TestReminderInGetMessages:
         msgs = loaded.get_messages()
         assert len(msgs) == 1
         assert msgs[0]["content"] == (
-            "<reminder>用户将命令修改为：</reminder>\n"
+            "<notice>用户将命令修改为：</notice>\n"
             "```bash\nls -la\n```"
         )
 
     def test_get_messages_order_matches_entries(self, tmp_path):
-        """get_messages() 输出顺序与 entries 一致（reminder 保留时间位置）。"""
+        """get_messages() 输出顺序与 entries 一致（notice 保留时间位置）。"""
         from openai.types.chat import (
             ChatCompletionUserMessageParam,
             ChatCompletionAssistantMessageParam,
         )
         from mycode.session import (
-            ReminderEvent, UserMessage, AssistantMessage,
+            NoticeEvent, UserMessage, AssistantMessage,
         )
 
         sh = self._make_history(tmp_path)
-        # 注入 user → reminder → assistant
+        # 注入 user → notice → assistant
         sh.append(UserMessage(model="m", message=ChatCompletionUserMessageParam(
             role="user", content="ask"
         )))
-        sh.append(ReminderEvent(model="m", content="r"))
+        sh.append(NoticeEvent(model="m", tag_name="reminder", content="r"))
         sh.append(AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
             role="assistant", content="answer"
         )))
@@ -1248,19 +1289,19 @@ class TestReminderInGetMessages:
         assert msgs[1]["content"] == "<reminder>r</reminder>"
         assert msgs[2]["content"] == "answer"
 
-    def test_entry_count_excludes_reminder(self, tmp_path):
-        """cli.py 退出时计算的 entry_count 不把 reminder 当作"消息"。
+    def test_entry_count_excludes_notice(self, tmp_path):
+        """cli.py 退出时计算的 entry_count 不把 notice 当作"消息"。
 
-        reminder 是系统级注入，不是真实用户/助手对话，不应触发会话保留逻辑。
+        notice 是系统级注入，不是真实用户/助手对话，不应触发会话保留逻辑。
         """
         from mycode.session import (
-            ReminderEvent, UserMessage, AssistantMessage, ToolResultEvent,
+            NoticeEvent, UserMessage, AssistantMessage, ToolResultEvent,
         )
         sh = self._make_history(tmp_path)
-        sh.append(ReminderEvent(model="m", content="<reminder>r</reminder>"))
+        sh.append(NoticeEvent(model="m", tag_name="reminder", content="<reminder>r</reminder>"))
 
         # 跟 cli.py 退出时的判定一致
         entry_count = len([e for e in sh.entries if isinstance(
             e, (UserMessage, AssistantMessage, ToolResultEvent)
         )])
-        assert entry_count == 0  # reminder 不算
+        assert entry_count == 0  # notice 不算

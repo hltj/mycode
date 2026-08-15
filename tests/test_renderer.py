@@ -29,7 +29,7 @@ from mycode.session import (
     ToolCallEvent,
     ToolResultEvent,
     UserMessage,
-    ReminderEvent,
+    NoticeEvent,
     ExceptionEvent,
 )
 
@@ -486,7 +486,7 @@ class TestRenderStyle:
         r = renderer._get_renderer()
         assert r.tool_call_title("bash") == "🔧 调用工具 - bash"
         assert r.tool_result_title() == "📤 工具输出"
-        assert r.reminder_text("hi") == "💡 hi"
+        assert r.notice_text("hi") == "💡 hi"
         assert r.exception_title("T", "M") == "❌ 异常 - T - M"
 
     def test_classic_no_emoji_titles(self, monkeypatch):
@@ -495,7 +495,7 @@ class TestRenderStyle:
         r = renderer._get_renderer()
         assert r.tool_call_title("bash") == "调用工具 - bash"
         assert r.tool_result_title() == "工具输出"
-        assert r.reminder_text("hi") == "hi"
+        assert r.notice_text("hi") == "hi"
         assert r.exception_title("T", "M") == "异常 - T - M"
 
     def test_default_tool_call_renders_emoji(self):
@@ -517,18 +517,19 @@ class TestRenderStyle:
         out = self._capture(lambda: _render_common(ev))
         assert "📤 工具输出" in out
 
-    def test_default_reminder_renders_emoji(self):
+    def test_default_notice_renders_emoji(self):
         """default 模式系统提醒带 💡。"""
-        from mycode.session import ReminderEvent
-        ev = ReminderEvent(model="m", content="提醒")
+        from mycode.session import NoticeEvent
+        ev = NoticeEvent(model="m", tag_name="reminder", content="提醒")
         out = self._capture(lambda: _render_common(ev))
         assert "💡 提醒" in out
 
-    def test_default_reminder_body_plain_output(self):
+    def test_default_notice_body_plain_output(self):
         """命令已更新提醒：提醒文本整体用提醒格式，附加内容代码块照常输出。"""
-        from mycode.session import ReminderEvent
-        ev = ReminderEvent(
+        from mycode.session import NoticeEvent
+        ev = NoticeEvent(
             model="m",
+            tag_name="notice",
             content="用户将命令修改为：",
             display_content="命令修改为：",
             additional_content="```bash\nls -la\n```",
