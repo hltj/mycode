@@ -998,6 +998,63 @@ class TestStaleTodoReminder:
             bump_stale_rounds()
         assert not should_remind_stale_todo()
 
+    def test_agent_loop_injects_reminder_via_to_user_msg(self):
+        """agent_loop 触发提醒时：先派发 ReminderEvent，再经 to_user_msg()
+        注入 messages（带 <reminder> 标签），与 get_messages() 恢复路径一致。
+        """
+        from mycode.session import ReminderEvent
+        from mycode.tools.todo_write import (
+            bump_stale_rounds, format_stale_reminder, should_remind_stale_todo,
+            todo_write,
+        )
+        self._reset()
+        todo_write([{"title": "A", "status": "in_process"}])
+        for _ in range(5):
+            bump_stale_rounds()
+        assert should_remind_stale_todo()
+        reminder_text = format_stale_reminder()
+
+        messages: list = []
+        captured: list = []
+        # 记录 dispatch 提醒时 messages 中已有的 user 消息数，验证
+        # 「先 dispatch 事件、再进 messages」的顺序。
+        user_count_at_dispatch: dict = {}
+
+        def watching(msg):
+            if isinstance(msg, ReminderEvent):
+                user_count_at_dispatch["count"] = sum(
+                    1 for m in messages if m.get("role") == "user"
+                )
+            captured.append(msg)
+
+        bus = cli.AgentEventBus()
+        bus.register(watching)
+
+        # 第一轮模型直接返回普通文本（finish_reason=stop），跳出 while
+        final_msg = _FakeMessage(content="done", tool_calls=[])
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(
+            side_effect=[_FakeResponse(final_msg, finish_reason="stop")]
+        )
+
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+            cli.agent_loop(messages, bus, model="test-model")
+
+        # 1) 先派发 ReminderEvent（渲染 + 持久化），content 为纯文本提醒
+        reminders = [e for e in captured if isinstance(e, ReminderEvent)]
+        assert len(reminders) == 1, captured
+        assert reminders[0].content == reminder_text
+        assert "<reminder>" not in reminders[0].content
+        # 派发时刻提醒尚未 append 进 messages
+        assert user_count_at_dispatch.get("count") == 0
+
+        # 2) 再经 to_user_msg() 注入 messages：带 <reminder> 标签
+        user_msgs = [m for m in messages if m.get("role") == "user"]
+        assert len(user_msgs) == 1, messages
+        assert user_msgs[0] == reminders[0].to_user_msg()
+        assert user_msgs[0]["content"] == f"<reminder>{reminder_text}</reminder>"
+
 
 
 class TestReminderEvent:

@@ -245,19 +245,18 @@ def agent_loop(
     while True:
         # ---- 陈旧待办提醒 ----
         # 每产生一个 assistant 消息前自增 stale；超过阈值且存在未完成
-        # 待办时，往 messages 注入一条 user role 提示（让模型看到），
-        # 同时派发 ReminderEvent（让终端显示 + 持久化，与 replay 渲染一致），
-        # 然后清零 stale（避免连续打扰）。
+        # 待办时先派发 ReminderEvent（让终端显示 + 持久化，与 replay 渲染
+        # 一致），再通过 to_user_msg() 注入 messages 供模型看到，然后清零
+        # stale（避免连续打扰）。
         bump_stale_rounds()
         if should_remind_stale_todo():
             reminder_text = format_stale_reminder()
-            # 进 messages：让模型下次 API 调用能看到
-            messages.append(ChatCompletionUserMessageParam(
-                role='user', content=reminder_text
-            ))
-            # 进 bus：渲染 + 持久化（走 ReminderEvent 而非 UserMessage，
-            # 避免 replay 时被当成用户输入显示 ``myc > `` 前缀）
-            bus.dispatch(ReminderEvent(model=model, content=reminder_text))
+            # 先分发事件：走 bus 渲染 + 持久化
+            # （用 ReminderEvent 而非 UserMessage，避免按用户消息格式再输出一遍）
+            event = ReminderEvent(model=model, content=reminder_text)
+            bus.dispatch(event)
+            # 再发给模型：通过 to_user_msg() 转成用户消息并带 <reminder> 标签
+            messages.append(event.to_user_msg())
             reset_todo_stale()
 
         # 调用模型
