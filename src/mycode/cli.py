@@ -7,7 +7,7 @@ import argparse
 from typing import Any, Callable, cast
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, RateLimitError
 from openai.types.chat import (
     ChatCompletionSystemMessageParam,
     ChatCompletionUserMessageParam,
@@ -43,6 +43,42 @@ HISTORY_FILE = APP_HOME_DIR / 'history.txt'
 _BASE_SYSTEM_PROMPT = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用工具完成任务。直接做勿解释。"
 _ADDITIONAL = os.getenv('ADDITIONAL_SYSTEM_PROMPT')
 SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + (("\n" + _ADDITIONAL) if _ADDITIONAL else "")
+
+# ---------------------------------------------------------------------------
+# 429 限流自动重试
+# ---------------------------------------------------------------------------
+# 环境变量 E429_WAIT_SECONDS：逗号分隔的正整数秒数列表（如 "1,2,5,10"）。
+# 默认（未设置 / 为空）不开启自动重试：429 直接向上抛出；
+# 解析不到合法整数列表、或连续 429 次数超出列表长度时同样向上抛出。
+
+
+def _parse_e429_wait_seconds(raw: str | None) -> list[int] | None:
+    """解析 E429_WAIT_SECONDS 为正整数秒列表。
+
+    - 空 / 未设置：返回 ``None``，表示不启用（429 向上抛出）；
+    - 任一项非法（非正整数数字 / 空段）：返回 ``None``，表示不启用；
+    - 全部合法：返回解析后的 int 列表。
+    """
+    if raw is None or raw.strip() == "":
+        return None
+    values: list[int] = []
+    for part in raw.split(','):
+        part = part.strip()
+        if not part:
+            return None
+        try:
+            v = int(part)
+        except ValueError:
+            return None
+        if v <= 0:
+            return None
+        values.append(v)
+    return values
+
+
+# 模块级解析一次：429 连续发生第 n 次时取列表第 n 个值（索引 n-1）。
+# 为 ``None`` 时表示不开启自动重试。
+_e429_wait_list: list[int] | None = _parse_e429_wait_seconds(os.getenv('E429_WAIT_SECONDS'))
 
 # ---------------------------------------------------------------------------
 # 导入工具
@@ -258,6 +294,25 @@ def _run_tool_with_permission(
             return handler(**args)
 
 
+def _countdown_retry(wait: int) -> None:
+    """429 限流等待倒计时：红棕色显示「限流重试... n」，n 原位跳动。
+
+    倒计时到 0 时清除整行（静默重试由调用方继续循环完成）。
+    """
+    import sys
+    from time import sleep
+
+    red_brown = "\x1B[38;2;165;42;42m"
+    reset = "\x1B[0m"
+    for remaining in range(wait, 0, -1):
+        sys.stdout.write(f"\r{red_brown}限流重试... {remaining}{reset}")
+        sys.stdout.flush()
+        sleep(1)
+    # 倒计时到 0：清除整行
+    sys.stdout.write("\r" + " " * (len(f"限流重试... {wait}") + 4) + "\r")
+    sys.stdout.flush()
+
+
 def agent_loop(
     messages: list[ChatCompletionMessageParam],
     bus: AgentEventBus,
@@ -270,6 +325,8 @@ def agent_loop(
         reset_stale_rounds as reset_todo_stale,
     )
     tools = ToolsRegistry.get_tools()
+    # 连续 429 计数：成功产生模型事件后重置，决定取 E429_WAIT_SECONDS 第几个值
+    consecutive_429 = 0
     while True:
         # ---- 陈旧待办提醒 ----
         # 每产生一个 assistant 消息前自增 stale；超过阈值且存在未完成
@@ -293,13 +350,27 @@ def agent_loop(
             reset_todo_stale()
 
         # 调用模型
-        # noinspection PyTypeChecker
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto",
-        )
+        try:
+            # noinspection PyTypeChecker
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+        except RateLimitError:
+            # 429 限流：按连续发生次数取 E429_WAIT_SECONDS 中的秒数，
+            # 倒计时等待后静默重试，不跳出 agent 循环。
+            consecutive_429 += 1
+            wait_list = _e429_wait_list
+            if wait_list is None or consecutive_429 > len(wait_list):
+                # 配置缺失 / 连续次数超出配置列表长度：功能不启用，向上抛出
+                raise
+            wait = wait_list[consecutive_429 - 1]
+            _countdown_retry(wait)
+            continue
+        # 成功产生模型事件：重置连续 429 计数
+        consecutive_429 = 0
 
         # noinspection PyUnresolvedReferences
         choice = response.choices[0]

@@ -111,6 +111,7 @@ cp .env.example .env
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
 | `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
 | `MYCODE_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
+| `E429_WAIT_SECONDS`       | 逗号分隔的正整数秒列表（如 `1,2,5,10`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空）                 |
 
 ### 运行
 

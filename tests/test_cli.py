@@ -1408,3 +1408,163 @@ class TestRetryCommand:
         """命令补全包含 /retry。"""
         from mycode.cli import MycCommandCompleter
         assert "/retry" in MycCommandCompleter.COMMANDS
+class TestE429WaitSecondsParse:
+    """E429_WAIT_SECONDS 解析：合法才启用，非法返回 None（不开启）。"""
+
+    def test_default_not_enabled(self):
+        """默认（未设置 / 为空）：不开启，解析返回 None。"""
+        assert cli._parse_e429_wait_seconds(None) is None
+        assert cli._parse_e429_wait_seconds("") is None
+        assert cli._parse_e429_wait_seconds("   ") is None
+
+    def test_parse_valid_list(self):
+        assert cli._parse_e429_wait_seconds("1,2,5,10") == [1, 2, 5, 10]
+        assert cli._parse_e429_wait_seconds("3") == [3]
+        assert cli._parse_e429_wait_seconds("1, 2 ,3") == [1, 2, 3]
+
+    def test_invalid_returns_none(self):
+        # 非法项 / 空段 / 非正数 / 小数 → 整个不启用
+        assert cli._parse_e429_wait_seconds("abc,2") is None
+        assert cli._parse_e429_wait_seconds("1,,") is None
+        assert cli._parse_e429_wait_seconds("1,0") is None
+        assert cli._parse_e429_wait_seconds("1,-3") is None
+        assert cli._parse_e429_wait_seconds("1.5,2") is None
+        assert cli._parse_e429_wait_seconds(",1") is None
+
+
+class TestE429Retry:
+    """429 限流自动重试：不跳出 agent loop，按连续次数取等待秒数。
+
+    连续性 = 连续 429 之间没有其他事件（成功调用模型即重置计数）。
+    """
+
+    @staticmethod
+    def _rate_limit():
+        import httpx
+        from openai import RateLimitError
+        resp = httpx.Response(429, request=httpx.Request("POST", "http://example.com"))
+        return RateLimitError(
+            "Rate limit exceeded",
+            response=resp,
+            body={
+                "error": {
+                    "code": "insufficient_quota",
+                    "message": "Allocated quota exceeded",
+                    "type": "insufficient_quota",
+                }
+            },
+        )
+
+    def _run(self, side_effects, *, handler=None, wait_list=None):
+        """跑 agent_loop；_countdown_retry 用 mock 记录等待秒数，不真睡。"""
+        import contextlib
+        messages: list = []
+        bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda m: captured.append(m))
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=side_effects)
+        waits: list = []
+        patches = [
+            patch.object(cli, "client", fake_client),
+            patch.object(cli.ToolsRegistry, "get_tools", return_value=[]),
+            patch.object(cli, "_countdown_retry", side_effect=lambda w: waits.append(w)),
+        ]
+        if handler is not None:
+            patches.append(patch.object(cli.ToolsRegistry, "get_handler", return_value=handler))
+        if wait_list is not None:
+            patches.append(patch.object(cli, "_e429_wait_list", wait_list))
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            cli.agent_loop(messages, bus, model="test-model")
+        return messages, captured, waits
+
+    def test_single_429_then_success(self):
+        """一次 429 后重试成功：取列表第一个值，不跳出 agent loop。"""
+        side = [self._rate_limit(), _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop")]
+        _, _, waits = self._run(side, wait_list=[1, 2, 5, 10])
+        assert waits == [1]  # wait_list 的第一个值
+
+    def test_consecutive_429_take_nth_value(self):
+        """连续第二个 429 取列表第二个值（索引 1）。"""
+        side = [self._rate_limit(), self._rate_limit(),
+                _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop")]
+        _, _, waits = self._run(side, wait_list=[1, 2, 5, 10])
+        assert waits == [1, 2]
+
+    def test_three_consecutive_429(self):
+        """连续三个 429 取前三档。"""
+        side = [self._rate_limit()] * 3 + [
+            _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop")]
+        _, _, waits = self._run(side, wait_list=[1, 2, 5, 10])
+        assert waits == [1, 2, 5]
+
+    def test_success_after_429_resets_count(self):
+        """429 后成功产生一次模型事件（含工具执行），下一个 429 重新从第一个值取值。"""
+        from tests._helpers import make_tool_call, make_assistant_with_tool_calls
+        tc = make_tool_call(call_id="c1", name="boom")
+        tool_resp = _FakeResponse(_FakeMessage(content="", tool_calls=[_FakeTC(tc)]), finish_reason="tool_calls")
+        stop = _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop")
+        side = [self._rate_limit(), tool_resp, self._rate_limit(), stop]
+
+        def handler(**_):
+            return "ok"
+
+        _, _, waits = self._run(side, handler=handler, wait_list=[1, 2, 5, 10])
+        # 两次 429 各取第一个值：成功事件把连续计数重置了
+        assert waits == [1, 1]
+
+    def test_exceed_list_length_raises(self):
+        """连续 429 次数超出配置列表长度：功能不启用，向上抛出。"""
+        import contextlib
+        from openai import RateLimitError
+        side = [self._rate_limit(), self._rate_limit()]
+        messages: list = []
+        bus = cli.AgentEventBus()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=side)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "client", fake_client))
+            stack.enter_context(patch.object(cli.ToolsRegistry, "get_tools", return_value=[]))
+            stack.enter_context(patch.object(cli, "_countdown_retry", side_effect=lambda w: None))
+            stack.enter_context(patch.object(cli, "_e429_wait_list", [1]))  # 只配置 1 档
+            with pytest.raises(RateLimitError):
+                cli.agent_loop(messages, bus, model="test-model")
+
+    def test_wait_list_none_raises(self):
+        """配置为 None（未开启）时 429 直接向上抛出，不重试。"""
+        import contextlib
+        from openai import RateLimitError
+        side = [self._rate_limit()]
+        messages: list = []
+        bus = cli.AgentEventBus()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=side)
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "client", fake_client))
+            stack.enter_context(patch.object(cli.ToolsRegistry, "get_tools", return_value=[]))
+            stack.enter_context(patch.object(cli, "_e429_wait_list", None))
+            with pytest.raises(RateLimitError):
+                cli.agent_loop(messages, bus, model="test-model")
+
+
+class TestCountdownRetry:
+    """_countdown_retry：红棕色整行重写倒计时，n 原位跳动，到 0 清除。"""
+
+    def test_output_color_and_countdown_and_clear(self):
+        import io
+        import contextlib
+        from unittest.mock import patch as u_patch
+        out_buf = io.StringIO()
+        with contextlib.redirect_stdout(out_buf), u_patch("time.sleep"):
+            cli._countdown_retry(3)
+        out = out_buf.getvalue()
+        # 红棕色 + 「限流重试... n」，n 递减原位改写
+        assert "\x1B[38;2;165;42;42m限流重试... 3\x1B[0m" in out
+        assert "限流重试... 2" in out
+        assert "限流重试... 1" in out
+        # 每次改写都用 \r 回到行首（前缀不变、n 跳动）
+        assert out.count("\r") == 5  # 3 次倒计时 + 清除行的首尾各 1 次
+        # 末尾清除：\r + 空格覆盖 + \r
+        assert out.endswith("\r")
