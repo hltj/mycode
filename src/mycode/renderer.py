@@ -203,7 +203,7 @@ def _guess_read_language(text: str) -> str | None:
     if not lexer.aliases:
         return None
     alias = lexer.aliases[0]
-    if alias == "text" or alias == "textonly":
+    if alias == "text":
         return None
     return alias
 
@@ -232,7 +232,7 @@ def _guess_filename_language(filename: str, text: str) -> str | None:
         if not lexer.aliases:
             continue
         alias = lexer.aliases[0]
-        if alias != "text" and alias != "textonly":
+        if alias != "text":
             return alias
     return None
 
@@ -439,18 +439,23 @@ class _Renderer:
             print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{self.format_todos()}\n")
         tool_result_content = tool_result.get("content", "")
         print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m")
-        # read 返回的标准内容（带行号）走带行号渲染；否则普通代码块。
         # 内容自带 ANSI 控制码时不做任何语法高亮/行号重构，原样输出
         # （避免控制码被再次上色泄漏转义序列）。
         if _has_ansi_control(tool_result_content):
             self.render_code_block(tool_result_content)
         elif tool_result.get("tool_name") == "read" and _READ_LINE_RE.search(tool_result_content):
+            # read：带行号渲染，语言按调用时 file_path 推断
             call_id = tool_result.get("tool_call_id", "")
             args = _tool_call_args(call_id)
             file_path = str(args.get("file_path", "")) if args else ""
             self.render_read_output(tool_result_content, file_path=file_path)
         else:
-            self.render_code_block(tool_result_content)
+            # 仅 read/bash 走语法猜测；其余工具写死 text（纯文本不猜）
+            tool_name = tool_result.get("tool_name", "")
+            if tool_name == "bash":
+                self.render_code_block(tool_result_content)
+            else:
+                self.render_code_block(tool_result_content, language="text")
         print()
 
     def render_notice(self, notice: NoticeData) -> None:

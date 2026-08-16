@@ -374,6 +374,40 @@ class TestDefaultSyntaxHighlight:
         assert "total 244" in _strip_ansi(out)
         assert "\x1B[94" not in out  # 纯文件列表无 python 语法色
 
+    def test_other_tool_text_no_guess(self):
+        """default 非 read/bash 工具（如 write）：写死 text，内容不猜语法。"""
+        # 即使内容形如 python 源码，也不做语法猜测
+        cc = _make_tool_call(call_id="w1", name="write", args='{"file_path": "a.py", "content": "x"}')
+        self._capture(lambda: _render_common(ToolCallEvent(model="m", tool_call=cc)))
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={
+                "tool_call_id": "w1",
+                "content": "已写入 3 字节到 a.py",
+                "tool_name": "write",
+            },
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "已写入 3 字节到 a.py" in _strip_ansi(out)
+        assert _SYNTAX_TOKEN not in out
+
+    def test_other_tool_pythonish_content_no_highlight(self):
+        """default write 返回 python 片段：写死 text，无语法色。"""
+        cc = _make_tool_call(call_id="w2", name="write", args='{"file_path": "a.py", "content": "x"}')
+        self._capture(lambda: _render_common(ToolCallEvent(model="m", tool_call=cc)))
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={
+                "tool_call_id": "w2",
+                "content": "import json\nimport os\n",
+                "tool_name": "write",
+            },
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "import json" in _strip_ansi(out)
+        assert _SYNTAX_TOKEN not in out
+        assert _SYNTAX_TOKEN_BOLD not in out
+
     def test_bash_output_python_guessed(self):
         """default bash 输出含 Python 代码：内容自动猜成 python 高亮。"""
         cc = _make_tool_call(call_id="b2", name="bash", args='{"command": "python -c ..."}')

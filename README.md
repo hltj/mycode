@@ -149,8 +149,9 @@ uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区 + ric
 
 默认 `default`；`classic` 提供无 emoji 的标题与 `myc[模式] >` 提示符。
 default 风格下代码块（工具调用 YAML 参数、工具输出、异常 traceback、`read` 返回）
-通过 `rich` 做语法高亮，`read` 返回带行号展示（按文件路径/内容自动识别语言，
-bash 等工具输出也按内容猜测语法）；classic 风格保持纯代码围栏。
+通过 `rich` 做语法高亮，`read` 返回带行号展示（按文件路径/内容自动识别语言），
+bash 工具输出也按内容猜测语法；其余工具（write/edit/glob/grep/ls/patch 等）输出
+保持纯文本展示；classic 风格保持纯代码围栏。
 语法高亮主题默认 `nord`（低饱和柔和），可用环境变量 `MYCODE_SYNTAX_THEME`
 覆盖（如 `gruvbox-dark`、`zenburn`）；工具输出自带 ANSI 颜色控制码时原样输出、
 不二次高亮。

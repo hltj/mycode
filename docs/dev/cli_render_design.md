@@ -128,9 +128,13 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 - 无行号内容（工具调用 YAML、工具结果、异常 traceback）：`Syntax(..., line_numbers=False)`
   直接语法高亮输出；
 - 语言标签传递：工具调用参数填 `yaml`，异常 traceback 用 `python`（`traceback_language`，
-  对 File/行号/异常名/关键字均有高亮），其余工具结果经 Pygments `guess_lexer` 按内容
-  猜测语言（如 bash 输出的 Python 代码）——纯文本 / 猜不到统一回退 `markdown`；非法
-  语言名同样自动回退到 `markdown` 词法分析；
+  对 File/行号/异常名/关键字均有高亮）。**工具结果语言猜测仅限 `read` / `bash`**：
+  - `bash` 输出经 Pygments `guess_lexer` 按内容猜测（如输出 Python 代码）；
+  - `read` 按调用时 `file_path` 推断（见下文 3.5）；
+  - 其余工具（`write` / `edit` / `glob` / `grep` / `ls` / `patch` 等）写死
+    `text`（纯文本、不做语法猜测）。
+  当语言参数为 `None` / 非法时，`_syntax_plain` 回退 `markdown` 词法分析；
+  写死的 `text` 是显式语言，直接按纯文本渲染、不参与该兜底；
 - 背景色：代码块区域设置 `background_color="rgb(30,30,30)"`，与输入区灰色背景呼应、
   无围栏时仍能区分代码块边界；
 - 主题：语法高亮默认使用 `nord`（低饱和蓝灰，柔和不刺眼），可通过环境变量
