@@ -1468,7 +1468,7 @@ class TestE429Retry:
         patches = [
             patch.object(cli, "client", fake_client),
             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]),
-            patch.object(cli, "_countdown_retry", side_effect=lambda w: waits.append(w)),
+            patch.object(cli, "_countdown_retry", side_effect=lambda w, **kw: waits.append(w)),
         ]
         if handler is not None:
             patches.append(patch.object(cli.ToolsRegistry, "get_handler", return_value=handler))
@@ -1527,7 +1527,7 @@ class TestE429Retry:
         with contextlib.ExitStack() as stack:
             stack.enter_context(patch.object(cli, "client", fake_client))
             stack.enter_context(patch.object(cli.ToolsRegistry, "get_tools", return_value=[]))
-            stack.enter_context(patch.object(cli, "_countdown_retry", side_effect=lambda w: None))
+            stack.enter_context(patch.object(cli, "_countdown_retry", side_effect=lambda w, **kw: None))
             stack.enter_context(patch.object(cli, "_e429_wait_list", [1]))  # 只配置 1 档
             with pytest.raises(RateLimitError):
                 cli.agent_loop(messages, bus, model="test-model")
@@ -1550,7 +1550,7 @@ class TestE429Retry:
 
 
 class TestCountdownRetry:
-    """_countdown_retry：红棕色整行重写倒计时，n 原位跳动，到 0 清除。"""
+    """_countdown_retry：红棕色整行重写倒计时，n 固定宽度右对齐原位跳动，到 0 清除。"""
 
     def test_output_color_and_countdown_and_clear(self):
         import io
@@ -1560,11 +1560,34 @@ class TestCountdownRetry:
         with contextlib.redirect_stdout(out_buf), u_patch("time.sleep"):
             cli._countdown_retry(3)
         out = out_buf.getvalue()
-        # 红棕色 + 「限流重试... n」，n 递减原位改写
+        # 红棕色 + 「限流重试... n」，n 递减原位改写（默认宽度 1）
         assert "\x1B[38;2;165;42;42m限流重试... 3\x1B[0m" in out
         assert "限流重试... 2" in out
         assert "限流重试... 1" in out
-        # 每次改写都用 \r 回到行首（前缀不变、n 跳动）
-        assert out.count("\r") == 5  # 3 次倒计时 + 清除行的首尾各 1 次
-        # 末尾清除：\r + 空格覆盖 + \r
-        assert out.endswith("\r")
+        # 每次改写都用 \r 回到行首（前缀不变、n 跳动），清除时再用 \r + \x1B[2K
+        assert out.count("\r") == 4  # 3 次倒计时 + 清除行首的 1 次
+        # 结束用 ANSI 清整行：整行擦除，不依赖手动空格覆盖
+        assert out.endswith("\r\x1B[2K")
+
+    def test_multi_digit_counts_right_aligned(self):
+        """宽度 2 时数字右对齐：10→9 高位补空格覆盖，避免残留 0。"""
+        import io
+        import contextlib
+        from unittest.mock import patch as u_patch
+        out_buf = io.StringIO()
+        with contextlib.redirect_stdout(out_buf), u_patch("time.sleep"):
+            cli._countdown_retry(10, width=2)
+        out = out_buf.getvalue()
+        # 多位数右对齐：10、9（前补空格）
+        assert "限流重试... 10" in out
+        assert "限流重试...  9" in out
+        assert "限流重试...  1" in out
+        # 每一帧「限流重试... n」的字符长度恒定：从 10 落到 9 时
+        # 旧帧高位的 0 会被空格覆盖，不会残留在新帧两侧
+        red_brown = "\x1B[38;2;165;42;42m"
+        reset = "\x1B[0m"
+        frames = [f for f in out.split("\r") if "限流重试..." in f]
+        body_lens = {len(f[len(red_brown):-len(reset)]) for f in frames}
+        assert body_lens == {len("限流重试... ") + 2}
+        # 结束用 ANSI 清整行
+        assert out.endswith("\r\x1B[2K")

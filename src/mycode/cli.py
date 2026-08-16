@@ -296,10 +296,11 @@ def _run_tool_with_permission(
             return handler(**args)
 
 
-def _countdown_retry(wait: int) -> None:
-    """429 限流等待倒计时：红棕色显示「限流重试... n」，n 原位跳动。
+def _countdown_retry(wait: int, width: int = 1) -> None:
+    """429 限流等待倒计时：红棕色显示「限流重试... n」，n 右对齐固定宽度原位跳动。
 
-    倒计时到 0 时清除整行（静默重试由调用方继续循环完成）。
+    width 取等待时间列表最大值位数，落到个位数时高位的空格覆盖旧字符，
+    避免残留（如 10→9 只覆盖 1 而留下 0）；倒计时结束清除整行。
     """
     import sys
     from time import sleep
@@ -307,11 +308,11 @@ def _countdown_retry(wait: int) -> None:
     red_brown = "\x1B[38;2;165;42;42m"
     reset = "\x1B[0m"
     for remaining in range(wait, 0, -1):
-        sys.stdout.write(f"\r{red_brown}限流重试... {remaining}{reset}")
+        sys.stdout.write(f"\r{red_brown}限流重试... {remaining:>{width}}{reset}")
         sys.stdout.flush()
         sleep(1)
-    # 倒计时到 0：清除整行
-    sys.stdout.write("\r" + " " * (len(f"限流重试... {wait}") + 4) + "\r")
+    # 倒计时到 0：\x1B[2K 清除整行（无需手动算宽度，全角/残影都不残留）
+    sys.stdout.write("\r\x1B[2K")
     sys.stdout.flush()
 
 
@@ -369,7 +370,9 @@ def agent_loop(
                 # 配置缺失 / 连续次数超出配置列表长度：功能不启用，向上抛出
                 raise
             wait = wait_list[consecutive_429 - 1]
-            _countdown_retry(wait)
+            # 数字右对齐：宽度取等待时间列表最大值位数（如 "1,2,5,10" → 2），
+            # 倒计时从 10→9 递减时高位被空格覆盖，避免残留旧数字。
+            _countdown_retry(wait, width=len(str(max(wait_list))))
             continue
         # 成功产生模型事件：重置连续 429 计数
         consecutive_429 = 0
