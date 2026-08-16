@@ -500,6 +500,8 @@ class TestDefaultSyntaxHighlight:
         # ANSI 控制码原样保留，无 nord 语法色
         assert "\x1B[32mgreen\x1B[0m files" in out
         assert "38;5;109" not in out
+        # 代码块后补空行（ANSI 内容也要带末尾空行）
+        assert out.endswith("\n\n")
 
     def test_ansi_control_in_read_plain(self):
         """default read 内容含 ANSI：绕过高亮，直接输出。"""
@@ -513,6 +515,8 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         assert "\x1B[31merror\x1B[0m file" in out
         assert "38;5;109" not in out
+        # read 含 ANSI 也补空行
+        assert out.endswith("\n\n")
 
     def test_syntax_theme_env_var(self, monkeypatch):
         """MYCODE_SYNTAX_THEME 环境变量可覆盖语法高亮主题。"""

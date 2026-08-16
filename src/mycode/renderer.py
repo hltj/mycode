@@ -598,7 +598,7 @@ class _DefaultRenderer(_Renderer):
         """
         body = body.rstrip(chr(0x0A))
         if _has_ansi_control(body):
-            print(body, end="")
+            print(body)
             return
         if language is None:
             language = _guess_read_language(body)
