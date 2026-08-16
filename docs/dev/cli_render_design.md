@@ -4,6 +4,8 @@
 
 CLI 的终端展示由 `mycode.renderer`（渲染器）与 `mycode.cli`（prompt_toolkit 输入区、事件总线装配）共同完成。渲染按风格（`--style`，默认 `default`，可选 `classic`）拆分为独立渲染器：公共流程在 `_Renderer` 基类复用，风格差异由 `_DefaultRenderer` / `_ClassicRenderer` 子类覆写。所有消息 / 事件统一走 `AgentEventBus` 分发到 `render_terminal`（实时）或 `render_replay`（历史重放）。
 
+default 风格引入 `rich`（PyYAML 同层运行时依赖）实现代码块语法高亮；classic 风格不引入，保持纯代码围栏输出。
+
 核心文件：
 - `src/mycode/renderer.py` — 渲染器基类与两个风格子类、共享分发、TODO 渲染、ANSI 辅助
 - `src/mycode/cli.py` — 事件总线、PromptSession 配置、输入区样式、replay 装配
@@ -31,17 +33,26 @@ CLI 的终端展示由 `mycode.renderer`（渲染器）与 `mycode.cli`（prompt
 |------|------|
 | `format_todos(state)` | 用子类 `symbols` + 共用 `formats` 模板渲染待办列表 |
 | `render_assistant(message, model)` | AI 标题（紫）+ 正文；无正文（纯 tool_calls）仅标题 |
-| `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（代码围栏） |
-| `render_tool_result(tool_result)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果 |
-| `render_notice(notice)` | 黄色高亮提醒（仅标题用提醒格式，附加内容照常输出） |
-| `render_exception(exc)` | 红色异常标题 + traceback 围栏 |
+| `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（default 语法高亮 / classic 围栏） |
+| `render_tool_result(tool_result)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果；`read` 特化：带行号渲染 |
+| `render_notice(notice)` | 黄色高亮提醒（仅标题用提醒格式，附加内容 default 解析围栏后语法高亮 / classic 照常输出） |
+| `render_exception(exc)` | 红色异常标题 + traceback（default 语法高亮 / classic 围栏） |
 | `render_interrupt()` | 输出空行 |
 | `render_mode_change(mode)` | 灰色提示「已切换到【{mode}】模式」 |
+
+### 代码块渲染（基类差异点）
+
+| 方法 | 说明 |
+|------|------|
+| `render_code_block(body, language)` | 无行号代码/文本（default：rich 语法高亮 / classic：代码围栏） |
+| `render_read_output(content)` | read 工具返回（default：rich 带行号语法高亮 / classic：围栏） |
+| `render_notice_additional(additional)` | 提醒附加内容（default：解析围栏后高亮 / classic：原样） |
 
 ### 风格差异点（子类覆写）
 
 | 方法 | 说明 |
 |------|------|
+| `render_code_block` / `render_read_output` / `render_notice_additional` | 代码块 / read 返回 / 提醒附加内容渲染（default 语法高亮 / classic 围栏） |
 | `ai_title` / `tool_call_title` / `tool_result_title` | 标题文本（emoji 与否） |
 | `notice_text` / `exception_title` | 提醒 / 异常标题文本 |
 | `render_user_message(text, mode)` | 用户消息渲染（default 灰色背景块 / classic 单行前缀） |
@@ -106,10 +117,36 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 
 ### 3.2 代码围栏（_code_fence）
 
-根据内容中最长连续反引号长度动态选择定界符：内容含 3 重反引号则用 4 重，以此类推
-（`最长连续反引号 + 1`，最短 3 重），避免内容中的反引号提前终止代码块。
+classic 风格下按内容中最长连续反引号长度动态选择定界符：内容含 3 重反引号则用
+4 重，以此类推（`最长连续反引号 + 1`，最短 3 重），避免内容中的反引号提前终止
+代码块。
 
-### 3.3 YAML 参数展示（render_tool_call）
+### 3.3 rich 语法高亮（default，_syntax_plain）
+
+default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
+
+- 无行号内容（工具调用 YAML、工具结果、异常 traceback）：`Syntax(..., line_numbers=False)`
+  直接语法高亮输出；
+- 语言标签传递：工具调用参数填 `yaml`，异常 traceback 用 `python`（`traceback_language`，
+  对 File/行号/异常名/关键字均有高亮），其余工具结果经 Pygments `guess_lexer` 按内容
+  猜测语言（如 bash 输出的 Python 代码）——纯文本 / 猜不到统一回退 `markdown`；非法
+  语言名同样自动回退到 `markdown` 词法分析；
+- 背景色：代码块区域设置 `background_color="rgb(30,30,30)"`，与输入区灰色背景呼应、
+  无围栏时仍能区分代码块边界；
+- 主题：语法高亮默认使用 `nord`（低饱和蓝灰，柔和不刺眼），可通过环境变量
+  `MYCODE_SYNTAX_THEME` 覆盖（如 `gruvbox-dark` / `zenburn` / `one-dark`），
+  常量集中在 renderer 顶部（`_CODE_THEME` / `_CODE_BG`）；
+- ANSI 控制码豁免：工具输出若自带 ANSI 控制码（如 `ls --color`、脚本彩色输出），
+  不做语法高亮、原样输出（`_has_ansi_control` 检测），避免控制码被语法上色导致
+  转义序列二次包装、颜色错乱；
+- 宽度：按当前终端宽度渲染（`shutil.get_terminal_size`，获取失败回退 80），配合
+  `Syntax(word_wrap=True)` 让超长行在终端内自动换行同时保持背景色铺满整行；
+  `Console(file=io.StringIO(), force_terminal=True)` 捕获 ANSI 转义后经 `print` 输出。
+
+工具调用参数会登记到模块级缓存 `_TOOL_CALL_INFO`（`tool_call_id` → 参数 dict），
+供结果渲染时按 id 取回以推断语言（read 的文件路径等）。
+
+### 3.4 YAML 参数展示（render_tool_call）
 
 工具调用参数用 YAML 展示而非 JSON：
 
@@ -118,7 +155,29 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 3. `yaml.dump(allow_unicode=True, sort_keys=False, default_flow_style=False)`；
 4. 解析失败（非法 JSON）时直接原样输出参数字符串。
 
-### 3.4 TODO 渲染（format_todos）
+default 去掉原来的 ```yaml 代码围栏，改用 rich 语法高亮渲染（`language="yaml"`）；
+classic 保持 ```yaml 围栏。
+
+### 3.5 read 工具结果（带行号语法高亮）
+
+default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号）走
+`render_read_output`，按以下规则渲染为带行号的语法高亮：
+
+1. 若最后一行以 `...` 开头（截断 / 剩余提示），单独拿出来；
+2. 其他带行号的行去掉行号（`^\s*\d+\t` 前缀），交给 rich 重新编号（行号连续、
+   从真实初始行号 `_first_read_lineno` 开始）；
+3. 若有第 1 步拿出的行，再补上输出（蓝灰 `\x1B[38;5;110m`，与深灰背景区分、柔和不刺眼）。
+
+语言识别（默认风格）：优先按调用时登记的 `file_path` 用 Pygments
+`guess_lexer_for_filename` 推断（扩展名如 `.py`/`.sh`/`.yaml`，或已知文件名如
+`.bashrc` 直接命中）；文件名推断不到再按内容 `guess_lexer`；纯文本 / 猜不到
+由 `_syntax_plain` 统一回退到 `markdown` 词法分析（保留行号，markdown 语法
+如标题/代码块仍会着色）。
+
+仅当「`tool_name == "read"` 且内容含行号」时走此路径；错误 / 越界等文本照常走
+普通代码块渲染。
+
+### 3.6 TODO 渲染（format_todos）
 
 模板共用（`_TODO_FORMATS`），符号由子类提供：
 
@@ -128,7 +187,7 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 | in_progress | `🟧` | `- [{>}]:`（> 橙） | 粗 + 白 |
 | pending | `🔳` | `- [ ]:` | 普通 |
 
-### 3.5 default 用户消息（灰色背景块）
+### 3.7 default 用户消息（灰色背景块）
 
 `_DefaultRenderer.render_user_message` 是 default 风格最复杂的部分：
 
@@ -141,11 +200,11 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 - 零宽字符（emoji 修饰符）跟随前一字符，不计宽度；
 - 提示符竖线用模式色渲染，空格 + 正文恢复默认前景（`_FG_DEFAULT`），保留背景色。
 
-### 3.6 classic 用户消息
+### 3.8 classic 用户消息
 
 单行：`{模式色}{myc[模式] >} \x1B[0m{text}`，末尾空行。
 
-### 3.7 NoticeEvent 文案结构
+### 3.9 NoticeEvent 文案结构
 
 `NoticeEvent` 承载系统级提醒（陈旧待办、命令修改等），文案分三部分
 （`session.py`）：
@@ -159,7 +218,11 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 
 `to_user_msg()` 把 `content` 整体包进 `<tag_name>` 标签，附加内容代码块
 按原样跟在标签之后，避免整块被标签包裹。渲染时 `render_notice` 把提醒
-文本整体用黄色高亮渲染，附加内容照常输出。
+文本整体用黄色高亮渲染，附加内容经 `render_notice_additional` 处理：
+default 解析围栏语言后做语法高亮（围栏不保留），classic 原样输出。
+仅当附加内容「整体恰好是一个完整代码块」时高亮：收尾围栏长度须 >= 开头围栏
+长度（markdown 语义，避免正文短反引号行抢先闭合），且须为最后一行（围栏后
+无其他内容）；正文中间的独立反引号行不会提前闭合。
 
 典型场景「编辑 bash 命令」（`tag_name="notice"`）：
 - 渲染标题：`命令修改为：`（`display_content`）

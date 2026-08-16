@@ -5,7 +5,10 @@
 _DefaultRenderer / _ClassicRenderer 子类覆写。
 """
 
+import io
 import json
+import os
+import re
 from typing import Any, NoReturn, cast
 
 from openai.types.chat import (
@@ -14,6 +17,8 @@ from openai.types.chat import (
 )
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
+from rich.console import Console
+from rich.syntax import Syntax
 
 from mycode.session import (
     SessionRecord,
@@ -114,6 +119,161 @@ def _code_fence(text: str) -> str:
     return '`' * max(3, longest + 1)
 
 
+# 工具调用参数缓存：tool_call_id -> args_dict
+# render_tool_call 写入，render_tool_result 按 id 取回（用于 read 文件名
+# 推断语法），取用后清掉避免内存无限增长。
+_TOOL_CALL_INFO: dict[str, dict] = {}
+
+
+def _tool_call_args(tool_call_id: str) -> dict:
+    """取回指定 tool_call_id 的调用参数；缺失时返回空 dict。"""
+    return _TOOL_CALL_INFO.pop(tool_call_id, {})
+
+
+# 默认风格带行号语法高亮渲染：与输入区一致的深灰背景区分代码块区域
+_CODE_BG = "rgb(30,30,30)"
+# 语法高亮主题，可用环境变量 MYCODE_SYNTAX_THEME 覆盖（如 nord / gruvbox-dark / zenburn）
+_CODE_THEME = os.getenv("MYCODE_SYNTAX_THEME", "nord")
+
+# ANSI 控制码（CSI / OSC）检测：工具输出若自带颜色控制码，不再语法高亮，
+# 否则会对控制码序列再次上色、导致转义码泄漏到终端。
+_ANSI_MARK_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-~]")
+
+
+def _has_ansi_control(text: str) -> bool:
+    """判断文本是否包含 ANSI 控制码。有则不应进行语法高亮。"""
+    return bool(_ANSI_MARK_RE.search(text))
+_HIGHLIGHT_MUTED = "\x1B[38;5;110m"   # 蓝灰（read 末尾截断/剩余提示行，default 风格；与背景区分、柔和不刺眼）
+_READ_LINE_RE = re.compile(r"^\s*\d+\t(.*)$", re.MULTILINE)
+_READ_LINENO_RE = re.compile(r"^\s*(\d+)\t", re.MULTILINE)
+_TRUNCATE_MARK_RE = re.compile(r"^\.\.\.\s")
+
+
+def _is_truncate_marker(line: str) -> bool:
+    """判断行是否为截断/剩余提示行（以 ``...`` 开头）。"""
+    return bool(_TRUNCATE_MARK_RE.match(line))
+
+
+def _split_read_output(text: str) -> tuple[list[str], list[str]]:
+    """把 read 工具输出拆为「普通带行号行」与「末尾提示行」。
+
+    read 工具返回结构：带行号的行 + 可选的截断/剩余提示行。提示行是
+    最后一行以 ``...`` 开头的那行（``... 已截断`` / ``... 剩余 N 行``）。
+
+    处理规则：
+    1. 若最后一行以 ``...`` 开头，单独拿出（不参与行号剥离）；
+    2. 其他带行号的行，去掉行号交给 rich 处理成带行号的；
+    3. 若有第 1 步拿出的行，渲染完带行号内容后再补上该行输出。
+    """
+    lines = str(text).split("\n")
+    marker: list[str] = []
+    if lines and _is_truncate_marker(lines[-1]):
+        marker.append(lines.pop())
+    # 去掉行号前缀，内容交给 rich 重新生成连续行号；不是带行号的保留原样
+    normal = [m.group(1) if (m := _READ_LINE_RE.match(line)) else line
+              for line in lines]
+    return normal, marker
+
+
+def _first_read_lineno(text: str) -> int:
+    """解析 read 结果文本的首行行号；解析不到时返回 1。"""
+    m = _READ_LINENO_RE.search(text)
+    if m:
+        try:
+            return int(m.group(1))
+        except ValueError:
+            pass
+    return 1
+
+
+def _guess_read_language(text: str) -> str | None:
+    """根据内容猜测语法高亮语言。
+
+    用 Pygments ``guess_lexer`` 自动检测；猜不到（纯文本 / 失败）时返回
+    ``None``（由 ``_syntax_plain`` 统一兜底为 ``markdown``）。
+    """
+    try:
+        from pygments.lexers import guess_lexer  # type: ignore[import-untyped]
+    except Exception:
+        return None
+    try:
+        lexer = guess_lexer(text)
+    except Exception:
+        return None
+    if not lexer.aliases:
+        return None
+    alias = lexer.aliases[0]
+    if alias == "text" or alias == "textonly":
+        return None
+    return alias
+
+
+def _guess_filename_language(filename: str, text: str) -> str | None:
+    """根据文件名 + 内容猜测语法高亮语言（优先文件名）。
+
+    用 Pygments ``guess_lexer_for_filename`` —— 文件扩展名 / 已知文件名
+    （如 ``.bashrc``、``Makefile``）直接命中；命中失败再退回到内容
+    ``guess_lexer``。拿不到别名或结果为纯文本时返回 ``None``
+    （由 ``_syntax_plain`` 统一兜底为 ``markdown``）。
+    """
+    candidates: list[tuple[str, str]] = [("filename", filename), ("content", text)]
+    for kind, source in candidates:
+        if not source:
+            continue
+        try:
+            if kind == "filename":
+                from pygments.lexers import guess_lexer_for_filename
+                lexer = guess_lexer_for_filename(filename, text, stripnl=False)
+            else:
+                from pygments.lexers import guess_lexer
+                lexer = guess_lexer(text)
+        except Exception:
+            continue
+        if not lexer.aliases:
+            continue
+        alias = lexer.aliases[0]
+        if alias != "text" and alias != "textonly":
+            return alias
+    return None
+
+
+def _terminal_columns() -> int:
+    """当前终端宽度（列数），获取失败时回退到 80。"""
+    import shutil
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 80
+
+
+def _syntax_plain(code: str, language: str | None = None,
+                  line_numbers: bool = False, start_line: int = 1) -> str:
+    """返回 rich 渲染后的代码文本（含 ANSI 转义）。
+
+    在**终端宽度**下用 rich 渲染：短行背景色铺满整行、超长行自动换行，
+    行号连续自然排列。``language`` 为 ``None`` 时使用 ``markdown`` 词法分析
+    （识别 markdown 语法如标题/代码块，纯文本行无额外着色）；词法器解析
+    失败时同样回退到 ``markdown``。
+
+    若内容自带 ANSI 控制码（工具输出可能包含颜色转义），不再语法高亮——
+    原样返回（补一个尾部换行），避免对控制码再次上色导致转义序列泄漏。
+    """
+    if _has_ansi_control(code):
+        return code + (chr(0x0A) if not code.endswith(chr(0x0A)) else "")
+    lexer = language or "markdown"
+    try:
+        syntax = Syntax(code, lexer, theme=_CODE_THEME, line_numbers=line_numbers,
+                        start_line=start_line, word_wrap=True,
+                        background_color=_CODE_BG)
+    except Exception:
+        syntax = Syntax(code, "markdown", theme=_CODE_THEME, line_numbers=line_numbers,
+                        start_line=start_line, word_wrap=True,
+                        background_color=_CODE_BG)
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, width=_terminal_columns()).print(syntax)
+    return buf.getvalue()
+
+
 def _wrap_by_display_width(body: str, columns: int) -> list[str]:
     """按显示宽度分行，返回每段宽度恰为 ``columns`` 的段落列表。
 
@@ -167,6 +327,8 @@ class _Renderer:
     # 待办状态符号（子类各自定义）与模板（所有风格共用）
     symbols: dict[str, str]
     formats: dict[str, str] = _TODO_FORMATS
+    # 异常 traceback 渲染语言：default 传 "python" 做高亮；classic 传空走无标签围栏
+    traceback_language: str = ""
 
     # ---- 待办事项 ----
     def format_todos(self, state: list[dict] | None = None) -> str:
@@ -198,6 +360,38 @@ class _Renderer:
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         raise NotImplementedError
 
+    # ---- 代码块渲染（风格差异点） ----
+    def render_code_block(self, body: str, language: str | None = None) -> None:
+        """渲染一块代码/文本（无行号）。
+
+        基类默认用普通代码围栏（classic 风格沿用）；default 子类覆写为
+        rich 语法高亮。``language`` 为语言标签（如工具调用 YAML），
+        有标签时跟在围栏同一行（`` ```yaml``），无标签时围栏单独一行。
+        """
+        fence = _code_fence(body)
+        if language:
+            print(f"{fence}{language}\n{body.rstrip(chr(0x0A))}\n{fence}")
+        else:
+            print(f"{fence}\n{body.rstrip(chr(0x0A))}\n{fence}")
+
+    def render_read_output(self, content: str, file_path: str = "") -> None:
+        """渲染 read 工具返回（带行号内容）。
+
+        基类默认用代码围栏包装（classic 风格沿用）；default 子类覆写为
+        rich 带行号语法高亮。``file_path`` 为调用时的文件路径，可辅助
+        推断语法语言。
+        """
+        fence = _code_fence(content)
+        print(f"{fence}\n{content.rstrip(chr(0x0A))}\n{fence}")
+
+    def render_notice_additional(self, additional: str) -> None:
+        """渲染提醒附带的额外内容（如代码块）。
+
+        基类默认原样输出（classic 风格沿用）；default 子类覆写为解析
+        围栏后做语法高亮。
+        """
+        print(additional.rstrip(chr(0x0A)))
+
     # ---- 渲染（公共流程在基类） ----
     def render_assistant(self, message: ChatCompletionAssistantMessageParam, model: str) -> None:
         # AI 回复：标题（风格差异）+ 正文；无正文（纯 tool_calls）时仅标题
@@ -215,6 +409,7 @@ class _Renderer:
             parsed = json.loads(args_)
         except (json.JSONDecodeError, TypeError):
             yaml_text = args_
+            parsed = None
         else:
             import yaml
 
@@ -230,38 +425,56 @@ class _Renderer:
             yaml_text = yaml.dump(parsed, Dumper=_BlockStrDumper,
                                   allow_unicode=True, sort_keys=False,
                                   default_flow_style=False, width=64 * 1024)
-        print(f"\x1B[1;34m{self.tool_call_title(func_name)}\x1B[0m\n```yaml\n{yaml_text}```")
+        # 记录工具调用参数供结果渲染时推断语言
+        call_id = tool_call.get("id", "")
+        if call_id and isinstance(parsed, dict):
+            _TOOL_CALL_INFO[call_id] = dict(parsed)
+        print(f"\x1B[1;34m{self.tool_call_title(func_name)}\x1B[0m")
+        self.render_code_block(yaml_text, language="yaml")
+        print()
 
     def render_tool_result(self, tool_result: ToolResultData) -> None:
         # todo_write 特化渲染：先输出当前待办列表再输出结果
         if tool_result.get("tool_name") == "todo_write":
             print(f"\x1B[1;36mTODO 列表:\x1B[0m\n{self.format_todos()}\n")
         tool_result_content = tool_result.get("content", "")
-        fence = _code_fence(tool_result_content)
-        print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m\n{fence}{f'{chr(0x0A)}{tool_result_content}'.rstrip(chr(0x0A))}\n{fence}")
+        print(f"\x1B[1;34m{self.tool_result_title()}\x1B[0m")
+        # read 返回的标准内容（带行号）走带行号渲染；否则普通代码块。
+        # 内容自带 ANSI 控制码时不做任何语法高亮/行号重构，原样输出
+        # （避免控制码被再次上色泄漏转义序列）。
+        if _has_ansi_control(tool_result_content):
+            self.render_code_block(tool_result_content)
+        elif tool_result.get("tool_name") == "read" and _READ_LINE_RE.search(tool_result_content):
+            call_id = tool_result.get("tool_call_id", "")
+            args = _tool_call_args(call_id)
+            file_path = str(args.get("file_path", "")) if args else ""
+            self.render_read_output(tool_result_content, file_path=file_path)
+        else:
+            self.render_code_block(tool_result_content)
+        print()
 
     def render_notice(self, notice: NoticeData) -> None:
         """系统级提醒（陈旧待办、命令已更新等）：黄色高亮。
 
         提醒文本（``display_content`` 非空时优先于 ``content``）整体用提醒
         样式渲染（``notice_text``，子类可加 💡 前缀等）；
-        ``additional_content``，如代码块，照常原样输出，不带提醒样式。
+        ``additional_content``，如代码块，由 ``render_notice_additional``
+        渲染（default 语法高亮 / classic 原样输出）。
         """
         heading = notice.get("display_content") or notice.get("content", "")
-        lines: list[str] = [f"\x1B[1;33m{self.notice_text(heading)}\x1B[0m"]
+        print(f"\x1B[1;33m{self.notice_text(heading)}\x1B[0m")
         additional = notice.get("additional_content", "")
         if additional:
-            lines.append(additional.rstrip(chr(0x0A)))
-        print("\n".join(lines) + "\n")
+            self.render_notice_additional(additional)
+        print()
 
     def render_exception(self, exc: ExceptionData) -> None:
         exc_type = exc.get("type", "Unknown")
         exc_message = exc.get("message", "")
         traceback_str = exc.get("traceback", str(exc))
         print(f"\x1B[1;31m{self.exception_title(exc_type, exc_message)}\x1B[0m")
-        print("```")
-        print(traceback_str.rstrip("\n"))
-        print("```")
+        self.render_code_block(traceback_str, language=self.traceback_language)
+        print()
 
     def render_interrupt(self) -> None:
         # 交互状态输出空行
@@ -294,6 +507,7 @@ class _DefaultRenderer(_Renderer):
     """默认渲染风格：emoji 标题 + 灰色输入区。"""
 
     symbols = _TODO_SYMBOLS
+    traceback_language = "python"
 
     def ai_title(self, model: str) -> str:
         return f"🤖 {model}"
@@ -309,6 +523,78 @@ class _DefaultRenderer(_Renderer):
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"❌ 异常 - {exc_type} - {exc_message}"
+
+    def render_code_block(self, body: str, language: str | None = None) -> None:
+        """default：rich 语法高亮渲染代码块（不带行号）。
+
+        未显式指定语言时按内容猜测（Pygments ``guess_lexer``），识别不到
+        回退 ``markdown``。内容自带 ANSI 控制码时不做猜测、原样输出，
+        避免控制码被再次上色泄漏转义序列。
+        """
+        body = body.rstrip(chr(0x0A))
+        if _has_ansi_control(body):
+            print(body, end="")
+            return
+        if language is None:
+            language = _guess_read_language(body)
+        print(_syntax_plain(body, language=language), end="")
+
+    def render_read_output(self, content: str, file_path: str = "") -> None:
+        """default：read 工具返回用 rich 带行号语法高亮渲染。
+
+        read 返回的每行形如 ``行号\\t内容``；先按既定规则拆分：
+        1. 最后一行若以 ``...`` 开头则单独拿出；
+        2. 其余带行号的行去掉行号，交给 rich 处理成带行号的；
+        3. 若有单独拿出的行再补上输出。
+
+        语言优先按调用时的 ``file_path``（扩展名）推断，其次按内容猜测。
+        """
+        read_content = content.rstrip(chr(0x0A))
+        normal, marker = _split_read_output(read_content)
+        if not normal:
+            body = _syntax_plain("", language=None,
+                                 line_numbers=True, start_line=1)
+        else:
+            joined = "\n".join(normal)
+            language = _guess_filename_language(file_path, joined)
+            body = _syntax_plain(
+                joined, language=language,
+                line_numbers=True, start_line=_first_read_lineno(read_content),
+            )
+        if marker:
+            body += f"{_HIGHLIGHT_MUTED}{marker[0]}{_RESET}\n"
+        print(body, end="")
+
+    def render_notice_additional(self, additional: str) -> None:
+        """default：解析围栏语言后做语法高亮；非围栏/残缺围栏原样输出。
+
+        仅当附加内容为完整规范代码块时高亮：开头围栏（3 重以上 + 可选语言
+        标签 + 换行）、正文、以及作为最后一行的收尾围栏。其余格式（纯文本、
+        围栏缺失 / 空正文 / 收尾后还有内容）一律原样输出，避免误高亮反引号。
+
+        边界规则：
+        - 收尾围栏长度必须 >= 开头围栏长度（markdown 语义），避免正文里
+          的短反引号行抢先闭合长开头围栏；
+        - 收尾围栏取**最后一个**满足条件的行（正文中间的反引号行不提前闭合），
+          且它之后必须是字符串结尾。
+        """
+        additional = additional.rstrip(chr(0x0A))
+        m = re.match(r"^(`{3,})[ \t]*([A-Za-z0-9_+-]*)[ \t]*\n", additional)
+        if not m:
+            print(additional)
+            return
+        open_fence, lang = m.group(1), m.group(2)
+        body = additional[m.end():]
+        # 收尾围栏长度 >= 开头围栏长度，且从尾部找最后一个匹配
+        end_pat = re.compile(r"\n`{%d,}[ \t]*$" % len(open_fence))
+        end_m = None
+        for em in end_pat.finditer(body):
+            end_m = em
+        if end_m is None or not body[:end_m.start()].strip():
+            print(additional)
+            return
+        chunk = body[:end_m.start()]
+        print(_syntax_plain(chunk.rstrip(chr(0x0A)), language=lang or None), end="")
 
     def render_user_message(self, text: str, mode: Mode) -> None:
         """灰色背景输入块。竖线（含模式标记 ?/!，与提示符同色）仅出现在

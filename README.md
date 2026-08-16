@@ -11,7 +11,7 @@
 - **文件读写**：内置 `read`、`write`、`edit`、`patch`，统一走路径安全检查
 - **任务跟踪**：内置 `todo_write`，搭配陈旧度自动提醒与重放同步
 - **模式权限**：询问/自动/全权三种模式 + 确认界面（同意/编辑/拒绝），按操作分类决定是否需人工确认
-- **双渲染风格**：default（emoji 标题 + 灰色输入区）/ classic（无 emoji + `myc[模式] >` 提示符）
+- **双渲染风格**：default（emoji 标题 + 灰色输入区 + rich 语法高亮代码块）/ classic（无 emoji + `myc[模式] >` 提示符）
 - **会话管理**：完整的对话上下文管理，支持多轮交互与断点续接
 - **命令历史**：持久化保存输入历史，支持上下键翻阅
 - **自动补全**：内置命令补全功能
@@ -85,6 +85,7 @@ uv sync
 ```
 
 `uv sync` 会自动创建 `.venv/` 虚拟环境并安装所有依赖（含 dev 依赖）。
+`rich`（默认风格语法高亮）与 `pyyaml` 同为主运行时依赖。
 
 ### 配置环境变量
 
@@ -143,10 +144,16 @@ uv run myc -c   # 恢复当前目录的最新会话
 
 ```bash
 uv run myc -s classic      # 经典风格（myc[模式] > 提示符 + 复选框待办）
-uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区）
+uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区 + rich 语法高亮）
 ```
 
 默认 `default`；`classic` 提供无 emoji 的标题与 `myc[模式] >` 提示符。
+default 风格下代码块（工具调用 YAML 参数、工具输出、异常 traceback、`read` 返回）
+通过 `rich` 做语法高亮，`read` 返回带行号展示（按文件路径/内容自动识别语言，
+bash 等工具输出也按内容猜测语法）；classic 风格保持纯代码围栏。
+语法高亮主题默认 `nord`（低饱和柔和），可用环境变量 `MYCODE_SYNTAX_THEME`
+覆盖（如 `gruvbox-dark`、`zenburn`）；工具输出自带 ANSI 颜色控制码时原样输出、
+不二次高亮。
 模式切换（shift-tab 或 `/ask` `/auto` `/yolo`）与确认界面在两种风格下均可用。
 
 ## 内置工具一览

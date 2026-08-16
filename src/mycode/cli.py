@@ -7,6 +7,13 @@ import argparse
 from typing import Any, Callable, cast
 
 from dotenv import load_dotenv
+
+# ---------------------------------------------------------------------------
+# 加载 .env 环境变量（须在导入本地模块前，本地模块顶部常量会读取环境变量，
+# 例如 renderer 的语法高亮主题 MYCODE_SYNTAX_THEME）
+# ---------------------------------------------------------------------------
+load_dotenv()
+
 from openai import OpenAI, RateLimitError
 from openai.types.chat import (
     ChatCompletionSystemMessageParam,
@@ -28,11 +35,6 @@ from mycode.renderer import (
     render_replay,
     _prompt_fragments,
 )
-
-# ---------------------------------------------------------------------------
-# 加载 .env 环境变量
-# ---------------------------------------------------------------------------
-load_dotenv()
 
 # APP_HOME_DIR 和 历史记录文件
 APP_HOME_DIR = __import__('pathlib').Path(os.getenv('MYCODE_HOME_DIR', os.path.expanduser('~/.mycode')))
