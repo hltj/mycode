@@ -458,6 +458,39 @@ def agent_loop(
 
 
 # ===================================================================
+# 命令处理 —— 交互命令的行为入口
+# ===================================================================
+
+def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
+    """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
+    MODE_STATE.set(mode)
+    bus.dispatch(ModeChangeEvent(model=model, mode=mode.value))
+
+
+def _handle_retry_command(
+    hist_messages: list[ChatCompletionMessageParam],
+    bus: AgentEventBus,
+    model: str,
+) -> None:
+    """/retry：重新进入 agent 循环。
+
+    当消息列表最后一条是 user 或 tool 消息时（工具被中断/异常后，最后一条
+    通常是补齐的 tool 占位消息，或尚未得到回复的用户输入），直接重发——
+    消息列表已包含最后那条，无需追加新消息。
+
+    否则（最后一条是 assistant 回复、system 或为空），追一条用户消息
+    "继续"（dispatch UserMessage 渲染 + 持久化），再进入 agent 循环。
+    """
+    if hist_messages and hist_messages[-1].get("role") in ("user", "tool"):
+        agent_loop(hist_messages, bus, model)
+        return
+    continue_msg = ChatCompletionUserMessageParam(role='user', content='继续')
+    hist_messages.append(continue_msg)
+    bus.dispatch(UserMessage(model=model, message=continue_msg))
+    agent_loop(hist_messages, bus, model)
+
+
+# ===================================================================
 # CLI 命令补全 & 参数解析
 # ===================================================================
 
@@ -477,7 +510,7 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
 
 
 class MycCommandCompleter(Completer):
-    COMMANDS = ["/q", "/quit", "/ask", "/auto", "/yolo"]
+    COMMANDS = ["/q", "/quit", "/ask", "/auto", "/yolo", "/retry"]
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -546,12 +579,6 @@ def parse_args():
 # ===================================================================
 
 from mycode.session import find_latest_session_file, get_session_file
-
-def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
-    """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
-    MODE_STATE.set(mode)
-    bus.dispatch(ModeChangeEvent(model=model, mode=mode.value))
-
 
 def main():
     args = parse_args()
@@ -633,6 +660,11 @@ def main():
 
             if stripped in {"/q", "/quit"}:
                 break
+
+            # ---- /retry：中断/异常后恢复 agent 循环 ----
+            if stripped == "/retry":
+                _handle_retry_command(hist_messages, bus, model)
+                continue
 
             # 消息列表追加用户输入并进入智能体循环
             user_msg = ChatCompletionUserMessageParam(role='user', content=user_input)

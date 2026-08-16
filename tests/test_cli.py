@@ -1310,3 +1310,101 @@ class TestNoticeInGetMessages:
             e, (UserMessage, AssistantMessage, ToolResultEvent)
         )])
         assert entry_count == 0  # notice 不算
+
+
+class TestRetryCommand:
+    """/retry 命令：重新进入 agent 循环。
+
+    覆盖两条分支：
+      - 消息列表最后一条是 user / tool 消息：直接重发（不再追加新消息）；
+      - 最后一条不是 user / tool（assistant 回复）：先追加 user 消息
+        「继续」（dispatch UserMessage）再进入 agent 循环。
+    """
+
+    def _run_retry(self, messages, bus=None, create_side_effect=None):
+        """mock client 后执行 _handle_retry_command，返回 (messages, captured)"""
+        if bus is None:
+            bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda msg: captured.append(msg))
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=create_side_effect)
+
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+            cli._handle_retry_command(messages, bus, model="test-model")
+        return messages, captured
+
+    def _stop_response(self):
+        """模型本轮直接返回纯文本（finish_reason=stop），agent_loop 立即返回。"""
+        return _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop")
+
+    def test_retry_last_tool_message_no_extra_msg(self):
+        """最后一条是 tool 消息（中断/异常后的占位）：不追加，直接重发。"""
+        from mycode.session import UserMessage
+        messages: list = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "Error: 工具执行被用户中断"},
+        ]
+        # agent_loop 直接重发：绝不会追加新的 user 消息
+        msgs, captured = self._run_retry(messages, create_side_effect=[self._stop_response()])
+        user_contents = [m["content"] for m in msgs if m.get("role") == "user"]
+        assert "继续" not in user_contents
+        # 末尾是 agent_loop 新产生的 assistant 回复
+        assert msgs[-1]["role"] == "assistant"
+        assert msgs[-1]["content"] == "done"
+        # 原始的 tool 消息保留在列表中（倒数第二条）
+        assert msgs[-2]["role"] == "tool"
+        assert msgs[-2]["tool_call_id"] == "c1"
+        # 未 dispatch 新的 UserMessage（直接重发）
+        assert not any(isinstance(e, UserMessage) for e in captured)
+
+    def test_retry_last_user_message_no_extra_msg(self):
+        """最后一条是 user 消息（用户输入后未收到回复被中断）：不追加，直接重发。"""
+        from mycode.session import UserMessage
+        messages: list = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ]
+        msgs, captured = self._run_retry(messages, create_side_effect=[self._stop_response()])
+        user_contents = [m["content"] for m in msgs if m.get("role") == "user"]
+        assert "继续" not in user_contents
+        # 末尾是 agent_loop 新产生的 assistant 回复
+        assert msgs[-1]["role"] == "assistant"
+        assert msgs[-1]["content"] == "done"
+        # 未 dispatch 新的 UserMessage（最后本来就是 user 消息）
+        assert not any(isinstance(e, UserMessage) for e in captured)
+
+    def test_retry_last_assistant_appends_continue(self):
+        """最后一条是 assistant 回复：追加 user 消息「继续」并 dispatch，再进入循环。"""
+        from mycode.session import UserMessage
+        messages: list = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "回答完毕"},
+        ]
+        msgs, captured = self._run_retry(messages, create_side_effect=[self._stop_response()])
+        # 新增的「继续」user 消息
+        continue_msgs = [m for m in msgs if m.get("role") == "user"]
+        assert continue_msgs[-1]["content"] == "继续"
+        assert msgs[-1]["role"] == "assistant"  # 新 assistant 回复垫底
+        # dispatch 了 UserMessage（「继续」）
+        dispatched = [e for e in captured if isinstance(e, UserMessage)]
+        assert len(dispatched) == 1
+        assert dispatched[0].message["content"] == "继续"
+        assert dispatched[0].message["role"] == "user"
+
+    def test_retry_empty_messages_appends_continue(self):
+        """消息列表为空（仅 system 也算空？此处传空）时：追加「继续」。"""
+        messages: list = []
+        msgs, _ = self._run_retry(messages, create_side_effect=[self._stop_response()])
+        continue_msgs = [m for m in msgs if m.get("role") == "user"]
+        assert continue_msgs[-1]["content"] == "继续"
+
+    def test_completer_includes_retry(self):
+        """命令补全包含 /retry。"""
+        from mycode.cli import MycCommandCompleter
+        assert "/retry" in MycCommandCompleter.COMMANDS
