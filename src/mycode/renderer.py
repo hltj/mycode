@@ -2,7 +2,9 @@
 """
 渲染器（处理器）模块：按渲染风格（default / classic）定义所有消息与
 事件的终端展示方式。公共渲染流程在 _Renderer 基类复用，风格差异由
-_DefaultRenderer / _ClassicRenderer 子类覆写。
+_DefaultRenderer / _ClassicRenderer 子类覆写。default 风格下 assistant
+正文用 rich Markdown 渲染，代码块用 rich 语法高亮；classic 风格保持
+纯代码围栏与原样输出。
 """
 
 import io
@@ -18,6 +20,7 @@ from openai.types.chat import (
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.markdown import CodeBlock, Markdown
 from rich.syntax import Syntax
 
 from mycode.session import (
@@ -274,6 +277,49 @@ def _syntax_plain(code: str, language: str | None = None,
     return buf.getvalue()
 
 
+def _markdown_plain(markup: str) -> None:
+    """用 rich Markdown 把 assistant 正文渲染到终端（default 风格）。
+
+    - 段落 / 标题 / 列表 / 表格 / 引用 / 分割线等按 rich 默认样式渲染，
+      字体、行数继承默认主题（markdown.code 等内联样式即富文本着色）；
+    - 代码块交给覆写版 ``CodeBlock``：与工具输出/read 一致用深灰背景
+      ``_CODE_BG``、``_CODE_THEME``，避免富文本对 ``` 围栏做二次上色；
+    - ANSI 控制码豁免：正文自带的 ANSI 转义原样输出，不经过 markdown
+      解析（否则转义序列可能在代码块/链接里被再次装箱导致泄漏）；
+    - 链接保留 rich 默认行为（``hyperlinks`` 开终端 OSC8 超链接，默认 True）。
+    """
+    if _has_ansi_control(markup):
+        print(markup.rstrip(chr(0x0A)))
+        return
+
+    class _CodeBlockBg(CodeBlock):
+        """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。"""
+
+        def __rich_console__(self, console: Console, options: Any) -> Any:
+            code = str(self.text).rstrip(chr(0x0A))
+            try:
+                yield Syntax(code, self.lexer_name, theme=_CODE_THEME,
+                             word_wrap=True, padding=1, background_color=_CODE_BG)
+            except Exception:
+                yield Syntax(code, "text", theme=_CODE_THEME,
+                             word_wrap=True, padding=1, background_color=_CODE_BG)
+
+    # 实例级覆写 elements：仅影响本次打印，不改 rich.markdown 全局映射，
+    # 避免污染其他使用方。
+    elements = dict(Markdown.elements)
+    elements["fence"] = _CodeBlockBg
+    elements["code_block"] = _CodeBlockBg
+
+    md = Markdown(markup, code_theme=_CODE_THEME)
+    md.elements = elements  # type: ignore[misc]  # 实例级覆写 ClassVar 映射
+    console = Console(force_terminal=True, width=_terminal_columns())
+    try:
+        console.print(md)
+    except Exception:
+        # 极端输入导致 rich 解析/渲染失败时兜底为纯文本
+        print(markup.rstrip(chr(0x0A)))
+
+
 def _wrap_by_display_width(body: str, columns: int) -> list[str]:
     """按显示宽度分行，返回每段宽度恰为 ``columns`` 的段落列表。
 
@@ -398,9 +444,19 @@ class _Renderer:
         content = message.get("content")
         title = self.ai_title(model)
         if content and str(content).strip():
-            print(f"\x1B[35m{title}\x1B[0m\n{str(content).strip(chr(0x0A))}\n")
+            print(f"\x1B[35m{title}\x1B[0m")
+            self.render_assistant_body(str(content))
+            print()
         else:
             print(f"\x1B[35m{title}\x1B[0m")
+
+    def render_assistant_body(self, body: str) -> None:
+        """渲染 assistant 正文（风格差异点）。
+
+        基类与 classic 风格沿用原样输出；default 子类覆写为 rich
+        Markdown 渲染。
+        """
+        print(body.strip(chr(0x0A)))
 
     def render_tool_call(self, tool_call: ChatCompletionMessageFunctionToolCallParam) -> None:
         func_name = tool_call["function"]["name"]
@@ -528,6 +584,10 @@ class _DefaultRenderer(_Renderer):
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"❌ 异常 - {exc_type} - {exc_message}"
+
+    def render_assistant_body(self, body: str) -> None:
+        """default：assistant 正文用 rich Markdown 渲染（标题/列表/表格/代码块等）。"""
+        _markdown_plain(body)
 
     def render_code_block(self, body: str, language: str | None = None) -> None:
         """default：rich 语法高亮渲染代码块（不带行号）。

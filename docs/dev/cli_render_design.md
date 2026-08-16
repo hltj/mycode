@@ -4,7 +4,8 @@
 
 CLI 的终端展示由 `mycode.renderer`（渲染器）与 `mycode.cli`（prompt_toolkit 输入区、事件总线装配）共同完成。渲染按风格（`--style`，默认 `default`，可选 `classic`）拆分为独立渲染器：公共流程在 `_Renderer` 基类复用，风格差异由 `_DefaultRenderer` / `_ClassicRenderer` 子类覆写。所有消息 / 事件统一走 `AgentEventBus` 分发到 `render_terminal`（实时）或 `render_replay`（历史重放）。
 
-default 风格引入 `rich`（PyYAML 同层运行时依赖）实现代码块语法高亮；classic 风格不引入，保持纯代码围栏输出。
+default 风格引入 `rich` 实现代码块的语法高亮与 assistant 正文的
+Markdown 渲染；classic 风格不引入，保持纯代码围栏与原样输出。
 
 核心文件：
 - `src/mycode/renderer.py` — 渲染器基类与两个风格子类、共享分发、TODO 渲染、ANSI 辅助
@@ -32,7 +33,8 @@ default 风格引入 `rich`（PyYAML 同层运行时依赖）实现代码块语�
 | 方法 | 说明 |
 |------|------|
 | `format_todos(state)` | 用子类 `symbols` + 共用 `formats` 模板渲染待办列表 |
-| `render_assistant(message, model)` | AI 标题（紫）+ 正文；无正文（纯 tool_calls）仅标题 |
+| `render_assistant(message, model)` | AI 标题（紫）+ 正文（正文经 `render_assistant_body`，default 为 rich Markdown）；无正文（纯 tool_calls）仅标题 |
+| `render_assistant_body(body)` | 渲染 assistant 正文：default 用 rich Markdown / classic 原样输出 |
 | `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（default 语法高亮 / classic 围栏） |
 | `render_tool_result(tool_result)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果；`read` 特化：带行号渲染 |
 | `render_notice(notice)` | 黄色高亮提醒（仅标题用提醒格式，附加内容 default 解析围栏后语法高亮 / classic 照常输出） |
@@ -53,6 +55,7 @@ default 风格引入 `rich`（PyYAML 同层运行时依赖）实现代码块语�
 | 方法 | 说明 |
 |------|------|
 | `render_code_block` / `render_read_output` / `render_notice_additional` | 代码块 / read 返回 / 提醒附加内容渲染（default 语法高亮 / classic 围栏） |
+| `render_assistant_body` | assistant 正文渲染（default rich Markdown / classic 原样） |
 | `ai_title` / `tool_call_title` / `tool_result_title` | 标题文本（emoji 与否） |
 | `notice_text` / `exception_title` | 提醒 / 异常标题文本 |
 | `render_user_message(text, mode)` | 用户消息渲染（default 灰色背景块 / classic 单行前缀） |
@@ -149,6 +152,28 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 
 工具调用参数会登记到模块级缓存 `_TOOL_CALL_INFO`（`tool_call_id` → 参数 dict），
 供结果渲染时按 id 取回以推断语言（read 的文件路径等）。
+
+### 3.3b default assistant 正文 rich Markdown 渲染（_markdown_plain）
+
+`_markdown_plain(markup)`（`renderer.py`）把 assistant 正文字体交给
+`rich.markdown.Markdown` 渲染，替代原来的纯文本输出：
+
+- 段落 / 标题 / 列表 / 表格 / 引用 / 分割线 / 内联样式（**加粗**、*斜体*、
+  `code`、~~删除线~~）等按 rich 默认主题渲染（富文本着色）；
+- 代码块（`fence` / `code_block`）用 **覆写版 `CodeBlock` 子类**：与工具输出
+  一致取 `_CODE_BG` 背景色与 `_CODE_THEME` 主题（`Syntax(word_wrap=True,
+  padding=1, background_color=...)`），避免富文本对 ``` 围栏做默认的
+  cyan-on-black 内联处理、与工具输出视觉割裂；实例级覆写
+  `Markdown.elements` 映射（不影响 rich 全局 `Markdown.elements`）。
+  代码块语言标签非法时由 `Syntax` 抛出异常，子类捕获后回退 `text`；
+- ANSI 控制码豁免：正文自带 ANSI 转义（如模型回显控制符）时原样输出、不经过
+  markdown 解析，避免转义序列被再次装箱导致泄漏（`_has_ansi_control`）；
+- 宽度：`Console(force_terminal=True, width=_terminal_columns())` 按终端宽度
+  渲染；极端的输入导致 rich 解析/渲染异常时兜底为纯文本输出。
+
+注意：`render_assistant` 的公共流程在基类（标题 + 正文 + 尾部空行），
+正文渲染委托给 `render_assistant_body`；default 覆写为 `_markdown_plain`，
+classic 沿用基类的原样输出（不引入 rich 解析，与代码围栏策略一致）。
 
 ### 3.4 YAML 参数展示（render_tool_call）
 

@@ -600,6 +600,84 @@ class TestRenderCommonAssistantUser:
         assert out.endswith("\n\n")
 
 
+class TestDefaultAssistantMarkdown:
+    """default 风格下 assistant 正文用 rich Markdown 渲染。"""
+
+    @pytest.fixture(autouse=True)
+    def default_style(self, monkeypatch):
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+
+    def _capture(self, content):
+        import io
+        from contextlib import redirect_stdout
+        ev = AssistantMessage(model="m", message=ChatCompletionAssistantMessageParam(
+            role="assistant", content=content))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            _render_common(ev)
+        return buf.getvalue()
+
+    def test_plain_text_preserved(self):
+        """普通文本：正文仍出现，标题为 default 机器人样式。"""
+        out = self._capture("hello world")
+        assert "🤖 m" in out
+        assert "hello world" in _strip_ansi(out)
+        # 无 ``` 围栏字样（Markdown 已解析，不是原样输出）
+        assert out.endswith("\n\n")
+
+    def test_inline_highlight(self):
+        """行内样式：加粗/斜体/内联代码被 rich 富文本着色。"""
+        out = self._capture("**加粗** 和 `code`")
+        assert "\x1B[1m加粗\x1B[0m" in out  # 加粗
+        assert "\x1B[1;36;40mcode\x1B[0m" in out  # 内联代码（cyan on black）
+        assert "**加粗**" not in out  # markdown 语法被解析
+
+    def test_heading_rendered(self):
+        """标题：# 一级标题被 rich 解析为加粗下划线。"""
+        out = self._capture("# 标题")
+        assert "\x1B[1;4m标题\x1B[0m" in out
+        assert "# 标题" not in out
+
+    def test_code_fence_uses_code_background(self):
+        """代码块：subclass 覆写用背景色 rgb(30,30,30)（256 色 234），非 rich 默认。"""
+        out = self._capture("```python\nimport os\n```")
+        # 代码块背景色与工具输出一致（48;5;234）
+        assert "48;5;234" in out
+        # 不是 rich 默认 code_block 样式（cyan on black = 36;40m）
+        assert "\x1B[36;40m" not in out
+        # 内容保留
+        assert "import os" in _strip_ansi(out)
+        # 无 ``` 围栏
+        assert "```" not in out
+
+    def test_list_rendered(self):
+        """列表：bullet 符号 + 项目文本。"""
+        out = self._capture("- 项目一\n- 项目二")
+        assert "项目一" in _strip_ansi(out)
+        assert "项目二" in _strip_ansi(out)
+        assert "•" in out or _strip_ansi(out).count("  ") > 0
+
+    def test_ansi_content_plain(self):
+        """正文含 ANSI 控制码：原样输出、不经过 markdown 解析（避免二次上色）。"""
+        out = self._capture("\x1B[32mgreen\x1B[0m msg")
+        # ANSI 原样保留
+        assert "\x1B[32mgreen\x1B[0m msg" in out
+        # 无语法高亮/nord 色
+        assert "38;5;109" not in out
+
+    def test_assistant_title_line_then_body(self):
+        """标题行与正文分行：标题独占一行，正文从下一行开始。"""
+        out = self._capture("**加粗**")
+        assert out.startswith("\x1B[35m🤖 m\x1B[0m\n")
+
+    def test_assistant_content_empty_whitespace_title_only(self):
+        """正文为空白：仅标题，不渲染正文。"""
+        out = self._capture("   \n  ")
+        assert "🤖 m" in out
+        # 标题不带冒号
+        assert "🤖 m:" not in out
+
+
 class TestFormatTodos:
     """renderer._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。
 

@@ -148,13 +148,15 @@ uv run myc -s default      # 默认风格（emoji 标题 + 灰色输入区 + ric
 ```
 
 默认 `default`；`classic` 提供无 emoji 的标题与 `myc[模式] >` 提示符。
-default 风格下代码块（工具调用 YAML 参数、工具输出、异常 traceback、`read` 返回）
-通过 `rich` 做语法高亮，`read` 返回带行号展示（按文件路径/内容自动识别语言），
-bash 工具输出也按内容猜测语法；其余工具（write/edit/glob/grep/ls/patch 等）输出
-保持纯文本展示；classic 风格保持纯代码围栏。
+default 风格下，assistant 正文经 `rich` 做 **Markdown 渲染**（标题/列表/表格/
+引用与内联样式等富文本着色），正文中的代码块与工具调用 YAML 参数、工具输出、
+异常 traceback、`read` 返回等代码块统一经 `rich` 做**语法高亮**，`read` 返回
+带行号展示（按文件路径/内容自动识别语言），bash 工具输出也按内容猜测语法；
+其余工具（write/edit/glob/grep/ls/patch 等）输出保持纯文本展示；classic
+风格保持纯代码围栏、assistant 正文原样输出。
 语法高亮主题默认 `nord`（低饱和柔和），可用环境变量 `MYCODE_SYNTAX_THEME`
-覆盖（如 `gruvbox-dark`、`zenburn`）；工具输出自带 ANSI 颜色控制码时原样输出、
-不二次高亮。
+覆盖（如 `gruvbox-dark`、`zenburn`）；工具输出与 assistant 正文自带 ANSI
+控制码时原样输出、不二次高亮/解析。
 模式切换（shift-tab 或 `/ask` `/auto` `/yolo`）与确认界面在两种风格下均可用。
 
 ## 内置工具一览
