@@ -7,6 +7,7 @@ _DefaultRenderer / _ClassicRenderer 子类覆写。default 风格下 assistant
 纯代码围栏与原样输出。
 """
 
+import difflib
 import io
 import json
 import os
@@ -120,6 +121,102 @@ def _code_fence(text: str) -> str:
         else:
             cur = 0
     return '`' * max(3, longest + 1)
+
+
+def _yaml_dump(parsed: dict) -> str:
+    """把工具调用参数 dict 转为 YAML 文本（含换行字符串用 block literal）。
+
+    含换行的字符串用 block literal（``|-``）输出，避免换行折叠翻倍。
+    """
+    import yaml
+
+    def _block_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
+        """含换行的字符串用 block literal（`|-`）输出，避免换行折叠翻倍。"""
+        style = '|' if '\n' in data else None
+        return dumper.represent_scalar(
+            'tag:yaml.org,2002:str', data, style=style)
+
+    class _BlockStrDumper(yaml.SafeDumper):
+        pass
+    _BlockStrDumper.add_representer(str, _block_str)
+    return yaml.dump(parsed, Dumper=_BlockStrDumper,
+                     allow_unicode=True, sort_keys=False,
+                     default_flow_style=False, width=64 * 1024)
+
+
+def _old_new_diff(old: str, new: str, filename: str) -> str:
+    """生成 old 与 new 之间的 unified diff 文本（不带行号；相同内容返回空）。
+
+    供 edit 工具调用的渲染回退使用：去掉参数展示后，用 diff 语法高亮
+    展示 new_text 相对 old_text 的改动。相同时返回空字符串（无改动）。
+
+    注意：这是**片段级** diff —— 行号从片段首行（1）算起，上下文只来自
+    片段自身，因此行号不是原始文件行号。能读取到文件时优先用
+    :func:`_edit_file_diff` 做整文件级 diff。
+    """
+    return "\n".join(
+        difflib.unified_diff(
+            old.splitlines(), new.splitlines(),
+            fromfile=filename, tofile=filename, lineterm="",
+        )
+    ).rstrip(chr(0x0A))
+
+
+def _redact_hunk_headers(diff_text: str) -> str:
+    """把 unified diff 的 hunk 头 ``@@ -行号 +行号 @@`` 替换为 ``@@ ... @@``。
+
+    replay 时片段级 diff 的行号从 1 算起、无真实文件语义，保留具体行号
+    反而误导；用 ``...`` 省略行号占位，保留 ``@@`` 分隔符与 ``-``/``+``
+    改动行。
+    """
+    return re.sub(
+        r"^@@ .*? @@$", "@@ ... @@", diff_text, flags=re.MULTILINE,
+    ).rstrip(chr(0x0A))
+
+
+def _edit_file_diff(file_path: str, old_text: str, new_text: str,
+                    replace_all: bool) -> str | None:
+    """基于文件真实内容生成 edit 替换的 unified diff（与工具语义一致）。
+
+    工具调用渲染时文件尚未被修改，读到的就是「替换前」的完整内容；对
+    「替换前 vs 替换后」做整文件 diff，因此行号是**原始文件行号**
+    （unified_diff 从文件首行起算）；上下文沿用 unified_diff 默认 3 行。
+
+    替换逻辑与 edit 工具一致：首个匹配或全部匹配（``replace_all``）。
+    以下情况无法构建而返回 ``None``（由调用方回退到片段级
+    :func:`_old_new_diff`）：
+
+    - 路径为空 / 越界 / 命中保护正则（``safe_path`` 拒绝）；
+    - 文件不存在或读取失败；
+    - ``old_text`` 为空，或未在文件中出现（可能已应用过）；
+    - 非 ``replace_all`` 但匹配多处（工具本会拒绝执行）。
+    """
+    if not old_text:
+        return None
+    try:
+        from mycode.tools._safe_path import safe_path
+        abs_path = safe_path(file_path)
+    except ValueError:
+        return None
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
+            content = f.read()
+    except OSError:
+        return None
+    count = content.count(old_text)
+    if count == 0:
+        return None
+    if count > 1 and not replace_all:
+        return None
+    new_content = content.replace(old_text, new_text, count if replace_all else 1)
+    old_lines, new_lines = content.splitlines(), new_content.splitlines()
+    return "\n".join(
+        difflib.unified_diff(
+            old_lines, new_lines,
+            fromfile=file_path, tofile=file_path,
+            lineterm="",
+        )
+    ).rstrip(chr(0x0A))
 
 
 # 工具调用参数缓存：tool_call_id -> args_dict
@@ -458,7 +555,8 @@ class _Renderer:
         """
         print(body.strip(chr(0x0A)))
 
-    def render_tool_call(self, tool_call: ChatCompletionMessageFunctionToolCallParam) -> None:
+    def render_tool_call(self, tool_call: ChatCompletionMessageFunctionToolCallParam,
+                         replay: bool = False) -> None:
         func_name = tool_call["function"]["name"]
         args_ = tool_call["function"]["arguments"]
         try:
@@ -467,27 +565,41 @@ class _Renderer:
             yaml_text = args_
             parsed = None
         else:
-            import yaml
-
-            def _block_str(dumper: yaml.SafeDumper, data: str) -> yaml.Node:
-                """含换行的字符串用 block literal（`|-`）输出，避免换行折叠翻倍。"""
-                style = '|' if '\n' in data else None
-                return dumper.represent_scalar(
-                    'tag:yaml.org,2002:str', data, style=style)
-
-            class _BlockStrDumper(yaml.SafeDumper):
-                pass
-            _BlockStrDumper.add_representer(str, _block_str)
-            yaml_text = yaml.dump(parsed, Dumper=_BlockStrDumper,
-                                  allow_unicode=True, sort_keys=False,
-                                  default_flow_style=False, width=64 * 1024)
+            if not isinstance(parsed, dict):
+                yaml_text = args_
+                parsed = None
+            else:
+                yaml_text = _yaml_dump(parsed)
         # 记录工具调用参数供结果渲染时推断语言
         call_id = tool_call.get("id", "")
         if call_id and isinstance(parsed, dict):
             _TOOL_CALL_INFO[call_id] = dict(parsed)
         print(f"\x1B[1;34m{self.tool_call_title(func_name)}\x1B[0m")
-        self.render_code_block(yaml_text, language="yaml")
+        self.render_tool_call_params(
+            func_name, parsed or {}, yaml_text, call_id=call_id, replay=replay,
+        )
         print()
+
+    def render_tool_call_params(
+        self,
+        func_name: str,
+        params: dict,
+        yaml_text: str,
+        call_id: str = "",
+        replay: bool = False,
+    ) -> None:
+        """渲染工具调用参数（风格差异点）。
+
+        基类（classic 风格）沿用统一 YAML 参数块展示（代码围栏）；
+        default 子类覆写为对 ``bash`` / ``write`` / ``patch`` / ``edit``
+        四个工具做特化：YAML 中去掉正文/命令/diff 等大字段，随后在新
+        代码块中按对应语法展示内容（带行号的 ``bash`` / 不带行号的
+        ``diff``、按 ``file_path`` 识别语言的 ``write``）。
+
+        ``replay`` 为 True 表示历史重放（文件可能已不存在/已改变），
+        edit 场景下不读实际文件。
+        """
+        self.render_code_block(yaml_text, language="yaml")
 
     def render_tool_result(self, tool_result: ToolResultData) -> None:
         # todo_write 特化渲染：先输出当前待办列表再输出结果
@@ -629,6 +741,107 @@ class _DefaultRenderer(_Renderer):
         if marker:
             body += f"{_HIGHLIGHT_MUTED}{marker[0]}{_RESET}\n"
         print(body, end="")
+
+    def render_tool_call_params(
+        self,
+        func_name: str,
+        params: dict,
+        yaml_text: str,
+        call_id: str = "",
+        replay: bool = False,
+    ) -> None:
+        """default：工具调用参数渲染（bash / write / patch / edit 特化）。
+
+        与工具调用 YAML 一贯的语法高亮不同，这四个工具做特化处理：
+        YAML 中先去掉大正文/大 diff 字段（避免双份大文本展示），添加一个
+        空行后，在新代码块中按各自语法再次展示：
+
+        - ``bash``：去 ``command``，新代码块用 ``bash`` 语法、**带行号**
+          展示 command 文本；
+        - ``write``：去 ``content``，新代码块按 ``file_path`` 推断语法
+          （Pygments），**带行号**展示 content；
+        - ``patch``：去 ``diff``，新代码块用 ``diff`` 语法、**不带行号**
+          展示 diff（保留 ``---``/``+++``/``@@``/``+``/``-`` 着色）；
+        - ``edit``：去 ``old_text``/``new_text``，新代码块用 ``diff`` 语法、
+          **不带行号**展示二者的 unified diff。
+
+        ``params`` 为空（参数无法解析成 dict / 非法 JSON / 非对象）时无法
+        特化，回退旧版行为：直接原样展示原始参数字符串。
+
+        ``replay`` 为 True（历史重放）时文件可能已不存在/已改变：edit
+        不读实际文件，改用片段级 diff 并把无真实语义的 ``@@`` 行号替换
+        为 ``@@ ... @@``。
+        """
+        if not params:
+            self.render_code_block(yaml_text, language="yaml")
+            return
+
+        def _p(name: str, default: Any = "") -> Any:
+            return params.get(name, default)
+
+        def _emit_yaml(chunk: dict) -> None:
+            if chunk:
+                print(_syntax_plain(_yaml_dump(chunk), language="yaml"), end="")
+
+        if func_name == "bash":
+            # YAML 中不再展示 command（避免双份命令文本）；新代码块直接
+            # 用 bash 语法带行号展示命令文本
+            command = str(_p("command"))
+            if command:
+                print()
+                print(_syntax_plain(
+                    command, language="bash", line_numbers=True,
+                ), end="")
+        elif func_name == "write":
+            # YAML 中去掉 content；新代码块按 file_path 推断语法、带行号展示
+            _emit_yaml({"file_path": _p("file_path")})
+            content = str(_p("content"))
+            if content:
+                print()
+                lang = _guess_filename_language(str(_p("file_path")), content)
+                print(_syntax_plain(
+                    content.rstrip(chr(0x0A)), language=lang,
+                    line_numbers=True,
+                ), end="")
+        elif func_name == "patch":
+            # YAML 中去掉 diff；新代码块用 diff 语法、不带行号展示
+            _emit_yaml({"dir_path": str(_p("dir_path"))})
+            diff = str(_p("diff"))
+            if diff:
+                print()
+                print(_syntax_plain(diff, language="diff"), end="")
+        elif func_name == "edit":
+            # YAML 中去掉 old_text/new_text；新代码块用 diff 语法、不带行号
+            # 展示二者的 unified diff。优先基于文件真实内容做整文件 diff
+            # （行号 = 原始文件行号，上下文用 unified_diff 默认 3 行）；
+            # 文件不可用 / old_text 已不在文件中时回退片段级 diff。
+            # replay 时文件可能已不存在/已改变，不读文件，一律用片段级
+            # diff，并把无真实语义的 @@ 行号替换为 @@ ... @@。
+            old_text = str(_p("old_text"))
+            new_text = str(_p("new_text"))
+            file_path = str(_p("file_path"))
+            replace_all = _p("replace_all") in (True, "True", "true")
+            chunk: dict = {"file_path": file_path}
+            if replace_all:
+                chunk["replace_all"] = True
+            _emit_yaml(chunk)
+            edit_diff: str | None
+            if replay:
+                edit_diff = _old_new_diff(old_text, new_text, file_path)
+                if edit_diff:
+                    edit_diff = _redact_hunk_headers(edit_diff)
+            else:
+                edit_diff = _edit_file_diff(
+                    file_path, old_text, new_text, replace_all,
+                )
+                if edit_diff is None:
+                    edit_diff = _old_new_diff(old_text, new_text, file_path)
+            if edit_diff:
+                print()
+                print(_syntax_plain(edit_diff, language="diff"), end="")
+        else:
+            # 非特化工具：保持完整 YAML 参数块展示（行为不变）
+            self.render_code_block(yaml_text, language="yaml")
 
     def render_notice_additional(self, additional: str) -> None:
         """default：解析围栏语言后做语法高亮；非围栏/残缺围栏原样输出。
@@ -824,11 +1037,17 @@ def render_replay(msg: AgentMessage) -> None:
     InterruptEvent 分两种：
       - 真实 Ctrl-C（``interrupt.abort False``）：输出 ^C 及空行；
       - abort（取消/无理由拒绝，``interrupt.abort True``）：不输出 ^C。
+
+    ToolCallEvent 单独处理：重放时文件可能已不存在/已改变，edit 工具
+    不读实际文件，改用片段级 diff 并把无真实语义的 ``@@`` 行号替换为
+    ``@@ ... @@``（其余工具与实时渲染行为一致）。
     """
     match msg:
         case InterruptEvent(interrupt={"abort": False}):
             print("^C")
             print()
+        case ToolCallEvent(tool_call=tool_call):
+            _get_renderer().render_tool_call(tool_call, replay=True)
         case _:
             _render_common(msg)
 

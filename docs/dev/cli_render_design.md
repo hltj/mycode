@@ -47,6 +47,7 @@ Markdown 渲染；classic 风格不引入，保持纯代码围栏与原样输出
 | 方法 | 说明 |
 |------|------|
 | `render_code_block(body, language)` | 无行号代码/文本（default：rich 语法高亮 / classic：代码围栏） |
+| `render_tool_call_params(func_name, params, yaml_text, call_id)` | 工具调用参数渲染（default 对 bash/write/patch/edit 特化，见 3.5.1；classic 沿用 YAML 参数块） |
 | `render_read_output(content)` | read 工具返回（default：rich 带行号语法高亮 / classic：围栏） |
 | `render_notice_additional(additional)` | 提醒附加内容（default：解析围栏后高亮 / classic：原样） |
 
@@ -54,7 +55,7 @@ Markdown 渲染；classic 风格不引入，保持纯代码围栏与原样输出
 
 | 方法 | 说明 |
 |------|------|
-| `render_code_block` / `render_read_output` / `render_notice_additional` | 代码块 / read 返回 / 提醒附加内容渲染（default 语法高亮 / classic 围栏） |
+| `render_code_block` / `render_tool_call_params` / `render_read_output` / `render_notice_additional` | 代码块 / 工具调用参数 / read 返回 / 提醒附加内容渲染（default 语法高亮与特化 / classic 围栏） |
 | `render_assistant_body` | assistant 正文渲染（default rich Markdown / classic 原样） |
 | `ai_title` / `tool_call_title` / `tool_result_title` | 标题文本（emoji 与否） |
 | `notice_text` / `exception_title` | 提醒 / 异常标题文本 |
@@ -93,12 +94,17 @@ def render_replay(msg):    # 历史重放
     match msg:
         case InterruptEvent(interrupt={"abort": False}):
             print("^C"); print()   # 真实 Ctrl-C：模拟 ^C
+        case ToolCallEvent(tool_call):
+            renderer.render_tool_call(tool_call, replay=True)  # edit 不读文件
         case _:
             _render_common(msg)
 ```
 
 `InterruptEvent.interrupt["abort"]` 标记区分：真实 Ctrl-C（`abort=False`）
 重放时输出 `^C`；确认界面取消 / 无理由拒绝（`abort=True`）不输出 `^C`。
+`ToolCallEvent` 单独分支（见 3.5.1）：replay 时文件可能已不存在/已改变，
+edit 不读实际文件、用片段级 diff 并把 `@@` 行号替换为 `@@ ... @@`；其余
+工具类型照常委托 `_render_common`。
 
 ---
 
@@ -133,7 +139,7 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 - 语言标签传递：工具调用参数填 `yaml`，异常 traceback 用 `python`（`traceback_language`，
   对 File/行号/异常名/关键字均有高亮）。**工具结果语言猜测仅限 `read` / `bash`**：
   - `bash` 输出经 Pygments `guess_lexer` 按内容猜测（如输出 Python 代码）；
-  - `read` 按调用时 `file_path` 推断（见下文 3.5）；
+  - `read` 按调用时 `file_path` 推断（见下文 3.6）；
   - 其余工具（`write` / `edit` / `glob` / `grep` / `ls` / `patch` 等）写死
     `text`（纯文本、不做语法猜测）。
   当语言参数为 `None` / 非法时，`_syntax_plain` 回退 `markdown` 词法分析；
@@ -153,7 +159,7 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 工具调用参数会登记到模块级缓存 `_TOOL_CALL_INFO`（`tool_call_id` → 参数 dict），
 供结果渲染时按 id 取回以推断语言（read 的文件路径等）。
 
-### 3.3b default assistant 正文 rich Markdown 渲染（_markdown_plain）
+### 3.4 default 风格 assistant 正文 rich Markdown 渲染（_markdown_plain）
 
 `_markdown_plain(markup)`（`renderer.py`）把 assistant 正文字体交给
 `rich.markdown.Markdown` 渲染，替代原来的纯文本输出：
@@ -175,7 +181,7 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 正文渲染委托给 `render_assistant_body`；default 覆写为 `_markdown_plain`，
 classic 沿用基类的原样输出（不引入 rich 解析，与代码围栏策略一致）。
 
-### 3.4 YAML 参数展示（render_tool_call）
+### 3.5 YAML 参数展示（render_tool_call）
 
 工具调用参数用 YAML 展示而非 JSON：
 
@@ -187,7 +193,55 @@ classic 沿用基类的原样输出（不引入 rich 解析，与代码围栏策
 default 去掉原来的 ```yaml 代码围栏，改用 rich 语法高亮渲染（`language="yaml"`）；
 classic 保持 ```yaml 围栏。
 
-### 3.5 read 工具结果（带行号语法高亮）
+#### 3.5.1 工具调用参数特化渲染（default 风格，bash/write/patch/edit）
+
+default 风格下，`render_tool_call_params` 对 `bash` / `write` / `patch` /
+`edit` 四个工具做特化处理，其 YAML 参数块去掉大字段并追加新代码块展示
+（classic 风格不做特化、保持完整 YAML 参数围栏）：
+
+| 工具 | YAML 去掉的字段 | 新代码块语法 | 行号 | 展示内容 |
+|------|-----------------|--------------|------|----------|
+| `bash` | `command` | `bash` | 带 | 命令文本 |
+| `write` | `content` | 按 `file_path` 推断（Pygments） | 带 | content |
+| `patch` | `diff` | `diff` | 不带 | diff |
+| `edit` | `old_text` / `new_text` | `diff` | 不带 | 二者的 unified diff（`difflib.unified_diff`，`--- a`/`+++ a`/`@@`/`+`/`-` 着色） |
+
+具体规则：
+
+- **bash**：原 YAML 不再展示 `command`；添加一个空行后，新代码块用 `bash`
+  语法、**带行号** `Syntax(command, "bash", line_numbers=True)` 渲染命令文本
+  （rich 行号连续自然排列）；
+- **write**：原 YAML 只保留 `file_path`（去掉 `content`）；添加一个空行后，
+  新代码块按 `file_path` 用 `guess_lexer_for_filename` 推断语言（扩展名如
+  `.py`/`.sh`/`.yaml`，已知文件名如 `.bashrc` 直接命中），**带行号**展示
+  content；文件名推断不到时按内容 `guess_lexer`，纯文本由 `_syntax_plain`
+  回退 `markdown`；
+- **patch**：原 YAML 只保留 `dir_path`（去掉 `diff`）；添加一个空行后，
+  新代码块用 `diff` 语法、**不带行号**展示 diff（`---`/`+++`/`@@`/`+`/`-`
+  及 diff 头均按 diff 词法上色）；
+- **edit**：原 YAML 去掉 `old_text`/`new_text`（保留 `file_path` 与
+  `replace_all`）；添加一个空行后，用 `difflib.unified_diff` 生成
+  `old_text → new_text` 的 unified diff，**不带行号**、以 `diff` 语法展示；
+  old 与 new 相同（无改动）时不追加新代码块；
+  - **优先整文件级 diff**：工具调用渲染时文件尚未被修改，读取 `file_path`
+    当前内容（与应用逻辑一致：首个匹配或 `replace_all` 全部匹配）后，对
+    「替换前 vs 替换后」的完整文件做 diff —— 行号即**原始文件真实行号**；
+  - **回退片段级 diff**：路径越界 / 文件不存在或不可读 / `old_text` 为空 /
+    未在文件中出现（可能已应用） / 非 `replace_all` 但匹配多处（工具本会
+    拒绝执行）时，无法做整文件替换，回退到对两个片段直接 `unified_diff`
+    （此时行号为片段行号、上下文仅片段自身）；
+  - **历史重放（replay）不读文件**：`render_replay` 对 `ToolCallEvent`
+    单独分支（`render_tool_call(tool_call, replay=True)`），replay 时文件
+    可能已不存在或已改变，edit 一律不读实际文件、改用片段级 diff，并把
+    无真实语义的 `@@` 行号替换为 `@@ ... @@`（`...` 表示行号不可知/
+    省略）；其余工具类型照常委托 `_render_common`；
+- 四个工具的 YAML 块均保留除大字段外的其余参数（bash 无多余字段时 YAML 块
+  整体省略），当参数**无法解析成 dict**（非法 JSON / 顶层非对象）时无法
+  特化，回退旧版行为——原样展示原始参数字符串（不再输出空 YAML 块）；
+- 非特化工具（`read` / `ls` / `glob` / `grep` / `todo_write` 等）保持完整 YAML
+  参数块展示，行为不变。
+
+### 3.6 read 工具结果（带行号语法高亮）
 
 default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号）走
 `render_read_output`，按以下规则渲染为带行号的语法高亮：
@@ -206,7 +260,7 @@ default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号
 仅当「`tool_name == "read"` 且内容含行号」时走此路径；错误 / 越界等文本照常走
 普通代码块渲染。
 
-### 3.6 TODO 渲染（format_todos）
+### 3.7 TODO 渲染（format_todos）
 
 模板共用（`_TODO_FORMATS`），符号由子类提供：
 
@@ -216,7 +270,7 @@ default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号
 | in_progress | `🟧` | `- [{>}]:`（> 橙） | 粗 + 白 |
 | pending | `🔳` | `- [ ]:` | 普通 |
 
-### 3.7 default 用户消息（灰色背景块）
+### 3.8 default 用户消息（灰色背景块）
 
 `_DefaultRenderer.render_user_message` 是 default 风格最复杂的部分：
 
@@ -229,11 +283,11 @@ default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号
 - 零宽字符（emoji 修饰符）跟随前一字符，不计宽度；
 - 提示符竖线用模式色渲染，空格 + 正文恢复默认前景（`_FG_DEFAULT`），保留背景色。
 
-### 3.8 classic 用户消息
+### 3.9 classic 用户消息
 
 单行：`{模式色}{myc[模式] >} \x1B[0m{text}`，末尾空行。
 
-### 3.9 NoticeEvent 文案结构
+### 3.10 NoticeEvent 文案结构
 
 `NoticeEvent` 承载系统级提醒（陈旧待办、命令修改等），文案分三部分
 （`session.py`）：

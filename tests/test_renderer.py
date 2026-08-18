@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from openai.types.chat import ChatCompletionAssistantMessageParam
@@ -224,18 +226,18 @@ class TestDefaultSyntaxHighlight:
         return buf.getvalue()
 
     def test_tool_call_yaml_no_fence(self):
-        """default 工具调用参数：无 ```yaml 围栏，纯语法高亮渲染。"""
+        """default 工具调用参数（非特化工具）：无 ```yaml 围栏，纯语法高亮渲染。"""
         ev = ToolCallEvent(
             model="m",
-            tool_call=_make_tool_call(call_id="c1", name="bash", args='{"command": "ls"}'),
+            tool_call=_make_tool_call(call_id="c1", name="ls", args='{"dir_path": "."}'),
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[1;34m🔧 调用工具 - bash\x1B[0m" in out
+        assert "\x1B[1;34m🔧 调用工具 - ls\x1B[0m" in out
         # 无代码围栏
         assert "```" not in out
         # YAML 键语法高亮（nord 柔和蓝灰 109，带背景色 234）
-        assert f"{_SYNTAX_TOKEN};48;5;234mcommand\x1B[0m" in out
-        assert "ls" in out
+        assert f"{_SYNTAX_TOKEN};48;5;234mdir_path\x1B[0m" in out
+        assert "dir_path" in _strip_ansi(out)
 
     def test_tool_result_code_highlight(self):
         """default 工具结果（非 read）：rich 语法高亮渲染，无围栏。"""
@@ -541,6 +543,249 @@ class TestDefaultSyntaxHighlight:
         assert renderer._has_ansi_control("\x1B[31mred") is True
         assert renderer._has_ansi_control("plain") is False
         assert renderer._has_ansi_control("a\n\x1B[0m") is True
+
+    def _capture_tool_call(self, tool_call):
+        return self._capture(lambda: _render_common(
+            ToolCallEvent(model="m", tool_call=tool_call)))
+
+    def _assert_line_number_for(self, out):
+        """断言输出包含 rich 行号渲染：行号 1（灰 240 前景 + 背景 234）。"""
+        assert "\x1B[38;5;240;48;5;234m1 \x1B[0m" in out
+
+    def test_tool_call_bash_specialized(self):
+        """default bash 工具调用特化：YAML 去掉 command，bash 语法带行号展示。"""
+        import json
+        args = json.dumps({"command": "ls -la"})
+        out = self._capture_tool_call(_make_tool_call(call_id="b1", name="bash", args=args))
+        # YAML 中不再展示 command 键
+        assert "command" not in _strip_ansi(out)
+        # 命令文本以 bash 语法带行号出现
+        plain = _strip_ansi(out)
+        assert "ls -la" in plain
+        self._assert_line_number_for(out)
+        # 无代码围栏
+        assert "```" not in out
+
+    def test_tool_call_bash_multiline_line_numbers(self):
+        """default bash 工具调用：多行命令带连续行号。"""
+        import json
+        args = json.dumps({"command": "echo a\necho b"})
+        out = self._capture_tool_call(_make_tool_call(call_id="b2", name="bash", args=args))
+        plain = _strip_ansi(out)
+        # 两行命令均出现，且行号 1 与 2 均有
+        assert "echo a" in plain and "echo b" in plain
+        assert "\x1B[38;5;240;48;5;234m2 \x1B[0m" in out
+        assert "command" not in plain
+
+    def test_tool_call_write_specialized(self):
+        """default write 工具调用特化：YAML 只留 file_path，content 带行号展示。"""
+        import json
+        args = json.dumps({"file_path": "src/a.py", "content": "import json\nimport os\n"})
+        out = self._capture_tool_call(_make_tool_call(call_id="w1", name="write", args=args))
+        plain = _strip_ansi(out)
+        # YAML 中保留 file_path、去掉 content 键
+        assert "file_path: src/a.py" in plain
+        assert "content" not in plain
+        # 新代码块中展示 content（Python 关键字 import 带语法色 + 行号）
+        assert "import json" in plain and "import os" in plain
+        # 带语法着色（关键词 token 前景 + 背景 234）且带行号 1
+        assert "48;5;234mimport\x1B[0m" in out
+        self._assert_line_number_for(out)
+
+    def test_tool_call_write_no_file_path(self):
+        """default write 缺 file_path：YAML 为空，仍带行号展示 content。"""
+        import json
+        args = json.dumps({"content": "print('hi')\n"})
+        out = self._capture_tool_call(_make_tool_call(call_id="w2", name="write", args=args))
+        plain = _strip_ansi(out)
+        assert "print('hi')" in plain
+        # 无 file_path 时 YAML 块为空：内容前应是空行（标题后直接空行）
+        assert "\x1B[1;34m🔧 调用工具 - write\x1B[0m\n" in out
+
+    def test_tool_call_patch_specialized(self):
+        """default patch 工具调用特化：YAML 去掉 diff，diff 语法不带行号展示。"""
+        import json
+        diff = "--- a/x.py\n+++ b/x.py\n@@ -1 +1 @@\n-old\n+new\n"
+        args = json.dumps({"dir_path": ".", "diff": diff})
+        out = self._capture_tool_call(_make_tool_call(call_id="p1", name="patch", args=args))
+        plain = _strip_ansi(out)
+        # YAML 保留 dir_path、去掉 diff 键
+        assert "dir_path: ." in plain
+        assert "diff" not in plain
+        # diff 文本整体出现
+        assert "--- a/x.py" in plain and "+++ b/x.py" in plain
+        assert "-old" in plain and "+new" in plain
+        # 不带行号：无 rich 行号序列
+        assert "38;5;240;48;5;234m1 " not in out
+
+    def test_tool_call_edit_specialized(self):
+        """default edit 工具调用特化：YAML 去掉 old_text/new_text，diff 无行号展示。"""
+        import json
+        args = json.dumps({
+            "file_path": "x.py",
+            "old_text": "foo",
+            "new_text": "bar\nbaz",
+            "replace_all": True,
+        })
+        out = self._capture_tool_call(_make_tool_call(call_id="e1", name="edit", args=args))
+        plain = _strip_ansi(out)
+        # YAML 保留 file_path 与 replace_all，去掉 old_text/new_text
+        assert "file_path: x.py" in plain
+        assert "replace_all: true" in plain
+        assert "old_text" not in plain and "new_text" not in plain
+        # 二者的 unified diff 以 diff 语法整体出现
+        assert "--- x.py" in plain and "+++ x.py" in plain
+        assert "-foo" in plain and "+bar" in plain and "+baz" in plain
+        # 不带行号
+        assert "38;5;240;48;5;234m1 " not in out
+
+    def test_tool_call_edit_identical_no_diff(self):
+        """default edit 相同内容：无 diff 生成，YAML 后不再输出代码块。"""
+        import json
+        args = json.dumps({
+            "file_path": "x.py",
+            "old_text": "same",
+            "new_text": "same",
+        })
+        out = self._capture_tool_call(_make_tool_call(call_id="e2", name="edit", args=args))
+        plain = _strip_ansi(out)
+        assert "file_path: x.py" in plain
+        assert "old_text" not in plain and "new_text" not in plain
+        # 无 diff 行
+        assert "+++ " not in plain and "--- " not in plain
+
+    def test_tool_call_edit_file_level_diff_real_lineno(self, tmp_path, monkeypatch):
+        """default edit 文件存在：整文件 diff，行号为原始文件真实行号。"""
+        import json
+        monkeypatch.chdir(tmp_path)
+        p = tmp_path / "m.py"
+        p.write_text(
+            '"""doc"""\n'
+            'def hello():\n'
+            '    greeting = "hello"\n'
+            '    return greeting\n'
+            '\n'
+            '\n'
+            'def world():\n'
+            '    return "world"\n',
+            encoding="utf-8",
+        )
+        old_text = 'def world():\n    return "world"\n'
+        new_text = 'def world():\n    return "bob"\n'
+        args = json.dumps({"file_path": "m.py", "old_text": old_text, "new_text": new_text})
+        out = self._capture_tool_call(_make_tool_call(call_id="ef", name="edit", args=args))
+        plain = _strip_ansi(out)
+        # hunk 行号从文件真实行号算起（起始 > 1，而非片段从 1 算起）
+        m = re.search(r"@@ -(\d+),\d+ \+(\d+),\d+ @@", plain)
+        assert m, f"应有 hunk 头, got: {plain!r}"
+        assert int(m.group(1)) > 1 and int(m.group(2)) > 1, \
+            f"行号应从原始文件行号算起（而非从 1 的片段行号）, got {m.group(1)}/{m.group(2)}"
+        # 邻近行参照（def world 在 hunk 中；不强制包含更远的 hello）
+        assert "def world():" in plain
+        # 改动行
+        assert '-    return "world"' in plain
+        assert '+    return "bob"' in plain
+
+    def test_tool_call_edit_fallback_fragment_diff(self, monkeypatch):
+        """default edit 文件不可用（越界/不存在）时回退片段级 diff（行号从 1 算起）。"""
+        import json
+        args = json.dumps({
+            "file_path": "/no/such/dir/x.py",
+            "old_text": "foo",
+            "new_text": "bar",
+        })
+        out = self._capture_tool_call(_make_tool_call(call_id="ef2", name="edit", args=args))
+        plain = _strip_ansi(out)
+        # 片段级 diff 行号从 1 开始（@@ -1 +1 @@）
+        assert "@@ -1 +1 @@" in plain
+        assert "-foo" in plain and "+bar" in plain
+
+    def test_tool_call_edit_old_text_absent_fallbacks(self, tmp_path, monkeypatch):
+        """default edit old_text 不在文件中：回退片段级 diff（无法做整文件替换）。"""
+        import json
+        monkeypatch.chdir(tmp_path)
+        p = tmp_path / "m.py"
+        p.write_text("a = 1\nb = 2\n", encoding="utf-8")
+        args = json.dumps({
+            "file_path": "m.py",
+            "old_text": "不存在的文本",
+            "new_text": "x",
+        })
+        out = self._capture_tool_call(_make_tool_call(call_id="ef3", name="edit", args=args))
+        plain = _strip_ansi(out)
+        assert "@@ -1 +1 @@" in plain
+        # 不展示文件里没有的内容
+        assert "a = 1" not in plain
+
+    def test_replay_edit_diff_redacts_hunk_lineno(self, tmp_path, monkeypatch):
+        """replay 时 edit 不读文件：片段级 diff，@@ 行号替换为 @@ ... @@。"""
+        import json
+        # 文件存在但内容不同：replay 不应读它（也不该展示它的行号）
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "m.py").write_text(
+            '"""不同内容"""\ndef x():\n    return "x"\n', encoding="utf-8",
+        )
+        old_text = 'def world():\n    return "world"\n'
+        new_text = 'def world():\n    return "bob"\n'
+        args = json.dumps({"file_path": "m.py",
+                           "old_text": old_text, "new_text": new_text})
+        tc = _make_tool_call(call_id="re1", name="edit", args=args)
+        out = self._capture(lambda: renderer.render_replay(
+            ToolCallEvent(model="m", tool_call=tc)))
+        plain = _strip_ansi(out)
+        # 片段级 diff：@@ 行号被替换为 @@ ... @@（无具体行号）
+        assert "@@ ... @@" in plain
+        assert "@@ -1 +1 @@" not in plain
+        # 不读文件：不出现文件实际内容里的行
+        assert "不同内容" not in plain
+        # 改动行保留
+        assert '-    return "world"' in plain
+        assert '+    return "bob"' in plain
+
+    def test_tool_call_bash_empty_command(self):
+        """default bash 空 command：仅标题（无 YAML 无代码块）。"""
+        import json
+        args = json.dumps({"command": ""})
+        out = self._capture_tool_call(_make_tool_call(call_id="b3", name="bash", args=args))
+        plain = _strip_ansi(out)
+        assert plain.strip() == "🔧 调用工具 - bash"
+
+    def test_tool_call_specialized_invalid_json_fallback_plain(self):
+        """default 特化工具参数无法解析成 JSON：回退原样展示原始参数字符串。"""
+        for name in ("bash", "write", "patch", "edit"):
+            out = self._capture_tool_call(
+                _make_tool_call(call_id=f"bad_{name}", name=name, args="{not json"))
+            plain = _strip_ansi(out)
+            # 标靶标题 + 原始参数字符串原样出现
+            assert f"🔧 调用工具 - {name}" in plain
+            assert "{not json" in plain
+
+    def test_tool_call_specialized_non_dict_json_fallback_plain(self):
+        """default 特化工具参数为合法 JSON 但顶层非 dict：也回退旧版输出。"""
+        out = self._capture_tool_call(
+            _make_tool_call(call_id="arr", name="bash", args="[1, 2, 3]"))
+        plain = _strip_ansi(out)
+        assert "🔧 调用工具 - bash" in plain
+        assert "[1, 2, 3]" in plain
+
+    def test_tool_call_specialized_partial_dict_still_specialized(self):
+        """default 特化工具参数为 dict 但缺字段：仍走特化（不回退旧版）。"""
+        import json
+        # bash 缺 command 键：不展示原始 JSON，仅标题
+        out = self._capture_tool_call(
+            _make_tool_call(call_id="nk", name="bash", args=json.dumps({"nokey": 1})))
+        plain = _strip_ansi(out)
+        assert "🔧 调用工具 - bash" in plain
+        assert "nokey" not in plain
+
+    def test_classic_tool_call_bash_unchanged(self, monkeypatch):
+        """classic 风格 bash 工具调用：保持 ```yaml 参数围栏（特化不变）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        args = '{"command": "ls -la"}'
+        out = self._capture_tool_call(_make_tool_call(call_id="b4", name="bash", args=args))
+        # classic 保持完整 YAML 参数块 + 代码围栏
+        assert "\n```yaml\ncommand: ls -la\n```\n" in out
+        assert "🔧" not in out
 
 
 

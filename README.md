@@ -11,7 +11,9 @@
 - **文件读写**：内置 `read`、`write`、`edit`、`patch`，统一走路径安全检查
 - **任务跟踪**：内置 `todo_write`，搭配陈旧度自动提醒与重放同步
 - **模式权限**：询问/自动/全权三种模式 + 确认界面（同意/编辑/拒绝），按操作分类决定是否需人工确认
-- **双渲染风格**：default（emoji 标题 + 灰色输入区 + rich 语法高亮代码块）/ classic（无 emoji + `myc[模式] >` 提示符）
+- **双渲染风格**：default（emoji 标题 + 灰色输入区 + rich 语法高亮代码块，
+  并对 `bash`/`write`/`patch`/`edit` 工具调用做特化展示）/ classic（无 emoji +
+  `myc[模式] >` 提示符，保持完整 YAML 参数围栏）
 - **会话管理**：完整的对话上下文管理，支持多轮交互与断点续接
 - **命令历史**：持久化保存输入历史，支持上下键翻阅
 - **自动补全**：内置命令补全功能
@@ -154,6 +156,14 @@ default 风格下，assistant 正文经 `rich` 做 **Markdown 渲染**（标题/
 带行号展示（按文件路径/内容自动识别语言），bash 工具输出也按内容猜测语法；
 其余工具（write/edit/glob/grep/ls/patch 等）输出保持纯文本展示；classic
 风格保持纯代码围栏、assistant 正文原样输出。
+工具调用 YAML 参数在 default 风格下另对 `bash`/`write`/`patch`/`edit` 四个
+工具做特化展示：YAML 中去掉大字段（command/content/diff/old_text、new_text），
+添加一个空行后在新代码块中再次展示——`bash` 用 bash 语法带行号展示命令文本、
+`write` 按 `file_path` 推断语言带行号展示 content、`patch` 用 diff 语法不带
+行号展示 diff、`edit` 用 diff 语法不带行号展示 old_text/new_text 的 unified
+diff（文件可读时基于文件真实内容展示整文件 diff，行号为原始文件行号）；
+`read`/`ls`/`glob`/`grep`/`todo_write` 等工具仍保持完整 YAML
+参数块。
 语法高亮主题默认 `nord`（低饱和柔和），可用环境变量 `MYCODE_SYNTAX_THEME`
 覆盖（如 `gruvbox-dark`、`zenburn`）；工具输出与 assistant 正文自带 ANSI
 控制码时原样输出、不二次高亮/解析。
@@ -277,7 +287,7 @@ uv run pytest
 - 路径安全检查（`test_safe_path.py`）
 - 行数/KiB 联合截断（`test_truncate.py`）
 - 会话历史与 ADT 序列化往返（`test_session.py`）
-- 渲染器 default/classic 风格输出（`test_renderer.py`）
+- 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染，`test_renderer.py`）
 - 确认交互界面：同意/拒绝/无理由拒绝/取消/编辑 与布局（`test_confirm.py`）
 - 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
