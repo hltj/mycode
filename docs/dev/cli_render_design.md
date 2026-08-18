@@ -204,7 +204,7 @@ default 风格下，`render_tool_call_params` 对 `bash` / `write` / `patch` /
 | `bash` | `command` | `bash` | 带 | 命令文本 |
 | `write` | `content` | 按 `file_path` 推断（Pygments） | 带 | content |
 | `patch` | `diff` | `diff` | 不带 | diff |
-| `edit` | `old_text` / `new_text` | `diff` | 不带 | 二者的 unified diff（`difflib.unified_diff`，`--- a`/`+++ a`/`@@`/`+`/`-` 着色） |
+| `edit` | `old_text` / `new_text` | `diff` | 不带 | 二者的 unified diff（`difflib.unified_diff`，去 `---`/`+++` 文件头，`@@`/`+`/`-` 着色） |
 
 具体规则：
 
@@ -221,8 +221,9 @@ default 风格下，`render_tool_call_params` 对 `bash` / `write` / `patch` /
   及 diff 头均按 diff 词法上色）；
 - **edit**：原 YAML 去掉 `old_text`/`new_text`（保留 `file_path` 与
   `replace_all`）；添加一个空行后，用 `difflib.unified_diff` 生成
-  `old_text → new_text` 的 unified diff，**不带行号**、以 `diff` 语法展示；
-  old 与 new 相同（无改动）时不追加新代码块；
+  `old_text → new_text` 的 unified diff，**不带行号**、以 `diff` 语法展示，
+  并去掉开头的 `---`/`+++` 文件头两行（实时与重放一致）；当
+  `old_text` 与 `new_text` 完全相同时 diff 为空，不追加代码块；
   - **优先整文件级 diff**：工具调用渲染时文件尚未被修改，读取 `file_path`
     当前内容（与应用逻辑一致：首个匹配或 `replace_all` 全部匹配）后，对
     「替换前 vs 替换后」的完整文件做 diff —— 行号即**原始文件真实行号**；

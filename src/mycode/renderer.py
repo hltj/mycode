@@ -174,6 +174,20 @@ def _redact_hunk_headers(diff_text: str) -> str:
     ).rstrip(chr(0x0A))
 
 
+def _strip_diff_file_headers(diff_text: str) -> str:
+    """去掉 unified diff 开头的 ``---`` 与 ``+++`` 文件头两行。
+
+    edit 工具渲染的 diff 中 ``--- fromfile`` / ``+++ tofile`` 与 YAML 里
+    已有的 file_path 重复且占视觉空间，实时与重放都去掉。若文本不以
+    ``---`` 开头则原样返回。
+    """
+    lines = diff_text.split("\n")
+    if lines and lines[0].startswith("--- ") and len(lines) > 1 \
+            and lines[1].startswith("+++ "):
+        return "\n".join(lines[2:]).rstrip(chr(0x0A))
+    return diff_text.rstrip(chr(0x0A))
+
+
 def _edit_file_diff(file_path: str, old_text: str, new_text: str,
                     replace_all: bool) -> str | None:
     """基于文件真实内容生成 edit 替换的 unified diff（与工具语义一致）。
@@ -812,11 +826,12 @@ class _DefaultRenderer(_Renderer):
                 print(_syntax_plain(diff, language="diff"), end="")
         elif func_name == "edit":
             # YAML 中去掉 old_text/new_text；新代码块用 diff 语法、不带行号
-            # 展示二者的 unified diff。优先基于文件真实内容做整文件 diff
-            # （行号 = 原始文件行号，上下文用 unified_diff 默认 3 行）；
-            # 文件不可用 / old_text 已不在文件中时回退片段级 diff。
-            # replay 时文件可能已不存在/已改变，不读文件，一律用片段级
-            # diff，并把无真实语义的 @@ 行号替换为 @@ ... @@。
+            # 展示二者的 unified diff（去掉开头的 ---/+++ 文件头两行）。
+            # 优先基于文件真实内容做整文件 diff（行号 = 原始文件行号，
+            # 上下文用 unified_diff 默认 3 行）；文件不可用 / old_text 已
+            # 不在文件中时回退片段级 diff。replay 时文件可能已不存在/已改
+            # 变，不读文件，一律用片段级 diff，并把无真实语义的 @@ 行号
+            # 替换为 @@ ... @@。
             old_text = str(_p("old_text"))
             new_text = str(_p("new_text"))
             file_path = str(_p("file_path"))
@@ -837,6 +852,8 @@ class _DefaultRenderer(_Renderer):
                 if edit_diff is None:
                     edit_diff = _old_new_diff(old_text, new_text, file_path)
             if edit_diff:
+                # 去掉开头的 --- / +++ 文件头两行（实时与重放一致）
+                edit_diff = _strip_diff_file_headers(edit_diff)
                 print()
                 print(_syntax_plain(edit_diff, language="diff"), end="")
         else:

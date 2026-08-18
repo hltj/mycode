@@ -633,8 +633,9 @@ class TestDefaultSyntaxHighlight:
         assert "file_path: x.py" in plain
         assert "replace_all: true" in plain
         assert "old_text" not in plain and "new_text" not in plain
-        # 二者的 unified diff 以 diff 语法整体出现
-        assert "--- x.py" in plain and "+++ x.py" in plain
+        # 二者的 unified diff 以 diff 语法整体出现；开头文件头两行已去掉
+        assert "--- x.py" not in plain and "+++ x.py" not in plain
+        assert "@@ -1 +1,2 @@" in plain or "@@ ... @@" in plain
         assert "-foo" in plain and "+bar" in plain and "+baz" in plain
         # 不带行号
         assert "38;5;240;48;5;234m1 " not in out
@@ -682,6 +683,8 @@ class TestDefaultSyntaxHighlight:
             f"行号应从原始文件行号算起（而非从 1 的片段行号）, got {m.group(1)}/{m.group(2)}"
         # 邻近行参照（def world 在 hunk 中；不强制包含更远的 hello）
         assert "def world():" in plain
+        # 开头文件头两行已去掉
+        assert "--- m.py" not in plain and "+++ m.py" not in plain
         # 改动行
         assert '-    return "world"' in plain
         assert '+    return "bob"' in plain
@@ -738,6 +741,8 @@ class TestDefaultSyntaxHighlight:
         assert "@@ -1 +1 @@" not in plain
         # 不读文件：不出现文件实际内容里的行
         assert "不同内容" not in plain
+        # 开头文件头两行已去掉
+        assert "--- m.py" not in plain and "+++ m.py" not in plain
         # 改动行保留
         assert '-    return "world"' in plain
         assert '+    return "bob"' in plain
