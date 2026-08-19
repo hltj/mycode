@@ -127,6 +127,8 @@ def _yaml_dump(parsed: dict) -> str:
     """把工具调用参数 dict 转为 YAML 文本（含换行字符串用 block literal）。
 
     含换行的字符串用 block literal（``|-``）输出，避免换行折叠翻倍。
+    去掉 ``yaml.dump`` 末尾的换行，让 rich 语法高亮不会多渲染一整个
+    背景空行（YAML 块末尾不再出现多余空行）。
     """
     import yaml
 
@@ -141,7 +143,8 @@ def _yaml_dump(parsed: dict) -> str:
     _BlockStrDumper.add_representer(str, _block_str)
     return yaml.dump(parsed, Dumper=_BlockStrDumper,
                      allow_unicode=True, sort_keys=False,
-                     default_flow_style=False, width=64 * 1024)
+                     default_flow_style=False,
+                     width=64 * 1024).rstrip(chr(0x0A))
 
 
 def _old_new_diff(old: str, new: str, filename: str) -> str:
@@ -799,10 +802,9 @@ class _DefaultRenderer(_Renderer):
 
         if func_name == "bash":
             # YAML 中不再展示 command（避免双份命令文本）；新代码块直接
-            # 用 bash 语法带行号展示命令文本
+            # 用 bash 语法带行号展示命令文本，紧邻标题（中间无空行）
             command = str(_p("command"))
             if command:
-                print()
                 print(_syntax_plain(
                     command, language="bash", line_numbers=True,
                 ), end="")

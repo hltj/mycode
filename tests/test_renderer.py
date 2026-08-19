@@ -566,6 +566,31 @@ class TestDefaultSyntaxHighlight:
         # 无代码围栏
         assert "```" not in out
 
+    def test_tool_call_bash_title_adjacent_command(self):
+        """default bash 工具调用：标题后紧跟命令代码块，中间无空行。"""
+        import json
+        args = json.dumps({"command": "ls -la"})
+        out = self._capture_tool_call(_make_tool_call(call_id="b1", name="bash", args=args))
+        lines = out.split("\n")
+        # 标题行后的下一行即 bash 命令代码块（首行为绘制行号标题/行号，非空行）
+        assert lines[0] == "\x1B[1;34m🔧 调用工具 - bash\x1B[0m"
+        assert _strip_ansi(lines[1]).strip() != ""
+
+    def test_tool_call_yaml_no_trailing_blank(self):
+        """default 特化工具 YAML 参数块末尾：无多余的纯背景空行。"""
+        import json
+        # write：YAML 一行 + 分隔空行 + 内容。YAML 行后下一行是分隔空行
+        # （纯背景被剥离后为空），而不是 YAML 块自有末尾空行。
+        args = json.dumps({"file_path": "a.py", "content": "x"})
+        out = self._capture_tool_call(_make_tool_call(call_id="w3", name="write", args=args))
+        lines = out.split("\n")
+        # 定位 YAML 行（file_path 键）
+        idx = next(i for i, l in enumerate(lines) if "file_path" in _strip_ansi(l))
+        # YAML 行之后紧跟一个空行（背景剥离后为空），然后才是内容代码块；
+        # 若存在 YAML 块自带的多余背景空行，会在 idx 与 idx+1 之间多插一行
+        assert _strip_ansi(lines[idx + 1]).strip() == ""
+        assert "x" in _strip_ansi(lines[idx + 2])
+
     def test_tool_call_bash_multiline_line_numbers(self):
         """default bash 工具调用：多行命令带连续行号。"""
         import json

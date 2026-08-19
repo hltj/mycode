@@ -187,7 +187,8 @@ classic 沿用基类的原样输出（不引入 rich 解析，与代码围栏策
 
 1. `json.loads(arguments)` 解析参数；
 2. 自定义 `_BlockStrDumper`：含换行的字符串用 block literal（`|-`）输出，避免换行折叠翻倍；
-3. `yaml.dump(allow_unicode=True, sort_keys=False, default_flow_style=False)`；
+3. `yaml.dump(allow_unicode=True, sort_keys=False, default_flow_style=False)`，
+   并去掉末尾换行（YAML 块内不出现多余的背景空行）；
 4. 解析失败（非法 JSON）时直接原样输出参数字符串。
 
 default 去掉原来的 ```yaml 代码围栏，改用 rich 语法高亮渲染（`language="yaml"`）；
@@ -208,9 +209,9 @@ default 风格下，`render_tool_call_params` 对 `bash` / `write` / `patch` /
 
 具体规则：
 
-- **bash**：原 YAML 不再展示 `command`；添加一个空行后，新代码块用 `bash`
-  语法、**带行号** `Syntax(command, "bash", line_numbers=True)` 渲染命令文本
-  （rich 行号连续自然排列）；
+- **bash**：原 YAML 不再展示 `command`；命令文本紧邻标题（中间无空行），
+  用 `bash` 语法、**带行号** `Syntax(command, "bash", line_numbers=True)`
+  渲染命令文本（rich 行号连续自然排列）；
 - **write**：原 YAML 只保留 `file_path`（去掉 `content`）；添加一个空行后，
   新代码块按 `file_path` 用 `guess_lexer_for_filename` 推断语言（扩展名如
   `.py`/`.sh`/`.yaml`，已知文件名如 `.bashrc` 直接命中），**带行号**展示
