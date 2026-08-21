@@ -577,14 +577,22 @@ class TestPromptUserInput:
         assert cli._prompt_user_input(session) == "hello"
 
     def test_keyboard_interrupt_during_input_returns_none_silently(self):
-        """输入过程中 Ctrl-C：返回 None 且不输出任何内容。"""
+        """输入过程中 Ctrl-C：返回 None 且不输出任何内容（留白由布局预留）。"""
         session = MagicMock()
         session.prompt = MagicMock(side_effect=KeyboardInterrupt)
         holder: dict = {}
         out = self._capture(
             lambda: holder.update(result=cli._prompt_user_input(session)))
         assert holder["result"] is None
-        assert out == ""  # 无任何输出
+        # PromptSession 未在真实终端运行，_prompt_user_input 不输出任何内容
+        assert out == ""
+
+    def test_returns_input_classic_no_blank(self, monkeypatch):
+        """classic 风格正常输入：不加空行，仅返回输入。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        session = MagicMock()
+        session.prompt = MagicMock(return_value="hello")
+        assert cli._prompt_user_input(session) == "hello"
 
     def test_eof_error_propagates(self):
         """Ctrl-D（EOFError）照常向上抛出，由外层退出程序。"""
@@ -629,6 +637,34 @@ class TestCreatePromptSession:
         """default 提示符为居左竖线。"""
         cli._create_prompt_session()  # 仅确保可创建
         assert cli._prompt_fragments() == [('class:mycode-prompt', '│ ')]
+
+    def test_default_reserves_blank_lines_in_layout(self):
+        """default：输入区布局上下各预留 1 行灰色背景留白。"""
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.dimension import Dimension
+        session = cli._create_prompt_session()
+        container = session.app.layout.container
+        children = container.children
+        # 首尾各 1 个固定高度 1 行的留白窗口
+        assert isinstance(children[0], Window)
+        assert isinstance(children[-1], Window)
+        h0 = children[0].height
+        assert isinstance(h0, Dimension) and h0.preferred == 1
+        h_last = children[-1].height
+        assert isinstance(h_last, Dimension) and h_last.preferred == 1
+        # 重复调用不叠加
+        from mycode.renderer import _get_renderer
+        _get_renderer().apply_input_style(session)
+        assert len(session.app.layout.container.children) == len(children)
+
+    def test_classic_no_reserved_blank_lines(self, monkeypatch):
+        """classic：输入区布局不预留留白行。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        session = cli._create_prompt_session()
+        container = session.app.layout.container
+        # classic 根容器 children 数量与默认 PromptSession 布局一致（未插入留白）
+        assert container.children[0].__class__.__name__ == "ConditionalContainer"
+        assert container.children[-1].__class__.__name__ == "ConditionalContainer"
 
 
 

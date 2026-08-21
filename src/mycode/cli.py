@@ -573,6 +573,9 @@ def _handle_retry_command(
 def _prompt_user_input(session: PromptSession[str]) -> str | None:
     """读取一轮用户输入。
 
+    default 风格的输入区上下留白由布局提前预留（见
+    ``renderer.apply_input_style``：输入区根容器上下各挂 1 行灰色背景空行）。
+
     Ctrl-C 发生在输入过程中（``session.prompt`` 内部）时静默放弃
     本次输入并返回 ``None``——不输出任何内容，由调用方直接继续
     等待下一轮输入。EOF（Ctrl-D）则照常向上抛出。

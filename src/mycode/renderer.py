@@ -19,6 +19,10 @@ from openai.types.chat import (
     ChatCompletionMessageFunctionToolCallParam,
 )
 from prompt_toolkit import PromptSession
+from prompt_toolkit.layout import to_container
+from prompt_toolkit.layout.containers import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import CodeBlock, Markdown
@@ -248,7 +252,7 @@ def _tool_call_args(tool_call_id: str) -> dict:
 
 
 # 默认风格带行号语法高亮渲染：与输入区一致的深灰背景区分代码块区域
-_CODE_BG = "rgb(30,30,30)"
+_CODE_BG_RGB = "rgb(30,30,30)"
 # 语法高亮主题，可用环境变量 MYCODE_SYNTAX_THEME 覆盖（如 nord / gruvbox-dark / zenburn）
 _CODE_THEME = os.getenv("MYCODE_SYNTAX_THEME", "nord")
 
@@ -256,14 +260,17 @@ _CODE_THEME = os.getenv("MYCODE_SYNTAX_THEME", "nord")
 # 否则会对控制码序列再次上色、导致转义码泄漏到终端。
 _ANSI_MARK_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[@-Z\\-~]")
 
+# read 渲染相关常量
+_HIGHLIGHT_MUTED = "\x1B[38;5;110m"   # 蓝灰（read 末尾截断/剩余提示行，default 风格；与背景区分、柔和不刺眼）
+_CODE_BG = "\x1B[48;5;234m"     # 深灰背景（default 代码块画布，对应 rich 的 rgb(30,30,30) → 256 色 234）
+_READ_LINE_RE = re.compile(r"^\s*\d+\t(.*)$", re.MULTILINE)
+_READ_LINENO_RE = re.compile(r"^\s*(\d+)\t", re.MULTILINE)
+_TRUNCATE_MARK_RE = re.compile(r"^\.\.\.\s")
+
 
 def _has_ansi_control(text: str) -> bool:
     """判断文本是否包含 ANSI 控制码。有则不应进行语法高亮。"""
     return bool(_ANSI_MARK_RE.search(text))
-_HIGHLIGHT_MUTED = "\x1B[38;5;110m"   # 蓝灰（read 末尾截断/剩余提示行，default 风格；与背景区分、柔和不刺眼）
-_READ_LINE_RE = re.compile(r"^\s*\d+\t(.*)$", re.MULTILINE)
-_READ_LINENO_RE = re.compile(r"^\s*(\d+)\t", re.MULTILINE)
-_TRUNCATE_MARK_RE = re.compile(r"^\.\.\.\s")
 
 
 def _is_truncate_marker(line: str) -> bool:
@@ -364,7 +371,8 @@ def _terminal_columns() -> int:
 
 
 def _syntax_plain(code: str, language: str | None = None,
-                  line_numbers: bool = False, start_line: int = 1) -> str:
+                  line_numbers: bool = False, start_line: int = 1,
+                  top_padding: int = 1, bottom_padding: int = 1) -> str:
     """返回 rich 渲染后的代码文本（含 ANSI 转义）。
 
     在**终端宽度**下用 rich 渲染：短行背景色铺满整行、超长行自动换行，
@@ -372,20 +380,24 @@ def _syntax_plain(code: str, language: str | None = None,
     （识别 markdown 语法如标题/代码块，纯文本行无额外着色）；词法器解析
     失败时同样回退到 ``markdown``。
 
+    代码块上下各留 ``top_padding`` / ``bottom_padding`` 行纯背景留白
+    （默认各 1 行），与 markdown 渲染风格中的代码块上下各 1 行留白节奏一致。
+
     若内容自带 ANSI 控制码（工具输出可能包含颜色转义），不再语法高亮——
     原样返回（补一个尾部换行），避免对控制码再次上色导致转义序列泄漏。
     """
     if _has_ansi_control(code):
         return code + (chr(0x0A) if not code.endswith(chr(0x0A)) else "")
     lexer = language or "markdown"
+    padding = (top_padding, 0, bottom_padding, 0)
     try:
         syntax = Syntax(code, lexer, theme=_CODE_THEME, line_numbers=line_numbers,
                         start_line=start_line, word_wrap=True,
-                        background_color=_CODE_BG)
+                        background_color=_CODE_BG_RGB, padding=padding)
     except Exception:
         syntax = Syntax(code, "markdown", theme=_CODE_THEME, line_numbers=line_numbers,
                         start_line=start_line, word_wrap=True,
-                        background_color=_CODE_BG)
+                        background_color=_CODE_BG_RGB, padding=padding)
     buf = io.StringIO()
     Console(file=buf, force_terminal=True, width=_terminal_columns()).print(syntax)
     return buf.getvalue()
@@ -397,7 +409,8 @@ def _markdown_plain(markup: str) -> None:
     - 段落 / 标题 / 列表 / 表格 / 引用 / 分割线等按 rich 默认样式渲染，
       字体、行数继承默认主题（markdown.code 等内联样式即富文本着色）；
     - 代码块交给覆写版 ``CodeBlock``：与工具输出/read 一致用深灰背景
-      ``_CODE_BG``、``_CODE_THEME``，避免富文本对 ``` 围栏做二次上色；
+      ``_CODE_BG_RGB``、``_CODE_THEME``，避免富文本对 ``` 围栏做二次上色；
+      代码块上下各留 1 行同背景色留白，与 .md 渲染风格的代码块留白一致；
     - ANSI 控制码豁免：正文自带的 ANSI 转义原样输出，不经过 markdown
       解析（否则转义序列可能在代码块/链接里被再次装箱导致泄漏）；
     - 链接保留 rich 默认行为（``hyperlinks`` 开终端 OSC8 超链接，默认 True）。
@@ -407,16 +420,22 @@ def _markdown_plain(markup: str) -> None:
         return
 
     class _CodeBlockBg(CodeBlock):
-        """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。"""
+        """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。
+
+        代码块上下各绘制 1 行纯背景留白（``top_padding`` / ``bottom_padding``），
+        与代码块正文行同背景色、视觉连成一体。
+        """
 
         def __rich_console__(self, console: Console, options: Any) -> Any:
             code = str(self.text).rstrip(chr(0x0A))
             try:
                 yield Syntax(code, self.lexer_name, theme=_CODE_THEME,
-                             word_wrap=True, padding=1, background_color=_CODE_BG)
+                             word_wrap=True, padding=(1, 0, 1, 0),
+                             background_color=_CODE_BG_RGB)
             except Exception:
                 yield Syntax(code, "text", theme=_CODE_THEME,
-                             word_wrap=True, padding=1, background_color=_CODE_BG)
+                             word_wrap=True, padding=(1, 0, 1, 0),
+                             background_color=_CODE_BG_RGB)
 
     # 实例级覆写 elements：仅影响本次打印，不改 rich.markdown 全局映射，
     # 避免污染其他使用方。
@@ -432,6 +451,17 @@ def _markdown_plain(markup: str) -> None:
     except Exception:
         # 极端输入导致 rich 解析/渲染失败时兜底为纯文本
         print(markup.rstrip(chr(0x0A)))
+
+
+def _spacer_text(bg: str) -> str:
+    """生成 1 行纯背景空行（不含换行），用作方块上下留白。
+
+    ``bg`` 指定背景色：代码块用 ``_CODE_BG``（与 rich 代码块背景
+    一致），输入区用 ``_INPUT_BG``。行内容用空格填满整行（仅背景可见）；
+    换行由调用方 ``print`` 负责。
+    """
+    columns = _terminal_columns()
+    return bg + " " * columns + _RESET
 
 
 def _wrap_by_display_width(body: str, columns: int) -> list[str]:
@@ -722,12 +752,16 @@ class _DefaultRenderer(_Renderer):
         """default：rich 语法高亮渲染代码块（不带行号）。
 
         未显式指定语言时按内容猜测（Pygments ``guess_lexer``），识别不到
-        回退 ``markdown``。内容自带 ANSI 控制码时不做猜测、原样输出，
-        避免控制码被再次上色泄漏转义序列。
+        回退 ``markdown``。内容自带 ANSI 控制码时不做猜测、改用代码围栏
+        原样包裹（同 classic，避免控制码被再次上色泄漏转义序列）。
+
+        代码块上下各留 1 行纯背景空行（`_syntax_plain` 的 padding），与
+        assistant 正文代码块 / read 的留白节奏一致。
         """
         body = body.rstrip(chr(0x0A))
         if _has_ansi_control(body):
-            print(body)
+            # ANSI 内容不做语法高亮：用代码围栏原样包裹（同基类/classic）
+            super().render_code_block(body)
             return
         if language is None:
             language = _guess_read_language(body)
@@ -742,22 +776,36 @@ class _DefaultRenderer(_Renderer):
         3. 若有单独拿出的行再补上输出。
 
         语言优先按调用时的 ``file_path``（扩展名）推断，其次按内容猜测。
+        代码块上下各留 1 行纯背景空行（`_syntax_plain` 的 padding）。
+        截断/剩余提示行并入同一代码块区域，**紧贴带行号正文最后一行**
+        （中间无空行）；只有提示行（无带行号正文）时提示行前由 1 行背景
+        空行作顶部留白。
         """
         read_content = content.rstrip(chr(0x0A))
         normal, marker = _split_read_output(read_content)
-        if not normal:
-            body = _syntax_plain("", language=None,
-                                 line_numbers=True, start_line=1)
-        else:
+        if normal:
             joined = "\n".join(normal)
             language = _guess_filename_language(file_path, joined)
-            body = _syntax_plain(
+            # 带行号正文块：上 1 行留白 + 带行号正文 + 底部留白（有提示行时
+            # 底部不额外留白，提示行紧贴正文最后一行）
+            print(_syntax_plain(
                 joined, language=language,
                 line_numbers=True, start_line=_first_read_lineno(read_content),
-            )
+                bottom_padding=0 if marker else 1,
+            ), end="")
         if marker:
-            body += f"{_HIGHLIGHT_MUTED}{marker[0]}{_RESET}\n"
-        print(body, end="")
+            # 提示行：紧贴正文最后一行（中间无空行；无正文时先铺 1 行背景
+            # 空行作顶部留白），用蓝灰前景 + 深灰背景、按显示宽度补空格
+            # 铺满整行；下方铺 1 行背景留白收尾。
+            if not normal:
+                print(_spacer_text(_CODE_BG))
+            columns = _terminal_columns()
+            marker_line = marker[0].rstrip(chr(0x0A))
+            from prompt_toolkit.utils import get_cwidth
+            pad = max(0, columns - sum(get_cwidth(ch) for ch in marker_line))
+            print(f"{_HIGHLIGHT_MUTED}{_CODE_BG}{marker_line}"
+                  f"{' ' * pad}{_RESET}", end="")
+            print(_spacer_text(_CODE_BG))
 
     def render_tool_call_params(
         self,
@@ -796,13 +844,23 @@ class _DefaultRenderer(_Renderer):
         def _p(name: str, default: Any = "") -> Any:
             return params.get(name, default)
 
+        # YAML 摘要块（write/patch/edit 特化场景）：顶部带 1 行背景留白
+        # 与标题隔开；中间用 1 行背景空行与后续内容大代码块分隔；整体
+        # 视觉上是一个连续背景的代码块，上下各留 1 行背景（底部 1 行
+        # 由内容块提供）。
         def _emit_yaml(chunk: dict) -> None:
             if chunk:
-                print(_syntax_plain(_yaml_dump(chunk), language="yaml"), end="")
+                # YAML 摘要块：上下各留 1 行带背景留白
+                print(_syntax_plain(
+                    _yaml_dump(chunk), language="yaml",
+                    top_padding=1, bottom_padding=1,
+                ), end="")
+                # 区块之间的普通空行（不带背景），分隔 YAML 摘要块与内容块
+                print()
 
         if func_name == "bash":
             # YAML 中不再展示 command（避免双份命令文本）；新代码块直接
-            # 用 bash 语法带行号展示命令文本，紧邻标题（中间无空行）
+            # 用 bash 语法带行号展示命令文本、上下各留 1 行背景留白
             command = str(_p("command"))
             if command:
                 print(_syntax_plain(
@@ -813,19 +871,19 @@ class _DefaultRenderer(_Renderer):
             _emit_yaml({"file_path": _p("file_path")})
             content = str(_p("content"))
             if content:
-                print()
                 lang = _guess_filename_language(str(_p("file_path")), content)
                 print(_syntax_plain(
                     content.rstrip(chr(0x0A)), language=lang,
-                    line_numbers=True,
+                    line_numbers=True, top_padding=1, bottom_padding=1,
                 ), end="")
         elif func_name == "patch":
             # YAML 中去掉 diff；新代码块用 diff 语法、不带行号展示
             _emit_yaml({"dir_path": str(_p("dir_path"))})
             diff = str(_p("diff"))
             if diff:
-                print()
-                print(_syntax_plain(diff, language="diff"), end="")
+                print(_syntax_plain(
+                    diff, language="diff", top_padding=1, bottom_padding=1,
+                ), end="")
         elif func_name == "edit":
             # YAML 中去掉 old_text/new_text；新代码块用 diff 语法、不带行号
             # 展示二者的 unified diff（去掉开头的 ---/+++ 文件头两行）。
@@ -856,10 +914,12 @@ class _DefaultRenderer(_Renderer):
             if edit_diff:
                 # 去掉开头的 --- / +++ 文件头两行（实时与重放一致）
                 edit_diff = _strip_diff_file_headers(edit_diff)
-                print()
-                print(_syntax_plain(edit_diff, language="diff"), end="")
+                print(_syntax_plain(
+                    edit_diff, language="diff",
+                    top_padding=1, bottom_padding=1,
+                ), end="")
         else:
-            # 非特化工具：保持完整 YAML 参数块展示（行为不变）
+            # 非特化工具：保持完整 YAML 参数块展示（上下各留 1 行背景）
             self.render_code_block(yaml_text, language="yaml")
 
     def render_notice_additional(self, additional: str) -> None:
@@ -898,12 +958,17 @@ class _DefaultRenderer(_Renderer):
         第一行行首（同输入区提示符），其余行（含续行/换行行）无竖线且
         不缩进（同输入区 ``prompt_continuation=''``）。按显示宽度自行分行，
         每段均填充到终端宽度，保证背景从消息第一行到最后一行全量覆盖。
+
+        背景块上下各加 1 行同背景色空行（上下留白，见「统一留白规则」），
+        空行以空格填满一行、仅背景可见。
         """
-        import shutil
-        columns = shutil.get_terminal_size().columns
+        columns = _terminal_columns()
         lines = str(text).split('\n')
         prompt_color = MODE_COLOR[mode]
         bar = self.prompt_prefix(mode)  # "│" / "│?" / "│!"
+
+        # 上下各留 1 行同背景色空行（与输入区灰色背景一致）
+        print(_spacer_text(bg=_INPUT_BG))
         for i, line in enumerate(lines):
             # 第一行带提示符（含模式标记），后续行顶格无前缀
             prefix = bar + " " if i == 0 else ""
@@ -913,7 +978,8 @@ class _DefaultRenderer(_Renderer):
                     tail = seg[len(bar):]
                     seg = f"{prompt_color}{bar}{_FG_DEFAULT}{tail}"
                 print(f"{_INPUT_BG}{seg}{_RESET}")
-        print()
+        print(_spacer_text(bg=_INPUT_BG))
+        print()  # 消息块（含上下背景行）结束后的空行，分隔下方内容
 
     def prompt_prefix(self, mode: Mode) -> str:
         """default 风格提示符：竖线 + 模式标记（?/!），不含尾随空格。"""
@@ -934,6 +1000,25 @@ class _DefaultRenderer(_Renderer):
         # container 实际是 _Split（有 style 属性），cast 过 mypy。
         container = cast(Any, session.app.layout.container)
         container.style = "class:mycode-input"
+
+        # 输入区上下各预留 1 行固定高度的灰色背景空行，输入窗口底部始终保留
+        # 1 行空白背景，多行输入无论换行多少次都不会触达终端最底行；顶部
+        # 1 行则隔开上方内容。
+        # 注意：不能设 dont_extend_width=True——那会让空文本窗口只占 1 个
+        # 字符宽（背景无法铺满整行）；留白行宽度由根容器 HSplit 铺满。
+        def _make_blank() -> Any:
+            return to_container(Window(
+                FormattedTextControl(""),
+                height=Dimension.exact(1),
+                style="class:mycode-input",
+                dont_extend_height=True,
+            ))
+
+        # 仅在尚未插入时插入（防止重复调用 apply_input_style 叠加）
+        if not getattr(container, "_input_blank_inserted", False):
+            container.children.insert(0, _make_blank())      # 顶部留白
+            container.children.append(_make_blank())         # 底部留白
+            container._input_blank_inserted = True
 
 
 class _ClassicRenderer(_Renderer):

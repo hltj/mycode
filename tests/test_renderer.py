@@ -259,6 +259,23 @@ class TestDefaultSyntaxHighlight:
         assert "hello" in _strip_ansi(out)
         assert "48;5;234" in out
 
+    def test_code_block_top_bottom_blank(self):
+        """default 普通代码块：上下各留 1 行纯背景空行，与 markdown 风格统一。"""
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": "hello", "tool_name": "bash"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        plain = _strip_ansi(out)
+        lines = plain.split("\n")
+        # 结构：0 标题 / 1 上留白 / 2 正文 / 3 下留白
+        assert lines[0].startswith("📤 工具输出")
+        assert lines[1].strip() == ""
+        assert lines[2].strip() == "hello"
+        assert lines[3].strip() == ""
+        # 留白行带代码块背景
+        assert "\x1B[48;5;234m" in out
+
     def test_read_output_line_numbers(self):
         """default read 输出：带行号语法高亮，剥离原始行号后由 rich 重新编号。"""
         content = "  1\tline one\n  2\tline two\n"
@@ -283,8 +300,9 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "\x1B[38;5;240;48;5;234m5 \x1B[0m\x1B[38;5;188;48;5;234malpha" in out
-        # 截断提示单独抽出并以蓝灰展示（与背景区分、柔和不刺眼）
-        assert "\x1B[38;5;110m... 剩余 5 行未显示（已设置 offset/limit）\x1B[0m" in out
+        # 截断提示行：蓝灰前景 + 深灰背景（与代码块同画布），无行号
+        assert "\x1B[38;5;110m\x1B[48;5;234m... 剩余 5 行未显示（已设置 offset/limit）" in out
+        assert "\x1B[38;5;110m... 剩余" not in out  # 提示行不再无背景
         assert "\x1B[1;32m" not in out
 
     def test_read_error_no_line_numbers(self):
@@ -300,6 +318,84 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         assert "```" not in out
         assert "Error: 不是文件或不存在: x.py" in _strip_ansi(out)
+
+    def test_read_output_padding_blank_lines_no_lineno(self):
+        """default read：代码块上下各留 1 行纯背景空行且不含行号。"""
+        content = "  1\tline one\n  2\tline two\n"
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        # 结构：0 标题 / 1 上留白 / 2-3 正文 / 4 下留白
+        plain = _strip_ansi(out)
+        lines = plain.split("\n")
+        assert lines[1].strip() == ""
+        assert "1 line one" in lines[2]
+        assert "2 line two" in lines[3]
+        assert lines[4].strip() == ""
+        # 背景画布行（48;5;234）存在
+        assert "48;5;234" in out
+
+    def test_read_marker_has_bg_and_no_lineno(self):
+        """default read 截断提示行：蓝灰前景 + 深灰背景，无行号，上下有留白。"""
+        content = "  1\tline one\n... 已截断"
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        # 提示行带背景色（48;5;234）与蓝灰前景（38;5;110）
+        assert "\x1B[38;5;110m\x1B[48;5;234m... 已截断" in out
+        # 提示行后紧跟 1 行纯背景空行（无行号）收尾
+        assert "\x1B[48;5;234m                                                                                \x1B[0m\n" in out
+
+    def test_read_marker_no_background_before(self):
+        """default read 截断提示行：不能以无背景的纯蓝灰形式出现（需带画布背景）。"""
+        content = "  1\tline one\n... 已截断"
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        assert "\x1B[38;5;110m... 已截断" not in out
+
+    def test_read_marker_adjacent_to_body_no_blank(self):
+        """default read：行号正文与截断提示行之间无空行。"""
+        content = "  1\tline one\n  2\tline two\n... 剩余 2 行未显示"
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        plain = _strip_ansi(out)
+        lines = plain.split("\n")
+        # 结构：0 标题 / 1 上留白 / 2-3 正文 / 4 提示行 / 5 下留白
+        assert "1 line one" in lines[2]
+        assert "2 line two" in lines[3]
+        assert lines[4].strip() == "... 剩余 2 行未显示"
+        assert lines[5].strip() == ""
+        # 提示行与正文最后一行之间无空行（lines[3] 直接到 lines[4]）
+
+    def test_read_only_marker_no_lineno_block(self):
+        """default read 只有截断行（无行号正文）：走普通代码块渲染，上下留白。"""
+        content = "... 已截断"
+        ev = ToolResultEvent(
+            model="m",
+            tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
+        )
+        out = self._capture(lambda: _render_common(ev))
+        plain = _strip_ansi(out)
+        lines = plain.split("\n")
+        # 结构：0 标题 / 1 上留白 / 2 提示行 / 3 下留白
+        assert lines[0].startswith("📤 工具输出")
+        assert lines[1].strip() == ""
+        assert lines[2].strip() == "... 已截断"
+        assert lines[3].strip() == ""
+        # 无带行号的空块（行号 240 段不出现）
+        assert "38;5;240" not in out
+        # 内容带画布深灰背景
+        assert "\x1B[38;5;188;48;5;234m... 已截断" in out
 
     def test_read_output_python_highlight(self):
         """default read python 源码：自动检测语言并语法高亮 + 行号。"""
@@ -490,7 +586,7 @@ class TestDefaultSyntaxHighlight:
         assert renderer._first_read_lineno("no numbers") == 1
 
     def test_ansi_control_not_highlighted(self):
-        """default 内容含 ANSI 控制码：原样输出，不做语法高亮/二次上色。"""
+        """default 内容含 ANSI 控制码：用代码围栏原样包裹，不做语法高亮。"""
         content = "\x1B[32mgreen\x1B[0m files"
         cc = _make_tool_call(call_id="ans1", name="bash", args='{"command": "ls --color"}')
         self._capture(lambda: _render_common(ToolCallEvent(model="m", tool_call=cc)))
@@ -502,11 +598,12 @@ class TestDefaultSyntaxHighlight:
         # ANSI 控制码原样保留，无 nord 语法色
         assert "\x1B[32mgreen\x1B[0m files" in out
         assert "38;5;109" not in out
-        # 代码块后补空行（ANSI 内容也要带末尾空行）
+        # 代码围栏原样包裹（同 classic），末尾空行
+        assert "\n```\n\x1B[32mgreen\x1B[0m files\n```\n" in out
         assert out.endswith("\n\n")
 
     def test_ansi_control_in_read_plain(self):
-        """default read 内容含 ANSI：绕过高亮，直接输出。"""
+        """default read 内容含 ANSI：用代码围栏原样包裹。"""
         content = "\x1B[31merror\x1B[0m file"
         cc = _make_tool_call(call_id="ans2", name="read", args='{"file_path": "a.bin"}')
         self._capture(lambda: _render_common(ToolCallEvent(model="m", tool_call=cc)))
@@ -517,7 +614,8 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         assert "\x1B[31merror\x1B[0m file" in out
         assert "38;5;109" not in out
-        # read 含 ANSI 也补空行
+        # 代码围栏包裹，末尾空行
+        assert "\n```\n\x1B[31merror\x1B[0m file\n```\n" in out
         assert out.endswith("\n\n")
 
     def test_syntax_theme_env_var(self, monkeypatch):
@@ -567,29 +665,47 @@ class TestDefaultSyntaxHighlight:
         assert "```" not in out
 
     def test_tool_call_bash_title_adjacent_command(self):
-        """default bash 工具调用：标题后紧跟命令代码块，中间无空行。"""
+        """default bash 工具调用：标题后紧跟命令代码块（先 1 行留白再命令）。"""
         import json
         args = json.dumps({"command": "ls -la"})
         out = self._capture_tool_call(_make_tool_call(call_id="b1", name="bash", args=args))
         lines = out.split("\n")
-        # 标题行后的下一行即 bash 命令代码块（首行为绘制行号标题/行号，非空行）
+        # 标题行后的下一行即 bash 命令代码块的上方留白（纯背景空行，无行号）
         assert lines[0] == "\x1B[1;34m🔧 调用工具 - bash\x1B[0m"
-        assert _strip_ansi(lines[1]).strip() != ""
+        assert "ls -la" in _strip_ansi(out)
+
+    def test_tool_call_bash_padding_no_lineno(self):
+        """default bash 命令：代码块上下各 1 行留白，留白行无行号。"""
+        import json
+        args = json.dumps({"command": "echo a\necho b"})
+        out = self._capture_tool_call(_make_tool_call(call_id="b2", name="bash", args=args))
+        plain = _strip_ansi(out)
+        lines = plain.split("\n")
+        # 结构：0 标题 / 1 上留白 / 2-3 正文（行号）/ 4 下留白
+        assert lines[0].startswith("🔧 调用工具 - bash")
+        assert lines[1].strip() == ""
+        assert "1 echo a" in lines[2]
+        assert "2 echo b" in lines[3]
+        assert lines[4].strip() == ""
+        # 留白行不含行号数字前缀
+        assert not re.match(r"^\s*\d", lines[1])
+        assert not re.match(r"^\s*\d", lines[4])
 
     def test_tool_call_yaml_no_trailing_blank(self):
-        """default 特化工具 YAML 参数块末尾：无多余的纯背景空行。"""
+        """default 特化工具 YAML 参数块：YAML 上下带背景留白，区块间普通空行分隔。"""
         import json
-        # write：YAML 一行 + 分隔空行 + 内容。YAML 行后下一行是分隔空行
-        # （纯背景被剥离后为空），而不是 YAML 块自有末尾空行。
+        # write 结构：标题 / YAML 上留白 / YAML 行 / YAML 下留白 /
+        #            区块间普通空行 / 内容块顶部留白 / 内容行 / 内容块底部留白。
         args = json.dumps({"file_path": "a.py", "content": "x"})
         out = self._capture_tool_call(_make_tool_call(call_id="w3", name="write", args=args))
         lines = out.split("\n")
         # 定位 YAML 行（file_path 键）
         idx = next(i for i, l in enumerate(lines) if "file_path" in _strip_ansi(l))
-        # YAML 行之后紧跟一个空行（背景剥离后为空），然后才是内容代码块；
-        # 若存在 YAML 块自带的多余背景空行，会在 idx 与 idx+1 之间多插一行
-        assert _strip_ansi(lines[idx + 1]).strip() == ""
-        assert "x" in _strip_ansi(lines[idx + 2])
+        # YAML 行之后紧跟 YAML 底部带背景留白，再隔 1 个普通空行（区块间分隔）
+        assert _strip_ansi(lines[idx + 1]).strip() == ""  # YAML 底部留白
+        assert _strip_ansi(lines[idx + 2]).strip() == ""  # 区块间普通空行
+        # 然后才是内容块顶部留白（带背景）+ 内容行
+        assert "x" in _strip_ansi(lines[idx + 4])
 
     def test_tool_call_bash_multiline_line_numbers(self):
         """default bash 工具调用：多行命令带连续行号。"""
@@ -929,6 +1045,15 @@ class TestDefaultAssistantMarkdown:
         # 无 ``` 围栏
         assert "```" not in out
 
+    def test_code_fence_top_bottom_blank(self):
+        """assistant 代码块：上下各留 1 行纯背景空行（与 .md 风格统一）。"""
+        out = self._capture("```python\nimport os\n```")
+        full_lines = [l.strip() for l in _strip_ansi(out).split("\n")]
+        code_idx = full_lines.index("import os")
+        # import os 前一行与后一行都是空白（上下留白）
+        assert full_lines[code_idx - 1] == ""
+        assert full_lines[code_idx + 1] == ""
+
     def test_list_rendered(self):
         """列表：bullet 符号 + 项目文本。"""
         out = self._capture("- 项目一\n- 项目二")
@@ -1130,7 +1255,7 @@ class TestRenderStyle:
         assert out.endswith("\n\n")
 
     def test_user_message_default_bar_gray_bg(self, monkeypatch):
-        """default：首行竖线（提示符色）+ 灰色背景填充 + 末尾空行。"""
+        """default：首行竖线（提示符色）+ 灰色背景填充 + 上下各留 1 行背景空行。"""
         from openai.types.chat import ChatCompletionUserMessageParam
         from mycode.session import UserMessage
         monkeypatch.setenv("COLUMNS", "10")
@@ -1145,7 +1270,9 @@ class TestRenderStyle:
         )
         assert expected in out
         assert "myc >" not in out
-        assert out.endswith("\n\n")
+        # 上下各 1 行同背景色空行（无内容）；底部背景行后还有一个空行分隔
+        assert out.startswith("\x1B[48;2;51;51;51m          \x1B[0m\n")
+        assert out.endswith("\x1B[48;2;51;51;51m          \x1B[0m\n\n")
 
     def test_user_message_default_multiline(self, monkeypatch):
         """default 多行：仅第一行有竖线，续行无竖线不缩进，均全量填充。"""

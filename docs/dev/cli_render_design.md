@@ -11,6 +11,20 @@ Markdown 渲染；classic 风格不引入，保持纯代码围栏与原样输出
 - `src/mycode/renderer.py` — 渲染器基类与两个风格子类、共享分发、TODO 渲染、ANSI 辅助
 - `src/mycode/cli.py` — 事件总线、PromptSession 配置、输入区样式、replay 装配
 
+### 统一留白规则（default 风格）
+
+default 风格下，所有「方块」——每个代码块、user message 背景块、提示
+输入框——上下各留 **1 行同背景色空行**（留白行属于方块本身，填背景、
+不含任何内容）：
+
+- 代码块：`_syntax_plain` / Markdown 代码块统一 `padding=(1, 0, 1, 0)`；
+- user message：背景块首尾各 1 行同背景空行；
+- 输入框：布局根 HSplit 首尾各 1 行固定高度同背景空行，输入不会触达
+  终端最底行。
+
+阅读下文各渲染细节时，代码块 / 用户消息 / 输入区的「上下 1 行留白」
+均指这条统一规则，不再逐节重复展开。
+
 ---
 
 ## 一、渲染风格（--style）
@@ -145,13 +159,13 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
   当语言参数为 `None` / 非法时，`_syntax_plain` 回退 `markdown` 词法分析；
   写死的 `text` 是显式语言，直接按纯文本渲染、不参与该兜底；
 - 背景色：代码块区域设置 `background_color="rgb(30,30,30)"`，与输入区灰色背景呼应、
-  无围栏时仍能区分代码块边界；
+  无围栏时仍能区分代码块边界（留白见「统一留白规则」）；
 - 主题：语法高亮默认使用 `nord`（低饱和蓝灰，柔和不刺眼），可通过环境变量
   `MYCODE_SYNTAX_THEME` 覆盖（如 `gruvbox-dark` / `zenburn` / `one-dark`），
   常量集中在 renderer 顶部（`_CODE_THEME` / `_CODE_BG`）；
-- ANSI 控制码豁免：工具输出若自带 ANSI 控制码（如 `ls --color`、脚本彩色输出），
-  不做语法高亮、原样输出（`_has_ansi_control` 检测），避免控制码被语法上色导致
-  转义序列二次包装、颜色错乱；
+- ANSI 控制码豁免：工具输出若自带 ANSI 控制码（如 `ls --color`、脚本彩色输出，
+  由 `_has_ansi_control` 检测），不做语法高亮，改用代码围栏原样包裹（同
+  classic），避免控制码被语法上色导致转义序列二次包装、颜色错乱；
 - 宽度：按当前终端宽度渲染（`shutil.get_terminal_size`，获取失败回退 80），配合
   `Syntax(word_wrap=True)` 让超长行在终端内自动换行同时保持背景色铺满整行；
   `Console(file=io.StringIO(), force_terminal=True)` 捕获 ANSI 转义后经 `print` 输出。
@@ -168,7 +182,8 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
   `code`、~~删除线~~）等按 rich 默认主题渲染（富文本着色）；
 - 代码块（`fence` / `code_block`）用 **覆写版 `CodeBlock` 子类**：与工具输出
   一致取 `_CODE_BG` 背景色与 `_CODE_THEME` 主题（`Syntax(word_wrap=True,
-  padding=1, background_color=...)`），避免富文本对 ``` 围栏做默认的
+  padding=(1, 0, 1, 0), background_color=...)`，留白见「统一留白规则」），
+  避免富文本对 ``` 围栏做默认的
   cyan-on-black 内联处理、与工具输出视觉割裂；实例级覆写
   `Markdown.elements` 映射（不影响 rich 全局 `Markdown.elements`）。
   代码块语言标签非法时由 `Syntax` 抛出异常，子类捕获后回退 `text`；
@@ -207,21 +222,22 @@ default 风格下，`render_tool_call_params` 对 `bash` / `write` / `patch` /
 | `patch` | `diff` | `diff` | 不带 | diff |
 | `edit` | `old_text` / `new_text` | `diff` | 不带 | 二者的 unified diff（`difflib.unified_diff`，去 `---`/`+++` 文件头，`@@`/`+`/`-` 着色） |
 
-具体规则：
+具体规则（各代码块遵循「统一留白规则」；write/patch/edit 的 YAML 摘要块
+与内容块之间以 1 个普通空行分隔）：
 
-- **bash**：原 YAML 不再展示 `command`；命令文本紧邻标题（中间无空行），
-  用 `bash` 语法、**带行号** `Syntax(command, "bash", line_numbers=True)`
-  渲染命令文本（rich 行号连续自然排列）；
-- **write**：原 YAML 只保留 `file_path`（去掉 `content`）；添加一个空行后，
-  新代码块按 `file_path` 用 `guess_lexer_for_filename` 推断语言（扩展名如
+- **bash**：原 YAML 不再展示 `command`；用 `bash` 语法、**带行号**
+  `Syntax(command, "bash", line_numbers=True)` 渲染命令文本（rich 行号连续
+  自然排列）；
+- **write**：原 YAML 只保留 `file_path`（去掉 `content`）；新代码块按
+  `file_path` 用 `guess_lexer_for_filename` 推断语言（扩展名如
   `.py`/`.sh`/`.yaml`，已知文件名如 `.bashrc` 直接命中），**带行号**展示
   content；文件名推断不到时按内容 `guess_lexer`，纯文本由 `_syntax_plain`
   回退 `markdown`；
-- **patch**：原 YAML 只保留 `dir_path`（去掉 `diff`）；添加一个空行后，
-  新代码块用 `diff` 语法、**不带行号**展示 diff（`---`/`+++`/`@@`/`+`/`-`
+- **patch**：原 YAML 只保留 `dir_path`（去掉 `diff`）；新代码块用 `diff`
+  语法、**不带行号**展示 diff（`---`/`+++`/`@@`/`+`/`-`
   及 diff 头均按 diff 词法上色）；
 - **edit**：原 YAML 去掉 `old_text`/`new_text`（保留 `file_path` 与
-  `replace_all`）；添加一个空行后，用 `difflib.unified_diff` 生成
+  `replace_all`）；新代码块用 `difflib.unified_diff` 生成
   `old_text → new_text` 的 unified diff，**不带行号**、以 `diff` 语法展示，
   并去掉开头的 `---`/`+++` 文件头两行（实时与重放一致）；当
   `old_text` 与 `new_text` 完全相同时 diff 为空，不追加代码块；
@@ -251,7 +267,12 @@ default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号
 1. 若最后一行以 `...` 开头（截断 / 剩余提示），单独拿出来；
 2. 其他带行号的行去掉行号（`^\s*\d+\t` 前缀），交给 rich 重新编号（行号连续、
    从真实初始行号 `_first_read_lineno` 开始）；
-3. 若有第 1 步拿出的行，再补上输出（蓝灰 `\x1B[38;5;110m`，与深灰背景区分、柔和不刺眼）。
+3. 若有第 1 步拿出的行，再补上输出。
+
+行号块上下遵循「统一留白规则」。截断 / 剩余提示行并入同一代码块区域：
+**紧贴带行号正文最后一行**（中间无空行），提示行用**蓝灰前景 + 深灰背景**
+渲染、按显示宽度补空格铺满整行；提示行后再铺 1 行留白收尾。仅当没有带
+行号正文（只有提示行）时，提示行前才由 1 行背景空行作顶部留白。
 
 语言识别（默认风格）：优先按调用时登记的 `file_path` 用 Pygments
 `guess_lexer_for_filename` 推断（扩展名如 `.py`/`.sh`/`.yaml`，或已知文件名如
@@ -274,7 +295,8 @@ default 风格下 `read` 工具返回（`tool_name == "read"` 且内容含行号
 
 ### 3.8 default 用户消息（灰色背景块）
 
-`_DefaultRenderer.render_user_message` 是 default 风格最复杂的部分：
+`_DefaultRenderer.render_user_message` 渲染用户消息背景块
+（上下留白见「统一留白规则」，即背景块首尾各 1 行同背景空行）：
 
 - 首行带提示符（`│` / `│?` / `│!`，用当前模式色），续行顶格无前缀（与输入区
   `prompt_continuation=''` 一致）；
@@ -319,7 +341,12 @@ default 解析围栏语言后做语法高亮（围栏不保留），classic 原�
 
 ## 四、输入区（prompt_toolkit）
 
-`cli._create_prompt_session()` 创建 `PromptSession`：
+`cli._create_prompt_session()` 创建 `PromptSession`：default 风格的输入框
+上下 1 行留白在布局中提前预留（见下方「apply_input_style」，遵循「统一
+留白规则」），因此 `_prompt_user_input` 直接调用 `session.prompt` 即可；
+classic 风格不预留。
+
+`PromptSession` 配置：
 
 1. `multiline=True` + `prompt_continuation=''`（续行无前缀）；
 2. `completer=MycCommandCompleter()`：`/` 开头补全 `/q /quit /ask /auto /yolo`；
@@ -346,14 +373,19 @@ def prompt_fragments(self) -> list[tuple[str, str]]:
 
 ### default 输入区灰色背景（apply_input_style）
 
-style 表中 `''` 根样式 + `mycode-input` 类两条配合：
+style 表中 `''` 根样式 + `mycode-input` 类两条配合，把输入区整体填充为
+灰色背景：
 
 - `''` 根样式：让**有内容**的单元格继承灰色背景；
 - `apply_input_style` 把 `class:mycode-input` 挂到布局根容器（HSplit）：
   parent_style 会下发到所有子窗口及「剩余空间」占位窗口（`_Split.write_to_screen`
   → `Window._apply_style` → `Screen.fill_area`），把整块输入区（含空行、行尾空白、
-  以及向下延伸到终端底部的剩余空间）都填充为灰色。单靠根样式只会给已渲染字符上色，
-  空白行不会被覆盖。
+  以及向下延伸到终端底部的剩余空间）都填充为灰色。
+
+上下留白遵循「统一留白规则」：`apply_input_style` 在根 HSplit 的 children
+首尾各插入 1 个固定高度 1 行的空白 `Window`（`Dimension.exact(1)`，
+`mycode-input` 背景），输入不会触达终端最底行；以 `_input_blank_inserted`
+标记避免重复调用时叠加。
 
 ---
 
