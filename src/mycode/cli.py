@@ -784,7 +784,8 @@ def main():
         session_hist.file_path.unlink(missing_ok=True)
         print("\n无输入，会话已清理。")
     else:
-        print(f"\n可通过以下命令继续本次会话：\n{sys.argv[0]} -r {session_hist.session_uuid}")
+        # 退出提示（恢复命令按风格渲染）
+        _get_renderer().render_resume_hint(f"{sys.argv[0]} -r {session_hist.session_uuid}")
 
 if __name__ == '__main__':
     main()

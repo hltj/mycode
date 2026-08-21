@@ -716,6 +716,18 @@ class _Renderer:
         # 模式切换：输出一行提示（保持简洁，不打扰流水）
         print(f"\x1B[90m已切换到【{mode}】模式\x1B[0m\n")
 
+    def render_resume_hint(self, cmd: str) -> None:
+        """渲染退出时的「继续本次会话」恢复命令。
+
+        提示语在公共流程中统一输出，命令本身交给 ``render_resume_cmd``：
+        classic 原样输出纯文本，default 用 rich 渲染成 markdown 内联代码。
+        """
+        print("\n可通过以下命令继续本次会话：")
+        self.render_resume_cmd(cmd)
+
+    def render_resume_cmd(self, cmd: str) -> None:
+        raise NotImplementedError
+
     def create_prompt_style(self) -> Style:
         raise NotImplementedError
 
@@ -747,6 +759,10 @@ class _DefaultRenderer(_Renderer):
     def render_assistant_body(self, body: str) -> None:
         """default：assistant 正文用 rich Markdown 渲染（标题/列表/表格/代码块等）。"""
         _markdown_plain(body)
+
+    def render_resume_cmd(self, cmd: str) -> None:
+        """default：恢复命令放进 markdown 内联代码，经 rich 渲染。"""
+        _markdown_plain(f"`{cmd}`")
 
     def render_code_block(self, body: str, language: str | None = None) -> None:
         """default：rich 语法高亮渲染代码块（不带行号）。
@@ -1040,6 +1056,9 @@ class _ClassicRenderer(_Renderer):
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"异常 - {exc_type} - {exc_message}"
+
+    def render_resume_cmd(self, cmd: str) -> None:
+        print(cmd)
 
     def render_user_message(self, text: str, mode: Mode) -> None:
         color = MODE_COLOR[mode]

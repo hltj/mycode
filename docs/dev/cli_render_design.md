@@ -55,6 +55,7 @@ default 风格下，所有「方块」——每个代码块、user message 背�
 | `render_exception(exc)` | 红色异常标题 + traceback（default 语法高亮 / classic 围栏） |
 | `render_interrupt()` | 输出空行 |
 | `render_mode_change(mode)` | 灰色提示「已切换到【{mode}】模式」 |
+| `render_resume_cmd(cmd)` | （cli 退出提示调用）「继续本次会话」恢复命令：classic 原样输出 / default 用 rich 渲染成内联代码 |
 
 ### 代码块渲染（基类差异点）
 

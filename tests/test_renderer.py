@@ -1444,3 +1444,63 @@ class TestRenderStyle:
 
     def test_prompt_fragments_default(self):
         assert renderer._prompt_fragments() == [('class:mycode-prompt', '│ ')]
+
+
+class TestRenderResumeHint:
+    """退出时的「继续本次会话」恢复命令渲染。
+
+    default 风格把命令放进反引号包裹的 markdown 内联代码里，经 rich 渲染；
+    classic 风格保持纯文本原样输出，不带 markdown 格式。
+    """
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_classic_plain_and_no_backtick(self, monkeypatch):
+        """classic：原始命令文本，无反引号/markdown 格式。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        cmd = "myc -r 1234-abcd"
+        out = self._capture(lambda: _get_renderer().render_resume_hint(cmd))
+        assert "可通过以下命令继续本次会话：" in out
+        assert cmd in out
+        assert "`" not in out
+        assert "\x1b[" not in out  # 无 ANSI 着色
+
+    def test_classic_trailing_single_newline(self, monkeypatch):
+        """classic：尾部无多余空行（提示语后只有命令一行）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _get_renderer().render_resume_hint("myc -r x"))
+        assert out.endswith("myc -r x\n")
+        assert "\n\n" not in out
+
+    def test_default_backtick_and_ansi_present(self, monkeypatch):
+        """default：命令被反引号包裹，经 rich 渲染出内联代码（带 ANSI 着色）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        cmd = "myc -r 1234-abcd"
+        out = self._capture(lambda: _get_renderer().render_resume_hint(cmd))
+        assert "可通过以下命令继续本次会话：" in out
+        # rich 内联代码渲染：ANSI 着色序列存在
+        assert "\x1b[" in out
+        # 反引号不残留（rich 解析后是着色文本而非字面反引号）
+        assert "`" not in out
+        # 命令内容出现在渲染结果里（剥离 ANSI 后）
+        assert cmd in _strip_ansi(out)
+
+    def test_default_trailing_single_newline(self, monkeypatch):
+        """default：尾部无多余空行（恢复命令后只有一个换行收尾）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _get_renderer().render_resume_hint("myc -r x"))
+        assert not out.endswith("\n\n")
+        assert "\n\n" not in out
+
+    def test_heading_shared_across_styles(self, monkeypatch):
+        """提示语「可通过以下命令继续本次会话：」两风格一致（基类公共流程）。"""
+        for style in ("classic", "default"):
+            monkeypatch.setattr(renderer, "RENDER_STYLE", style)
+            out = self._capture(lambda: _get_renderer().render_resume_hint("myc -r x"))
+            assert "可通过以下命令继续本次会话：" in out
