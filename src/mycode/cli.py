@@ -548,6 +548,22 @@ def agent_loop(
 # 命令处理 —— 交互命令的行为入口
 # ===================================================================
 
+def _should_show_retry_hint(entries: list[AgentMessage]) -> bool:
+    """是否需要在接收下一轮用户输入前提示「可 Ctrl-T 或 /retry 继续」。
+
+    实时与重放统一判定：从末尾**跳过工具结果消息**（工具被中断/异常后
+    会补齐 tool 占位消息并派发 ToolResultEvent），看**最后一条非工具
+    事件**是否为中断（InterruptEvent，含真实 Ctrl-C 与用户取消）或异常
+    （ExceptionEvent）。正常完成的会话最后一条非工具事件是 assistant
+    回复，不会误报。
+    """
+    last_non_tool = next(
+        (e for e in reversed(entries) if not isinstance(e, ToolResultEvent)),
+        None,
+    )
+    return isinstance(last_non_tool, (InterruptEvent, ExceptionEvent))
+
+
 def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
     """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
     MODE_STATE.set(mode)
@@ -634,6 +650,13 @@ def _create_prompt_session() -> PromptSession[str]:
         # 模式切换作为一个事件分发（交由 main 的 bus 处理）。
         # 此处仅记录待派发标志，由 main 在下一轮读取。
         event.app.exit(result="__mode_cycle__")
+
+    @kb.add("c-t")
+    def _retry(event):
+        # Ctrl-T：输入阶段按 Ctrl-T 等价于输入 /retry，重新进入 agent
+        # 循环继续被中断的对话。返回 /retry 文本，复用 /retry 的命令解析。
+        # （冲突最小：仅覆盖 emacs transpose-chars / vi indent 低频编辑。）
+        event.app.exit(result="/retry")
 
     session: PromptSession[str] = PromptSession(
         history=FileHistory(HISTORY_FILE),
@@ -726,6 +749,11 @@ def main():
     session = _create_prompt_session()
 
     while True:
+        # 每次接收输入前检测：最近的非工具事件若是中断/异常，提示可继续
+        # （Ctrl-T 或 /retry）。重放结束、实时一轮 agent_loop 结束后都会
+        # 走到这里，因此实时与重放共用同一判定，逻辑统一。
+        if _should_show_retry_hint(session_hist.entries):
+            _get_renderer().render_retry_hint()
         try:
             user_input = _prompt_user_input(session)
             if user_input is None:

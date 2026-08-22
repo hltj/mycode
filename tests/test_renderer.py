@@ -995,6 +995,45 @@ class TestRenderCommonAssistantUser:
         assert out.endswith("\n\n")
 
 
+class TestRenderRetryHint:
+    """render_retry_hint：default 用 <kbd>/内联代码渲染、classic 纯文本。"""
+
+    def _strip_ansi(self, text: str) -> str:
+        import re
+        return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+    def _capture(self, fn):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def test_default_uses_kbd_and_inline_code(self, monkeypatch):
+        """default：Ctrl-T 用 <kbd> 标签、/retry 用 markdown 内联代码渲染。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _get_renderer().render_retry_hint())
+        # <kbd> 标签被 rich 识别为 Markdown 斜体样式（呈黄色高亮等）
+        assert "Ctrl-T" in out
+        assert "/retry" in out
+        # 无字面 <kbd> 标签残留（rich 已消费标签语义）
+        assert "<kbd>" not in out
+        # 无字面反引号残留（内联代码被消费）
+        assert "`" not in out
+        # 结尾是空行（print 自带回车）
+        assert out.endswith("\n\n")
+
+    def test_classic_plain_text(self, monkeypatch):
+        """classic：纯文本提示，无 ANSI 且无 <kbd> 标签。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _get_renderer().render_retry_hint())
+        assert "Ctrl-T" in out and "/retry" in out
+        assert "<kbd>" not in out
+        assert self._strip_ansi(out) == out  # 无 ANSI 控制码
+        assert out.endswith("\n\n")
+
+
 class TestDefaultAssistantMarkdown:
     """default 风格下 assistant 正文用 rich Markdown 渲染。"""
 

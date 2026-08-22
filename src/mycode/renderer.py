@@ -550,7 +550,7 @@ class _Renderer:
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         raise NotImplementedError
 
-    # ---- 代码块渲染（风格差异点） ----
+    # ---- 代码块渲染 ----
     def render_code_block(self, body: str, language: str | None = None) -> None:
         """渲染一块代码/文本（无行号）。
 
@@ -595,7 +595,7 @@ class _Renderer:
             print(f"\x1B[35m{title}\x1B[0m")
 
     def render_assistant_body(self, body: str) -> None:
-        """渲染 assistant 正文（风格差异点）。
+        """渲染 assistant 正文。
 
         基类与 classic 风格沿用原样输出；default 子类覆写为 rich
         Markdown 渲染。
@@ -635,7 +635,7 @@ class _Renderer:
         call_id: str = "",
         replay: bool = False,
     ) -> None:
-        """渲染工具调用参数（风格差异点）。
+        """渲染工具调用参数。
 
         基类（classic 风格）沿用统一 YAML 参数块展示（代码围栏）；
         default 子类覆写为对 ``bash`` / ``write`` / ``patch`` / ``edit``
@@ -700,6 +700,16 @@ class _Renderer:
         # 交互状态输出空行
         print('\n')
 
+    def render_retry_hint(self) -> None:
+        """中断/异常后的重试提示。
+
+        由 CLI 在接收下一轮用户输入前调用：当最后一条非工具事件是中断
+        （InterruptEvent，含真实 Ctrl-C 与用户取消）或异常
+        （ExceptionEvent）时，提示用户可通过 Ctrl-T 或 /retry 重新进入
+        agent 循环继续被中断的对话。
+        """
+        raise NotImplementedError
+
     # ---- 用户消息 / 提示符 / 输入区（子类差异点） ----
     def render_user_message(self, text: str, mode: Mode) -> None:
         raise NotImplementedError
@@ -763,6 +773,11 @@ class _DefaultRenderer(_Renderer):
     def render_resume_cmd(self, cmd: str) -> None:
         """default：恢复命令放进 markdown 内联代码，经 rich 渲染。"""
         _markdown_plain(f"`{cmd}`")
+
+    def render_retry_hint(self) -> None:
+        """default：Ctrl-T 用 <kbd> 标签、/retry 用内联代码渲染 markdown。"""
+        _markdown_plain("按 <kbd>Ctrl-T</kbd> 或输 `/retry` 命令重试")
+        print()
 
     def render_code_block(self, body: str, language: str | None = None) -> None:
         """default：rich 语法高亮渲染代码块（不带行号）。
@@ -1059,6 +1074,11 @@ class _ClassicRenderer(_Renderer):
 
     def render_resume_cmd(self, cmd: str) -> None:
         print(cmd)
+
+    def render_retry_hint(self) -> None:
+        """classic：纯文本提示。"""
+        print("按 Ctrl-T 或输 /retry 命令重试")
+        print()
 
     def render_user_message(self, text: str, mode: Mode) -> None:
         color = MODE_COLOR[mode]

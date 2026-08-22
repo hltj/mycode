@@ -355,6 +355,8 @@ classic 风格不预留。
    （`mycode-prompt` 绿 / `mycode-prompt-ask` 蓝 / `mycode-prompt-yolo` 橙）；
 4. `key_bindings`：`shift-tab` 绑定模式循环切换，以 `__mode_cycle__` 退出 prompt，
    由 `main` 下一轮读取后派发 `ModeChangeEvent`；
+   `ctrl-t` 绑定 `/retry` 快捷触发：输入阶段按 Ctrl-T 直接返回 `/retry` 文本，
+   复用 `/retry` 命令解析（仅输入阶段有效，等价于输入 `/retry`）；
 5. `erase_when_done=True`：下一轮渲染前擦除上一行输入。
 
 确认界面（`mycode.confirm` 的 `Application`）同样设 `erase_when_done=True`：

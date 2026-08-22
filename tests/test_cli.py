@@ -622,6 +622,53 @@ class TestAgentLoopModelWaitInterrupt:
         assert interrupt.interrupt["abort"] is False
 
 
+class TestAgentLoopReturnsInterrupted:
+    """agent_loop 返回是否「中断/异常提前退出」标志。"""
+
+    def _run_loop(self, side_effects, handler=None):
+        messages: list = []
+        bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda m: captured.append(m))
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=side_effects)
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]), \
+             patch.object(cli.ToolsRegistry, "get_handler", return_value=handler or (lambda **_: "ok")):
+            result = cli.agent_loop(messages, bus, model="test-model")
+        return result
+
+    def test_normal_finish_returns_none(self):
+        """正常完成（模型直接给最终回复）：agent_loop 返回 None。"""
+        result = self._run_loop([
+            _FakeResponse(_FakeMessage(content="done", tool_calls=[]), finish_reason="stop"),
+        ])
+        assert result is None
+
+    def test_tool_interrupt_returns_none(self):
+        """工具执行被 Ctrl-C 打断：agent_loop 仍返回 None（中断已内部处理）。"""
+        tc = _make_tool_call(call_id="c1", name="boom")
+        result = self._run_loop(
+            [_FakeResponse(_FakeMessage(content="", tool_calls=[_FakeTC(tc)]), finish_reason="tool_calls")],
+            handler=lambda **_: (_ for _ in ()).throw(KeyboardInterrupt),
+        )
+        assert result is None
+
+    def test_tool_exception_returns_none(self):
+        """工具执行抛普通异常：agent_loop 仍返回 None（异常已内部处理）。"""
+        tc = _make_tool_call(call_id="c1", name="boom")
+        result = self._run_loop(
+            [_FakeResponse(_FakeMessage(content="", tool_calls=[_FakeTC(tc)]), finish_reason="tool_calls")],
+            handler=lambda **_: (_ for _ in ()).throw(ValueError("boom")),
+        )
+        assert result is None
+
+    def test_waiting_model_ctrl_c_returns_none(self):
+        """等待大模型返回期间 Ctrl-C：agent_loop 仍返回 None。"""
+        result = self._run_loop([KeyboardInterrupt])
+        assert result is None
+
+
 
 class TestPromptUserInput:
     """cli._prompt_user_input：Ctrl-C 发生在输入过程中的静默处理。"""
@@ -729,6 +776,47 @@ class TestCreatePromptSession:
         # classic 根容器 children 数量与默认 PromptSession 布局一致（未插入留白）
         assert container.children[0].__class__.__name__ == "ConditionalContainer"
         assert container.children[-1].__class__.__name__ == "ConditionalContainer"
+
+    def test_ctrl_t_binding_registered(self):
+        """Ctrl-T 绑定已注册：输入阶段按 Ctrl-T 等价于输入 /retry。
+
+        直接检查 _create_prompt_session 生成的会话 key_bindings：应存在
+        c-t 绑定，其结果是返回 /retry 文本（复用命令解析）。该绑定只在
+        prompt（输入）阶段有效。
+        """
+        session = cli._create_prompt_session()
+        kb = session.key_bindings
+        assert kb is not None
+        # Keys.ControlT / Keys.BackTab 是枚举，v.value 为 "c-t" / "s-tab"
+        binding_keys = {
+            tuple(getattr(k, "value", k) if not isinstance(k, str) else k
+                  for k in getattr(b, "keys", ()))
+            for b in getattr(kb, "bindings", ())
+        }
+        assert ("c-t",) in binding_keys
+        # 同时存在 s-tab 模式循环绑定（不破坏既有功能）
+        assert ("s-tab",) in binding_keys
+
+    def test_ctrl_t_returns_retry_command(self):
+        """按 Ctrl-T 后 prompt 返回 /retry（等价输入 /retry 命令）。"""
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.input.defaults import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from mycode.cli import MycCommandCompleter
+        # 用与 _create_prompt_session 相同的 key_bindings 构造注入式会话
+        session = cli._create_prompt_session()
+        with create_pipe_input() as inp:
+            inp.send_text("\x14")  # Ctrl-T
+            s2 = PromptSession(
+                history=None,
+                completer=MycCommandCompleter(),
+                multiline=True,
+                key_bindings=session.key_bindings,
+                input=inp,
+                output=DummyOutput(),
+            )
+            result = s2.prompt()
+        assert result == "/retry"
 
 
 
@@ -936,6 +1024,74 @@ class TestReplayTodoSync:
         state = get_todos()
         assert len(state) == 1
         assert state[0]["title"] == "ok"
+
+
+class TestReplayRetryHint:
+    """_should_show_retry_hint：重放/实时统一判定是否提示可 Ctrl-T 或 /retry 继续。
+
+    判定从末尾跳过 ToolResultEvent（工具被中断/异常后会补齐 tool 占位消息），
+    看最近的非工具事件是否中断/异常。
+    """
+
+    def _user(self):
+        from mycode.session import UserMessage
+        return UserMessage(model="m", message={"role": "user", "content": "hi"})
+
+    def test_last_interrupt_shows_hint(self):
+        """末条是 InterruptEvent：应提示。"""
+        from mycode.session import InterruptEvent
+        entries = [
+            self._user(),
+            InterruptEvent(model="m", interrupt={"abort": False}),
+        ]
+        assert cli._should_show_retry_hint(entries) is True
+
+    def test_last_exception_shows_hint(self):
+        """末条是 ExceptionEvent：应提示。"""
+        from mycode.session import ExceptionEvent
+        entries = [
+            self._user(),
+            ExceptionEvent(model="m", exception={
+                "type": "ValueError", "message": "boom", "traceback": "x",
+            }),
+        ]
+        assert cli._should_show_retry_hint(entries) is True
+
+    def test_last_tool_result_after_interrupt_shows_hint(self):
+        """中断后补齐的 ToolResultEvent 在末条：跳过它仍判定应提示（实时场景）。"""
+        from mycode.session import InterruptEvent, ToolResultEvent
+        entries = [
+            self._user(),
+            InterruptEvent(model="m", interrupt={"abort": False}),
+            ToolResultEvent(model="m", tool_result={
+                "tool_call_id": "c1", "content": "Error: 工具执行被用户中断",
+                "tool_name": "bash",
+            }),
+        ]
+        assert cli._should_show_retry_hint(entries) is True
+
+    def test_normal_assistant_no_hint(self):
+        """末条是正常 assistant 回复：不提示。"""
+        from mycode.session import AssistantMessage
+        entries = [
+            self._user(),
+            AssistantMessage(model="m", message={"role": "assistant", "content": "done"}),
+        ]
+        assert cli._should_show_retry_hint(entries) is False
+
+    def test_middle_interrupt_after_normal_reply_no_hint(self):
+        """中断在中间（其后有正常回复）：不提示。"""
+        from mycode.session import InterruptEvent, AssistantMessage
+        entries = [
+            self._user(),
+            InterruptEvent(model="m", interrupt={"abort": False}),
+            AssistantMessage(model="m", message={"role": "assistant", "content": "done"}),
+        ]
+        assert cli._should_show_retry_hint(entries) is False
+
+    def test_empty_or_session_only_no_hint(self):
+        """空列表 / 仅有 session 记录：不提示。"""
+        assert cli._should_show_retry_hint([]) is False
 
 
 
