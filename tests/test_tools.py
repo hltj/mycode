@@ -661,15 +661,106 @@ def test_todo_write_invalid_status():
     assert "Error" in out
 
 
+def test_todo_write_up_to_max_in_progress():
+    """默认最多允许 3 项进行中；4 项及以上报错。"""
+    from mycode.tools.todo_write import todo_write, reset_todos, get_todos
+    reset_todos()
+    # 恰好 3 项进行中应通过
+    out = todo_write([
+        {"title": "a", "status": "in_progress"},
+        {"title": "b", "status": "in_progress"},
+        {"title": "c", "status": "in_progress"},
+    ])
+    assert "Error" not in out
+    assert "TODO 列表已更新" in out
+    state = get_todos()
+    assert len(state) == 3
+    assert all(it["status"] == "in_progress" for it in state)
+    # 4 项进行中应报错
+    out = todo_write([
+        {"title": "a", "status": "in_progress"},
+        {"title": "b", "status": "in_progress"},
+        {"title": "c", "status": "in_progress"},
+        {"title": "d", "status": "in_progress"},
+    ])
+    assert "Error" in out
+    assert "进行中" in out
+    assert "3" in out
+
+
 def test_todo_write_multiple_in_progress():
     from mycode.tools.todo_write import todo_write, reset_todos
     reset_todos()
     out = todo_write([
         {"title": "a", "status": "in_progress"},
         {"title": "b", "status": "in_progress"},
+        {"title": "c", "status": "in_progress"},
+        {"title": "d", "status": "in_progress"},
     ])
     assert "Error" in out
-    assert "in_progress" in out
+    assert "进行中" in out
+
+
+def test_todo_write_max_in_progress_from_env():
+    """上限可由环境变量 MYCODE_TODO_MAX_IN_PROGRESS 配置。"""
+    import importlib
+    tw = importlib.import_module("mycode.tools.todo_write")
+    from mycode.tools.todo_write import todo_write, reset_todos, get_todos
+    tw._MAX_IN_PROGRESS = 2
+    reset_todos()
+    # 正好 2 项通过
+    out = todo_write([
+        {"title": "a", "status": "in_progress"},
+        {"title": "b", "status": "in_progress"},
+    ])
+    assert "Error" not in out
+    # 3 项超过上限 2：报错
+    out = todo_write([
+        {"title": "a", "status": "in_progress"},
+        {"title": "b", "status": "in_progress"},
+        {"title": "c", "status": "in_progress"},
+    ])
+    assert "Error" in out
+    assert "2" in out
+    tw._MAX_IN_PROGRESS = 3
+
+
+def test_todo_write_description_shows_exact_max(monkeypatch):
+    """工具描述用 f-string 嵌入确切上限。
+
+    环境变量变化并重载模块后，新注册的描述随之更新为对应值。
+    """
+    import importlib
+    tw = importlib.import_module("mycode.tools.todo_write")
+
+    def _desc():
+        for t in ToolsRegistry.get_tools():
+            if t["function"]["name"] == "todo_write":
+                return t["function"]["description"]
+        return None
+
+    # 默认注册：描述含确切值 3
+    desc = _desc()
+    assert desc is not None
+    assert "最多同时 3 个" in desc
+
+    # 环境变量改为 2 后重载：先剔除旧注册项避免累积，再看新描述
+    monkeypatch.setenv("MYCODE_TODO_MAX_IN_PROGRESS", "2")
+    ToolsRegistry._tools[:] = [
+        t for t in ToolsRegistry._tools if t["function"]["name"] != "todo_write"
+    ]
+    importlib.reload(tw)
+    try:
+        desc2 = _desc()
+        assert desc2 is not None
+        assert "最多同时 2 个" in desc2
+    finally:
+        # 还原默认值并重载，避免污染后续测试
+        monkeypatch.setenv("MYCODE_TODO_MAX_IN_PROGRESS", "3")
+        ToolsRegistry._tools[:] = [
+            t for t in ToolsRegistry._tools if t["function"]["name"] != "todo_write"
+        ]
+        importlib.reload(tw)
 
 
 def test_todo_write_empty():

@@ -113,7 +113,8 @@ cp .env.example .env
 | `BASH_CAUTION`            | 逗号分隔的注意命令正则（命中时视模式需确认）                               | （空）                    |
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
 | `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
-| `MYCODE_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
+| `MYCODE_TODO_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
+| `MYCODE_TODO_MAX_IN_PROGRESS`  | `todo_write` 同时处于进行中的待办项数上限                           | `3`                       |
 | `E429_WAIT_SECONDS`       | 逗号分隔的正整数秒列表（如 `1,2,5,10`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空）                 |
 
 ### 运行
@@ -186,7 +187,7 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 | `write`       | 覆盖写入文件，自动创建父目录                                         |
 | `edit`        | 按 `old_text`/`new_text` 替换；`replace_all` 控制全部替换            |
 | `patch`       | 应用 unified diff（自动检测 `-p0`/`-p1`，先 dry-run 再正式应用）      |
-| `todo_write`  | 整体替换内存待办事项列表；同时只能有一项 `in_progress`                  |
+| `todo_write`  | 整体替换内存待办事项列表；最多 3 项进行中（可用 `MYCODE_TODO_MAX_IN_PROGRESS` 调整） |
 
 > **路径安全**：所有文件类工具在处理前都会通过 `safe_path()`，拒绝超出
 > CWD 的路径（含跟随软链接后越界）以及命中 `MYCODE_PROTECTED_PATH_PATTERN`
@@ -258,7 +259,7 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 
 - `todo_write(items)` 整体替换当前待办事项列表；空列表表示清空。
 - 每产生一个 assistant 消息时自增一次陈旧度计数；
-  - 超过 `MYCODE_STALE_THRESHOLD` 且存在未完成项时，往 `messages` 注入一条
+  - 超过 `MYCODE_TODO_STALE_THRESHOLD` 且存在未完成项时，往 `messages` 注入一条
     `<reminder>` 文本（模型下次 API 调用可见），同时派发 `NoticeEvent`
     在终端以黄色高亮显示并写入会话历史；
   - 调用 `todo_write` 成功后陈旧度计数自动清零。

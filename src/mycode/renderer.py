@@ -1142,10 +1142,12 @@ def _format_todos(state: list[dict] | None = None) -> str:
     """将待办列表格式化为带状态符号与样式的可读字符串。
 
     渲染使用的符号与模板由当前渲染处理器（``_get_renderer``）提供：
-      - ``default``：``completed`` 以 ``✅️`` 开头，``in_progress`` 以
-        ``🟧`` 开头，``pending`` 以 ``🔳`` 开头（均后跟 1 空格）。
-      - ``classic``：``completed`` → ``- [x]:``（x 绿色），``in_progress``
-        → ``- [>]:``（> 橙色），``pending`` → ``- [ ]:``。
+      - ``default``：``completed``（已完成）以 ``✅️`` 开头，
+        ``in_progress``（进行中）以 ``🟧`` 开头，``pending``（待处理）以
+        ``🔳`` 开头（均后跟 1 空格）。
+      - ``classic``：``completed``（已完成）→ ``- [x]:``（x 绿色），
+        ``in_progress``（进行中）→ ``- [>]:``（> 橙色），``pending``（待处理）
+        → ``- [ ]:``。
 
     :param state: 待办状态列表；``None`` 时取当前内存状态。
     :returns: 形如 ``"✅️ 步骤 1\n🟧 步骤 2"``（default）或

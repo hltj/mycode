@@ -12,9 +12,13 @@ _todo_state: list[dict] = []
 
 # 陈旧度提醒：自上次 todo_write 以来的"assistant 消息数"。
 # 超过阈值且存在未完成待办时，agent_loop 会往 messages 注入提醒。
-# 阈值可通过环境变量 ``MYCODE_STALE_THRESHOLD`` 覆盖，默认 5。
-_STALE_THRESHOLD: int = int(os.getenv("MYCODE_STALE_THRESHOLD", "5"))
+# 阈值可通过环境变量 ``MYCODE_TODO_STALE_THRESHOLD`` 覆盖，默认 5。
+_STALE_THRESHOLD: int = int(os.getenv("MYCODE_TODO_STALE_THRESHOLD", "5"))
 _stale_rounds: int = 0
+
+# 同时处于进行中的待办上限。可通过环境变量
+# ``MYCODE_TODO_MAX_IN_PROGRESS`` 覆盖，默认 3。
+_MAX_IN_PROGRESS: int = int(os.getenv("MYCODE_TODO_MAX_IN_PROGRESS", "3"))
 
 VALID_STATUS = ("pending", "in_progress", "completed")
 
@@ -98,9 +102,9 @@ def rebuild_from_history(entries: Iterable) -> None:
 @ToolsRegistry.tool(
     description=(
         "整体替换内存中的待办列表。items 是 dict 数组，每个 dict 含"
-        " title (str) 与 status (str，pending/in_progress/completed 之一；"
-        "同时只能有一项 in_progress)。状态仅保存在内存，不持久化到磁盘，"
-        "会话恢复时由历史工具调用重建。"
+        " title (str) 与 status (str，取值 pending/in_progress/completed"
+        f" 之一，分别对应待处理/进行中/已完成；进行中的项最多同时 {_MAX_IN_PROGRESS} 个。"
+        "状态仅保存在内存，不持久化到磁盘，会话恢复时由历史工具调用重建。"
     )
 )
 def todo_write(
@@ -121,10 +125,11 @@ def todo_write(
             return f"Error: 第 {i} 项 status 必须是 {VALID_STATUS} 之一，实际为 {status!r}"
         new_state.append({"title": title, "status": status})
 
-    # 校验：status 为 in_progress 应有且仅有一项
+    # 校验：状态为进行中的项数不超过上限
+    # （上限由环境变量 MYCODE_TODO_MAX_IN_PROGRESS 配置，默认 3）
     in_progress_count = sum(1 for it in new_state if it["status"] == "in_progress")
-    if in_progress_count > 1:
-        return f"Error: 同时只能有一项 in_progress，实际 {in_progress_count} 项"
+    if in_progress_count > _MAX_IN_PROGRESS:
+        return f"Error: 最多同时 {_MAX_IN_PROGRESS} 项进行中，实际 {in_progress_count} 项"
 
     _todo_state.clear()
     _todo_state.extend(new_state)

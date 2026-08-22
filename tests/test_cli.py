@@ -1247,7 +1247,7 @@ class TestStaleTodoReminder:
         assert "pending" not in text
 
     def test_threshold_read_from_env(self, monkeypatch):
-        """阈值由环境变量 MYCODE_STALE_THRESHOLD 控制。"""
+        """阈值由环境变量 MYCODE_TODO_STALE_THRESHOLD 控制。"""
         # 用 importlib 绕开 mycode.tools.__init__ 里同名属性拦截，
         # 否则 ``import mycode.tools.todo_write as tw`` 会被解析成函数对象。
         import importlib
