@@ -361,6 +361,11 @@ def agent_loop(
                 tools=tools,
                 tool_choice="auto",
             )
+        except KeyboardInterrupt:
+            # Ctrl-C 中断大模型等待：分发 InterruptEvent，然后跳出循环、
+            # agent_loop 自然返回，由外层 continue 接下一轮输入。
+            bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
+            return
         except RateLimitError:
             # 429 限流：按连续发生次数取 E429_WAIT_SECONDS 中的秒数，
             # 倒计时等待后静默重试，不跳出 agent 循环。
@@ -372,7 +377,13 @@ def agent_loop(
             wait = wait_list[consecutive_429 - 1]
             # 数字右对齐：宽度取等待时间列表最大值位数（如 "1,2,5,10" → 2），
             # 倒计时从 10→9 递减时高位被空格覆盖，避免残留旧数字。
-            _countdown_retry(wait, width=len(str(max(wait_list))))
+            try:
+                _countdown_retry(wait, width=len(str(max(wait_list))))
+            except KeyboardInterrupt:
+                # Ctrl-C 中断 429 倒计时等待：分发 InterruptEvent 后跳出
+                # agent 循环（不继续重试）。
+                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
+                return
             continue
         # 成功产生模型事件：重置连续 429 计数
         consecutive_429 = 0

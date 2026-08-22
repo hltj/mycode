@@ -558,6 +558,70 @@ class TestAgentLoopInterruptIndicatorDispatch:
         assert interrupt_count == 1
 
 
+class TestAgentLoopModelWaitInterrupt:
+    """等待大模型返回 / 429 倒计时期间 Ctrl-C 的中断事件分发。
+
+    修复前：create() / _countdown_retry() 抛出的 KeyboardInterrupt 未经
+    处理直接冒泡到外层，终端既不渲染 ^C、会话也不持久化中断事件。
+    """
+
+    def test_ctrl_c_while_waiting_model_dispatches_interrupt_and_returns(self):
+        """create() 阻塞期间 Ctrl-C：dispatch 一次 InterruptEvent，agent_loop 自然返回。"""
+        messages: list = []
+        bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda msg: captured.append(msg))
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=KeyboardInterrupt)
+
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+            cli.agent_loop(messages, bus, model="test-model")
+
+        interrupt_count = sum(1 for m in captured if type(m).__name__ == "InterruptEvent")
+        assert interrupt_count == 1
+        interrupt = next(m for m in captured if type(m).__name__ == "InterruptEvent")
+        assert interrupt.interrupt["abort"] is False
+
+    def test_ctrl_c_during_429_countdown_dispatches_interrupt_and_returns(self):
+        """429 倒计时期间 Ctrl-C：dispatch 一次 InterruptEvent，agent_loop 自然返回。"""
+        import contextlib
+        from openai import RateLimitError
+        import httpx
+
+        resp = httpx.Response(429, request=httpx.Request("POST", "http://example.com"))
+        rate_limit = RateLimitError(
+            "Rate limit exceeded", response=resp,
+            body={"error": {"code": "insufficient_quota",
+                            "message": "Allocated quota exceeded",
+                            "type": "insufficient_quota"}},
+        )
+
+        messages: list = []
+        bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda msg: captured.append(msg))
+
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=rate_limit)
+
+        def countdown_raise(*args, **kw):
+            raise KeyboardInterrupt
+
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(patch.object(cli, "client", fake_client))
+            stack.enter_context(patch.object(cli.ToolsRegistry, "get_tools", return_value=[]))
+            stack.enter_context(patch.object(cli, "_countdown_retry", side_effect=countdown_raise))
+            stack.enter_context(patch.object(cli, "_e429_wait_list", [1]))
+            cli.agent_loop(messages, bus, model="test-model")
+
+        interrupt_count = sum(1 for m in captured if type(m).__name__ == "InterruptEvent")
+        assert interrupt_count == 1
+        interrupt = next(m for m in captured if type(m).__name__ == "InterruptEvent")
+        assert interrupt.interrupt["abort"] is False
+
+
 
 class TestPromptUserInput:
     """cli._prompt_user_input：Ctrl-C 发生在输入过程中的静默处理。"""
