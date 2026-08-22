@@ -30,7 +30,7 @@ def grep(
     truncate: Annotated[int, "输出字节数上限（KiB）"] = 50,
 ) -> str:
     try:
-        abs_path = safe_path(path)
+        sp = safe_path(path)
     except ValueError as e:
         return str(e)
 
@@ -47,8 +47,11 @@ def grep(
             cmd.extend(["-C", str(context)])
         if glob:
             cmd.extend(["--glob", glob])
-        cmd.extend(["--", pattern, abs_path])
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        cmd.extend(["--", pattern, sp.rel])
+        # cwd=wksp：相对路径入口 + 相对工作区的输出，避免长前缀
+        proc = subprocess.run(
+            cmd, cwd=sp.wksp, capture_output=True, text=True,
+        )
         # rg 无匹配时退出码 1，但 stdout 通常为空且无错误
         if proc.returncode not in (0, 1):
             return f"Error: rg 执行失败\n{proc.stderr}"
@@ -70,8 +73,10 @@ def grep(
             cmd.extend(["-C", str(context)])
         if glob:
             cmd.extend(["--include", glob])
-        cmd.extend([pattern, abs_path])
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        cmd.extend([pattern, sp.rel])
+        proc = subprocess.run(
+            cmd, cwd=sp.wksp, capture_output=True, text=True,
+        )
         # grep 无匹配退出码 1；2 表示真正错误
         if proc.returncode not in (0, 1):
             return f"Error: grep 执行失败\n{proc.stderr}"

@@ -99,7 +99,7 @@ def ls(
     truncate: Annotated[int, "输出字节数上限（KiB）"] = 50,
 ) -> str:
     try:
-        abs_path = safe_path(dir_path)
+        abs_path = safe_path(dir_path).abs
     except ValueError as e:
         return str(e)
     if not os.path.isdir(abs_path):

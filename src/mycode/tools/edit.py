@@ -22,7 +22,7 @@ def edit(
     replace_all: Annotated[bool, "是否替换所有匹配"] = False,
 ) -> str:
     try:
-        abs_path = safe_path(file_path)
+        abs_path = safe_path(file_path).abs
     except ValueError as e:
         return str(e)
 

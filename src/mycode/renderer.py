@@ -216,7 +216,7 @@ def _edit_file_diff(file_path: str, old_text: str, new_text: str,
         return None
     try:
         from mycode.tools._safe_path import safe_path
-        abs_path = safe_path(file_path)
+        abs_path = safe_path(file_path).abs
     except ValueError:
         return None
     try:

@@ -23,7 +23,7 @@ def read(
     truncate: Annotated[int, "输出字节数上限（KiB）"] = 50,
 ) -> str:
     try:
-        abs_path = safe_path(file_path)
+        abs_path = safe_path(file_path).abs
     except ValueError as e:
         return str(e)
 

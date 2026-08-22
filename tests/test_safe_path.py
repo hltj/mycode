@@ -16,14 +16,36 @@ def _patch_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_safe_path_returns_absolute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _patch_cwd(tmp_path, monkeypatch)
     result = safe_path(".")
-    assert os.path.isabs(result)
-    assert os.path.realpath(result) == os.path.realpath(tmp_path)
+    assert os.path.isabs(result.abs)
+    assert result.abs == os.path.realpath(tmp_path)
+    assert result.wksp == os.path.realpath(tmp_path)
+    assert result.rel == "."
 
 
 def test_safe_path_resolves_relative(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _patch_cwd(tmp_path, monkeypatch)
     (tmp_path / "foo").mkdir()
-    assert safe_path("foo") == os.path.realpath(tmp_path / "foo")
+    result = safe_path("foo")
+    assert result.abs == os.path.realpath(tmp_path / "foo")
+    assert result.wksp == os.path.realpath(tmp_path)
+    assert result.rel == "foo"
+
+
+def test_safe_path_rel_for_nested(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _patch_cwd(tmp_path, monkeypatch)
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    result = safe_path("a/b")
+    assert result.rel == os.path.join("a", "b")
+    assert result.abs == os.path.realpath(tmp_path / "a" / "b")
+
+
+def test_safe_path_abs_input_gets_rel(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """绝对路径入参（在 CWD 内）也归一为相对工作区的 rel。"""
+    _patch_cwd(tmp_path, monkeypatch)
+    (tmp_path / "foo").mkdir()
+    result = safe_path(str(tmp_path / "foo"))
+    assert result.rel == "foo"
+    assert result.abs == os.path.realpath(tmp_path / "foo")
 
 
 def test_safe_path_rejects_dotdot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -60,7 +82,9 @@ def test_safe_path_protected_pattern_match(tmp_path: Path, monkeypatch: pytest.M
 def test_safe_path_protected_no_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _patch_cwd(tmp_path, monkeypatch)
     monkeypatch.setenv("MYCODE_PROTECTED_PATH_PATTERN", r"forbidden")
-    assert safe_path("ok.txt") == os.path.realpath(tmp_path / "ok.txt")
+    result = safe_path("ok.txt")
+    assert result.abs == os.path.realpath(tmp_path / "ok.txt")
+    assert result.rel == "ok.txt"
 
 
 def test_safe_path_protected_multiple_patterns(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -88,4 +112,6 @@ def test_safe_path_follows_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_safe_path_empty_env_var(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _patch_cwd(tmp_path, monkeypatch)
     monkeypatch.setenv("MYCODE_PROTECTED_PATH_PATTERN", "")
-    assert safe_path(".").endswith(os.path.basename(str(tmp_path)))
+    result = safe_path(".")
+    assert result.abs == os.path.realpath(tmp_path)
+    assert result.rel == "."

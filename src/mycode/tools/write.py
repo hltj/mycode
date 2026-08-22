@@ -18,7 +18,7 @@ def write(
     content: Annotated[str, "要写入的完整内容"],
 ) -> str:
     try:
-        abs_path = safe_path(file_path)
+        abs_path = safe_path(file_path).abs
     except ValueError as e:
         return str(e)
 

@@ -38,7 +38,7 @@ def patch(
     dir_path: Annotated[str, "目标目录路径（相对或绝对，相对当前目录）"] = ".",
 ) -> str:
     try:
-        abs_dir = safe_path(dir_path)
+        abs_dir = safe_path(dir_path).abs
     except ValueError as e:
         return str(e)
 

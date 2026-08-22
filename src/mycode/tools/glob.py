@@ -24,21 +24,28 @@ def glob(
     truncate: Annotated[int, "输出字节数上限（KiB）"] = 50,
 ) -> str:
     try:
-        abs_path = safe_path(dir_path)
+        sp = safe_path(dir_path)
     except ValueError as e:
         return str(e)
 
     proc: subprocess.CompletedProcess[str]
     if shutil.which("fd"):
-        # fd 默认 regex 模式，--glob 切到 glob（通配符）模式
-        cmd = ["fd", "--glob", "--type", "f", "--type", "d", "--", pattern, abs_path]
+        # fd 默认 regex 模式，--glob 切到 glob（通配符）模式；
+        # 用法：fd [选项] <pattern> <rel> -C <wksp>
+        # -C/--base-directory 切到 wksp，让输出相对工作区、前缀更短。
+        cmd = [
+            "fd", "--glob", "--type", "f", "--type", "d",
+            pattern, sp.rel, "-C", sp.wksp,
+        ]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         if proc.returncode != 0:
             return f"Error: fd 执行失败\n{proc.stderr}"
     elif shutil.which("find"):
-        # find 的 -name 本身就按 glob 模式
-        cmd = ["find", abs_path, "-name", pattern]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        # find 的 -name 本身就按 glob 模式；以 wksp 为 cwd 使输出相对工作区。
+        cmd = ["find", sp.rel, "-name", pattern]
+        proc = subprocess.run(
+            cmd, cwd=sp.wksp, capture_output=True, text=True,
+        )
         if proc.returncode not in (0, 1):
             return f"Error: find 执行失败\n{proc.stderr}"
     else:
