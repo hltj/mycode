@@ -19,6 +19,7 @@ from openai.types.chat import (
     ChatCompletionMessageFunctionToolCallParam,
 )
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.layout import to_container
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
@@ -73,6 +74,11 @@ _MODE_PROMPT_STYLES: dict[Mode, str] = {
     Mode.ASK: 'mycode-prompt-ask',
     Mode.YOLO: 'mycode-prompt-yolo',
 }
+
+# 输入区占位文字（多行输入框为空时显示）：Enter 换行，Alt-Enter（ESC 再按
+# Enter）发送。开头留 1 个空格避免与行首光标符号重合。用灰色斜体渲染，
+# 区别于输入文字（见 create_prompt_style）。
+_INPUT_PLACEHOLDER = " ↵ 换行，Alt-↵（ESC ↵）发送"
 
 # default 风格：模式 → 提示符核心（竖线 + 标记，不含尾随空格）
 _DEFAULT_PROMPT_PREFIXES: dict[Mode, str] = {
@@ -718,6 +724,15 @@ class _Renderer:
         """返回提示符文本（不含尾随空格）。"""
         raise NotImplementedError
 
+    def input_placeholder(self) -> FormattedText:
+        """输入框为空时的占位文字：``↵ 换行，Alt-↵（ESC ↵）发送``。
+
+        用 ``FormattedText`` 携带 ``class:placeholder`` 样式（灰显斜体），
+        prompt_toolkit 的 ``AfterInput`` 处理器会原样保留该片段样式；
+        纯文本字符串只能得到空样式、无法灰显。
+        """
+        return FormattedText([("class:placeholder", _INPUT_PLACEHOLDER)])
+
     def prompt_fragments(self) -> list[tuple[str, str]]:
         mode = MODE_STATE.get()
         return [(f"class:{_MODE_PROMPT_STYLES[mode]}", self.prompt_prefix(mode) + " ")]
@@ -1023,6 +1038,8 @@ class _DefaultRenderer(_Renderer):
             'mycode-prompt-ask': '#0000FF bold',
             'mycode-prompt-yolo': '#FFA500 bold',
             'mycode-input': 'bg:#333333',
+            # 占位文字：灰色斜体，与输入文字（继承背景色）区分
+            'placeholder': 'italic fg:#999999',
         })
 
     def apply_input_style(self, session: PromptSession) -> None:
@@ -1093,6 +1110,7 @@ class _ClassicRenderer(_Renderer):
             'mycode-prompt': '#00CC00 bold',
             'mycode-prompt-ask': '#0000FF bold',
             'mycode-prompt-yolo': '#FFA500 bold',
+            'placeholder': 'italic fg:#999999',
         })
 
 

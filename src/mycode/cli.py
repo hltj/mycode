@@ -666,6 +666,8 @@ def _create_prompt_session() -> PromptSession[str]:
         prompt_continuation='',
         erase_when_done=True,
         key_bindings=kb,
+        # 输入框为空时灰显占位文字「↵ 换行，Alt-↵（ESC ↵）发送」
+        placeholder=renderer.input_placeholder(),
     )
     renderer.apply_input_style(session)
     return session

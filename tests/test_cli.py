@@ -777,6 +777,39 @@ class TestCreatePromptSession:
         assert container.children[0].__class__.__name__ == "ConditionalContainer"
         assert container.children[-1].__class__.__name__ == "ConditionalContainer"
 
+    def test_default_placeholder_registered(self):
+        """default：输入会话已注册占位文字（SetPrompt 未设置时 placeholder 生效）。
+
+        占位文字为「 ↵ 换行，Alt-↵（ESC ↵）发送」，提示 Enter 换行、
+        Alt+Enter（ESC 再按 Enter）发送；开头 1 个空格避开行首光标符号。
+        """
+        session = cli._create_prompt_session()
+        assert session.placeholder is not None
+        from prompt_toolkit.formatted_text import to_formatted_text
+        fragments = to_formatted_text(session.placeholder)
+        text = "".join(t for _, t in fragments)
+        assert text.startswith(" ↵ 换行")
+        assert "Alt-↵" in text
+        assert "发送" in text
+        # 占位文字片段携带灰显样式类
+        assert any("class:placeholder" in s for s, _ in fragments)
+
+    def test_placeholder_has_gray_style(self):
+        """default：占位文字样式类（class:placeholder）为灰色斜体。"""
+        session = cli._create_prompt_session()
+        attrs = session.style.get_attrs_for_style_str("class:placeholder")
+        assert attrs.color is not None and attrs.color != ""
+        assert attrs.italic
+
+    def test_placeholder_classic_too(self, monkeypatch):
+        """classic：同样注册占位文字，且开头保留 1 个空格。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        session = cli._create_prompt_session()
+        assert session.placeholder is not None
+        from prompt_toolkit.formatted_text import to_formatted_text
+        text = "".join(t for _, t in to_formatted_text(session.placeholder))
+        assert text == " ↵ 换行，Alt-↵（ESC ↵）发送"
+
     def test_ctrl_t_binding_registered(self):
         """Ctrl-T 绑定已注册：输入阶段按 Ctrl-T 等价于输入 /retry。
 
