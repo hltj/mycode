@@ -733,14 +733,16 @@ class TestCreatePromptSession:
         assert attrs.bgcolor in (None, "")
 
     def test_default_root_bg_and_layout_style(self):
-        """default：根样式有灰色背景，布局根容器挂 mycode-input 样式。"""
+        """default：根样式无背景（避免 ask_ui 标签被误涂底色），cli 输入区
+        靠 ``class:mycode-input`` 显式涂底色。"""
         session = cli._create_prompt_session()
-        # 根样式带背景（使有内容的单元格继承）
+        # 根样式不带背景：避免自定义 layout（ask_ui）弹出时把未指定
+        # style 的 Window 也涂上灰色，与输入框看不出边界。
         attrs = session.style.get_attrs_for_style_str("")
-        assert attrs.bgcolor is not None and attrs.bgcolor != ""
-        # 布局根容器挂样式类，使整块输入区（含空白行）填充背景
+        assert attrs.bgcolor in (None, "")
+        # 布局根容器仍挂样式类，使整块输入区（含空白行）填充背景
         assert session.app.layout.container.style == "class:mycode-input"
-        # mycode-input 类本身也定义灰色背景
+        # mycode-input 类本身定义灰色背景（cli 输入区专用）
         inp_attrs = session.style.get_attrs_for_style_str("class:mycode-input")
         assert inp_attrs.bgcolor is not None and inp_attrs.bgcolor != ""
 

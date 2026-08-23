@@ -155,65 +155,27 @@ action, extra = confirm_tool(func_name, category, command)
 
 ## 五、确认界面（confirm）
 
-### 布局结构
+确认交互基于通用询问界面 `ask_ui`（参见 [ask_ui 通用询问界面设计](ask_ui_design.md)）构建，`confirm.py` 仅负责在其上做工具特定映射：
 
-确认界面与多行编辑界面在**同一个 prompt_toolkit `Application`** 内切换视图（`state.editing` 标记），避免非全屏模式下多次 `app.run()` 累积渲染旧菜单：
+1. 构造与 `ConfirmAction` 对应的 `AskOption` 列表：同意 / [编辑] / 拒绝 ——拒绝项为 `is_custom=True`，占位文本 = "拒绝理由"。
+2. 解析 `ask_ui` 返回值，映射到 `ConfirmAction`。
+3. 编辑动作（仅 bash 工具）触发独立的多行编辑视图 `_run_edit_view`（`Buffer(multiline=True)`，`Alt+Enter` 提交、`ESC` 返回确认菜单、`Ctrl-C` 取消），与确认菜单彼此独立 `app.run()`；`confirm_tool` 在收到 `"back"` 时循环重跑 `ask_ui`。
 
-- **确认视图**（`_build_confirm_layout`）：逐行展示选项（同意 / 编辑 >> / 拒绝），选中“拒绝”时，理由输入框与拒绝行**同行**（`VSplit` 并列、紧挨一个空格）。
-- **编辑视图**（`_build_edit_layout`）：“编辑 >> ” 提示 + 多行输入框，高度随内容行数自适应。进入编辑时确认菜单被**替换**（隐藏），返回时恢复。
+**未选中拒绝但 abort 时**返回 `CANCEL`；选中拒绝时依输入是否为空区分 `REJECT` / `REJECT_NO_REASON`。
 
-### 选项模型
+### 动作映射
 
-确认菜单的选项用结构化对象表示，每个选项自带类型，处理逻辑按类型分发（而非为某个选项特化）：
+`confirm_tool` 在 ask_ui 之上映射：
 
-```python
-class OptionKind(str, Enum):
-    APPROVE = "approve"  # 同意
-    EDIT    = "edit"     # 编辑
-    REJECT  = "reject"   # 拒绝
+| 选中项 | `input` | `ConfirmAction` |
+|--------|------------|-------------------|
+| `approve` | `None` | `APPROVE` |
+| `edit` | `None` | `EDIT`（`_run_edit_view`） |
+| `reject` | 非空 / 有理由 | `REJECT` |
+| `reject` | `""` / 空白 | `REJECT_NO_REASON` |
+| abort / 空 selected | — | `CANCEL` |
 
-class Option:
-    kind: OptionKind   # 选项类型
-    label: str         # 显示文本（不含序号）
-```
-
-- `_ConfirmState.options` 返回 `list[Option]`（同意 + [编辑 >>] + 拒绝），序号在渲染时用 `enumerate` 统一附加。
-- 拒绝是选项列表的最后一项，通过 `options[sel].is_reject` 判断，无特化命名。
-- 未选中拒绝时，键盘输入被丢弃（不进入理由缓冲区），避免焦点残留污染理由。
-
-### 应用状态机
-
-单次 `app.run()` 内完成全部交互，视图切换在 key binding 内部通过 `_rebuild()` 更新 `app.layout.container`：
-
-| 上下文 | 按键 | 行为 |
-|--------|------|------|
-| 确认菜单 | `↑`/`↓`（或 `c-p`/`c-n`） | 移动选择 |
-| 确认菜单 | `Enter` | 确认当前项（同意 / 拒绝 / 进入编辑） |
-| 编辑视图 | `Enter` | 插入换行（多行编辑） |
-| 编辑视图 | `Alt+Enter`（`ESC`随后`Enter`） | 提交编辑 |
-| 编辑视图 | `ESC` | 返回确认菜单 |
-| 任意 | `Ctrl-C` | 中止（`abort`） |
-
-### 动作与返回
-
-`_run_confirm_menu` 返回 `(action, text)`：
-
-| action | 含义 |
-|--------|------|
-| `approve` | 同意执行 |
-| `reject` | 拒绝（text 为理由） |
-| `reject_plain` | 无理由拒绝 |
-| `edit` | 编辑（text 为编辑后的命令） |
-| `abort` | Ctrl-C 中止 |
-
-`confirm_tool` 将动作映射为 `ConfirmAction` 枚举（`APPROVE` / `REJECT` / `REJECT_NO_REASON` / `EDIT` / `CANCEL`）返回给调用方。确认交互界面是独立模块，可通过注入 `input` / `output` 在测试中驱动按键序列。
-
-### 编辑器能力
-
-编辑缓冲区为 `Buffer(multiline=True)`，支持：
-- 多行命令（如 10 行 here-doc）完整编辑
-- 光标在任意行的开头 / 中间 / 末尾移动并修改（`c-a` 行首、`c-e` 行尾、`c-p`/`c-n` 上下行、`c-f` 右移）
-- 多行输入用 `Alt+Enter` 提交，`Enter` 换行
+确认界面与编辑视图都允许注入 `input` / `output`（测试中驱动按键序列）。
 
 ### 结果格式化
 
@@ -249,7 +211,7 @@ def inject_meta(self, msg) -> None:
 
 1. **新增工具类别**：在 `ToolCategory` 添加枚举值，更新 `classify_tool` 与 `needs_confirmation` 决策矩阵。
 2. **调整确认规则**：只改 `needs_confirmation` 分支。
-3. **扩展确认动作**：在 `ConfirmAction`、`OptionKind` 与 `_run_confirm_menu` 的 action 集合中同步增加，并在 `confirm_tool` 的映射处补全。
-4. **新增/调整确认选项**：修改 `_ConfirmState.options`（返回 `list[Option]`），序号由渲染统一附加，处理逻辑按 `OptionKind` 分发，勿为单个选项特化命名。
-5. **新增渲染模式标记**：在 `mode.MODE_COLOR`、`renderer._MODE_PROMPT_STYLES` / `_DEFAULT_PROMPT_PREFIXES` 同步更新。
-6. **测试**：优先以 TDD 方式为决策 / 交互 / 布局写测试（见 `tests/test_confirm.py`、`tests/test_mode.py`）。
+3. **扩展确认动作**：在 `ConfirmAction` 枚举、`_build_confirm_options` 构造的 `AskOption` 列表以及 `confirm_tool` 的映射处同步补全。
+4. **新增/调整确认选项**：修改 `_build_confirm_options`（返回 `list[AskOption]`），处理逻辑在 `confirm_tool` 内按 `ConfirmAction.value` 分发。
+5. **新增渲染模式标记**：在 `mode.MODE_COLOR`、`renderer._MODE_PROMPT_STYLES` / `_DEFAULT_PROMPT_PREFIXES` 同步更新；`ask_ui` 相关样式参见 [ask_ui 通用询问界面设计](ask_ui_design.md)。
+6. **测试**：优先以 TDD 方式为决策 / 交互 / 布局写测试（见 `tests/test_mode.py`、`tests/test_confirm.py`、`tests/test_ask_ui.py`）。

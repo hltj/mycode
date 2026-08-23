@@ -1,276 +1,149 @@
 """
 确认交互界面模块。
 
-包含工具调用确认菜单（同意 / 编辑 / 拒绝）的独立控件与状态管理。
-逻辑（动作枚举、确认流程、结果格式化）集中在 mode.py 之外，此处
-只负责交互展示。
+对一次工具调用弹出确认界面：调用方拿到 ``ConfirmAction`` 枚举与可选
+附加文本（拒绝理由 / 编辑后命令）。
+
+具体交互界面（询问与选项选择）由 ``mycode.ask_ui`` 提供，本模块只负责
+将 ask_ui 的结果映射为 ``ConfirmAction``，并提供结果文本的格式化辅助。
+
+公开 API：
+    - ``ConfirmAction``：动作枚举。
+    - ``confirm_tool``：确认入口；返回 ``(ConfirmAction, Optional[str])``。
+    - ``format_reject`` / ``format_reject_no_reason`` / ``format_cancel``：
+      与 ``ConfirmAction`` 对应的结果文本构造。
 """
 
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import NamedTuple, Optional
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Window, Layout, VSplit
-from prompt_toolkit.layout.controls import FormattedTextControl, BufferControl
+from prompt_toolkit.layout import Layout, VSplit, Window
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
+from mycode import ask_ui as _ask_ui_mod
+from mycode.ask_ui import AskOption
 from mycode.mode import ToolCategory, is_bash_tool
+from mycode.renderer import _get_renderer
 
 
 class ConfirmAction(str, Enum):
-    APPROVE = "approve"              # 同意执行
-    REJECT = "reject"                # 拒绝（带理由）
+    APPROVE = "approve"                # 同意执行
+    REJECT = "reject"                  # 拒绝（带理由）
     REJECT_NO_REASON = "reject_plain"  # 无理由拒绝 → 跳出 agent 循环
-    EDIT = "edit"                    # 编辑后执行（bash）
-    CANCEL = "cancel"                # 取消 → 跳出 agent 循环
+    EDIT = "edit"                      # 编辑后执行（bash）
+    CANCEL = "cancel"                  # 取消 → 跳出 agent 循环
 
 
-class OptionKind(str, Enum):
-    """确认菜单选项类型。"""
-    APPROVE = "approve"  # 同意
-    EDIT = "edit"        # 编辑
-    REJECT = "reject"    # 拒绝
+# ===================================================================
+# 编辑视图（独立的多行命令编辑，与 ask_ui 解耦）
+# ===================================================================
+
+class _EditOutcome(NamedTuple):
+    """编辑视图退出结果。"""
+    action: str        # "finish" | "back" | "abort"
+    text: str = ""
 
 
-class Option:
-    """确认菜单选项：类型 + 显示文本（不含序号，序号由渲染统一附加）。"""
-    def __init__(self, kind: OptionKind, label: str) -> None:
-        self.kind = kind
-        self.label = label
-
-    @property
-    def is_reject(self) -> bool:
-        return self.kind == OptionKind.REJECT
-
-
-class _ConfirmState:
-    """确认菜单状态。"""
-    def __init__(self, show_edit: bool) -> None:
-        self.show_edit = show_edit
-        self.sel = 0
-        self.reason = ""
-        self.abort = False
-        self.editing = False  # 是否处于编辑界面（编辑视图替换确认菜单）
-
-    @property
-    def options(self) -> list[Option]:
-        """统一选项列表：同意 + [编辑 >>] + 拒绝。"""
-        opts: list[Option] = [Option(OptionKind.APPROVE, "同意")]
-        if self.show_edit:
-            opts.append(Option(OptionKind.EDIT, "编辑 >>"))
-        opts.append(Option(OptionKind.REJECT, "拒绝"))
-        return opts
-
-    @property
-    def max_sel(self) -> int:
-        return len(self.options) - 1
-
-    @property
-    def is_reject_selected(self) -> bool:
-        """当前选中项是否为拒绝。"""
-        return self.options[self.sel].is_reject
-
-    def menu_fragments(self) -> list[tuple[str, str]]:
-        """用于布局的菜单片段（选项统一编号渲染）。"""
-        def line(idx: int, text: str) -> list[tuple[str, str]]:
-            mark = "> " if self.sel == idx else "  "
-            style = "class:mycode-confirm-active" if self.sel == idx else ""
-            return [(style, mark + text + "\n")]
-        frags: list[tuple[str, str]] = []
-        for idx, opt in enumerate(self.options):
-            suffix = "：" if opt.is_reject else ""
-            frags += line(idx, f"{idx + 1}. {opt.label}{suffix}")
-        return frags
-
-
-def _line_window(text: str, active: bool) -> Window:
-    """单行文本窗口（不横向撑满，便于与输入框紧挨）。"""
-    style = "class:mycode-confirm-active" if active else ""
-    return Window(
-        content=FormattedTextControl([(style, text)]),
-        height=1,
-        always_hide_cursor=True,
-        dont_extend_width=True,
-    )
-
-
-def _build_confirm_layout(state: _ConfirmState, reason_buffer: Buffer):
-    """构建确认菜单布局。
-
-    选项统一编号渲染（同意 1、[编辑 >> 2]、拒绝 最后）；拒绝行与理由
-    输入框横向并列，输入框紧挨拒绝行后一个空格，仅选中拒绝时显示。
-    """
-    rows: list = []
-    for idx, opt in enumerate(state.options):
-        num = idx + 1
-        suffix = "：" if opt.is_reject else ""
-        text = f"{num}. {opt.label}{suffix}"
-        active = state.sel == idx
-        mark = "> " if active else "  "
-        label = mark + text
-        if opt.is_reject:
-            if state.is_reject_selected:
-                reason_window = Window(
-                    content=BufferControl(buffer=reason_buffer),
-                    height=1,
-                )
-                rows.append(VSplit([_line_window(label, True), reason_window]))
-            else:
-                rows.append(_line_window(label, False))
-        else:
-            rows.append(_line_window(label, active))
-    return HSplit(rows)
-
-
-def _build_edit_layout(edit_buffer: Buffer):
-    """构建编辑界面布局（多行，替换确认菜单）。"""
-    prompt = _line_window("编辑 >> ", False)
-    edit = Window(
-        content=BufferControl(buffer=edit_buffer),
-        # 多行编辑：高度随内容自适应，最小 1 行
-        height=lambda: max(1, min(10, edit_buffer.document.line_count)),
-    )
-    return VSplit([prompt, edit])
-
-
-def _run_confirm_menu(
-    state: _ConfirmState,
-    command: str | None = None,
+def _run_edit_view(
+    edit_buffer: Buffer,
     input=None,
     output=None,
-    reason_buffer: Buffer | None = None,
-) -> tuple[str, str]:
-    """运行确认/编辑一体界面，返回 (动作, 文本)。
+    style=None,
+) -> _EditOutcome:
+    """运行多行命令编辑视图。
 
-    动作为：
-        "approve"   同意执行
-        "reject"    拒绝（text 为理由）
-        "reject_plain" 无理由拒绝
-        "edit"      编辑（text 为编辑后的命令）
-        "back"      编辑返回确认菜单（仅内部状态机使用）
-        "abort"     Ctrl-C 中止
+    Args:
+        edit_buffer: 已存在的多行 buffer（持有文本与光标位置；调用方
+            在 ESC 返回时保留 buffer 状态以便再次进入时不丢失编辑）。
+        input/output: prompt_toolkit 的可注入 input/output（测试用）。
+        style: prompt_toolkit ``Style``（通常 ``renderer.create_prompt_style()``），
+            让 ``class:mycode-input`` 等样式类生效。
 
-    确认菜单与编辑界面在同一个 Application 内切换视图（state.editing），
-    编辑时确认菜单被替换，返回时恢复，不会叠加。
+    Returns:
+        ``_EditOutcome``：
+            - ``action="finish"`` + ``text``：Alt+Enter 提交编辑。
+            - ``action="back"``：按 ESC，请求回到确认菜单。
+            - ``action="abort"``：Ctrl-C 中止整个确认流程。
     """
-    if reason_buffer is None:
-        reason_buffer = Buffer()
-    edit_buffer = Buffer(multiline=True)
-    edit_buffer.text = command or ""
-    edit_buffer.cursor_position = len(edit_buffer.text)
-
     kb = KeyBindings()
-
-    def _view():
-        """按状态返回当前视图（确认菜单 或 编辑界面）。"""
-        if state.editing:
-            return _build_edit_layout(edit_buffer)
-        return _build_confirm_layout(state, reason_buffer)
-
-    def _rebuild(app) -> None:
-        app.layout.container = _view()
-        if state.editing:
-            app.layout.focus(edit_buffer)
-        elif state.is_reject_selected:
-            app.layout.focus(reason_buffer)
-
-    # 单次 run 内完成所有交互：视图切换在 key binding 内部处理，
-    # 避免多次 app.run() 在非全屏模式下于同一位置累积渲染旧菜单。
-    result: dict = {"action": None, "text": ""}
-
-    def _finish(action: str) -> None:
-        result["action"] = action
-        if action == "reject":
-            result["text"] = reason_buffer.text.strip()
-        elif action == "edit":
-            result["text"] = edit_buffer.text
-
-    @kb.add("down")
-    @kb.add("c-n")
-    def _down(event):
-        if state.editing:
-            # 编辑视图：光标下移一行
-            event.app.current_buffer.cursor_down()
-        elif state.sel < state.max_sel:
-            state.sel += 1
-            state.reason = reason_buffer.text
-            _rebuild(event.app)
-
-    @kb.add("up")
-    @kb.add("c-p")
-    def _up(event):
-        if state.editing:
-            # 编辑视图：光标上移一行
-            event.app.current_buffer.cursor_up()
-        elif state.sel > 0:
-            state.sel -= 1
-            state.reason = reason_buffer.text
-            _rebuild(event.app)
-
-    @kb.add("enter")
-    def _enter(event):
-        if state.editing:
-            # 编辑视图：Enter 插入换行（多行编辑）
-            event.app.current_buffer.insert_text("\n")
-            return
-        # 按当前选项类型分发
-        kind = state.options[state.sel].kind
-        if kind == OptionKind.APPROVE:
-            _finish("approve")
-            event.app.exit()
-        elif kind == OptionKind.REJECT:
-            _finish("reject" if reason_buffer.text.strip() else "reject_plain")
-            event.app.exit()
-        else:  # EDIT
-            # 进入编辑视图（不退出 run）
-            state.editing = True
-            _rebuild(event.app)
+    outcome = _EditOutcome(action="abort")
 
     @kb.add("escape", "enter")
     def _alt_enter(event):
-        # Alt+Enter：编辑视图提交；确认菜单忽略
-        if state.editing:
-            _finish("edit")
-            event.app.exit()
+        nonlocal outcome
+        outcome = _EditOutcome(action="finish", text=edit_buffer.text)
+        event.app.exit()
 
     @kb.add("escape")
     def _escape(event):
-        if state.editing:
-            # 编辑返回确认菜单（不退出 run）
-            state.editing = False
-            _rebuild(event.app)
+        nonlocal outcome
+        outcome = _EditOutcome(action="back")
+        event.app.exit()
 
     @kb.add("c-c")
     def _abort(event):
-        result["action"] = "abort"
+        nonlocal outcome
+        outcome = _EditOutcome(action="abort")
         event.app.exit()
 
     @kb.add("<any>")
-    def _input(event):
-        if state.editing or state.is_reject_selected:
-            # 编辑/拒绝视图：正常输入字符
-            event.app.current_buffer.insert_text(event.data or "")
-        else:
-            # 其余选项：丢弃输入，避免焦点残留导致输入进入理由缓冲区
-            event.app.invalidate()
+    def _on_char(event):
+        event.app.current_buffer.insert_text(event.data or "")
 
+    # style="class:mycode-input"：与 cli 提示词输入区共用样式类，
+    # default 风格下有灰色背景（与 ask_ui 自定义输入框保持视觉一致），
+    # classic 风格为空（保持原风格）。
+    layout = VSplit([
+        Window(
+            content=FormattedTextControl("编辑 >> "),
+            height=1,
+            dont_extend_width=True,
+        ),
+        Window(
+            content=BufferControl(buffer=edit_buffer),
+            height=lambda: max(1, min(10, edit_buffer.document.line_count)),
+        ),
+    ], style="class:mycode-input")
     app: Application = Application(
-        layout=Layout(_view()),
+        layout=Layout(layout),
         key_bindings=kb,
         full_screen=False,
         erase_when_done=True,
+        style=style,
         input=input,
         output=output,
     )
     try:
         app.run()
     except (KeyboardInterrupt, EOFError):
-        return ("abort", "")
-    action = result["action"] or "abort"
-    return (action, result.get("text", ""))
+        return _EditOutcome(action="abort")
+
+    return outcome
+
+
+# ===================================================================
+# 公开入口
+# ===================================================================
+
+def _build_confirm_options(show_edit: bool) -> list[AskOption]:
+    """构造 ask_ui 选项列表：同意 / [编辑] / 拒绝（拒绝为 is_custom）。"""
+    opts: list[AskOption] = [
+        AskOption(label="同意", value=ConfirmAction.APPROVE.value),
+    ]
+    if show_edit:
+        opts.append(AskOption(label="编辑 >>", value=ConfirmAction.EDIT.value))
+    opts.append(AskOption(
+        label="拒绝",
+        value=ConfirmAction.REJECT.value,
+        description="拒绝理由",
+        is_custom=True,
+    ))
+    return opts
 
 
 def confirm_tool(
@@ -282,32 +155,88 @@ def confirm_tool(
 ) -> tuple[ConfirmAction, Optional[str]]:
     """对一次工具调用弹出确认界面。
 
-    返回 (动作, 附加文本)：
-        APPROVE         → (ConfirmAction.APPROVE, None)
-        REJECT          → (ConfirmAction.REJECT, reason)
-        REJECT_NO_REASON→ (ConfirmAction.REJECT_NO_REASON, None)
-        EDIT            → (ConfirmAction.EDIT, edited_command)
-        CANCEL          → (ConfirmAction.CANCEL, None)
-    """
-    # 只有 bash 工具需要确认时才有【编辑】
-    show_edit = is_bash_tool(category)
-    state = _ConfirmState(show_edit)
-    action, text = _run_confirm_menu(state, command, input=input, output=output)
-    match action:
-        case "abort":
-            return (ConfirmAction.CANCEL, None)
-        case "approve":
-            return (ConfirmAction.APPROVE, None)
-        case "reject":
-            return (ConfirmAction.REJECT, text)
-        case "reject_plain":
-            return (ConfirmAction.REJECT_NO_REASON, None)
-        case "edit":
-            return (ConfirmAction.EDIT, text)
-        # 兜底
-        case _:
-            return (ConfirmAction.CANCEL, None)
+    返回 ``(动作, 附加文本)``：
 
+    - ``APPROVE``         → ``(ConfirmAction.APPROVE, None)``
+    - ``REJECT``          → ``(ConfirmAction.REJECT, reason)``
+    - ``REJECT_NO_REASON``→ ``(ConfirmAction.REJECT_NO_REASON, None)``
+    - ``EDIT``            → ``(ConfirmAction.EDIT, edited_command)``
+    - ``CANCEL``          → ``(ConfirmAction.CANCEL, None)``
+
+    进入编辑视图后：
+    - Alt+Enter → 提交编辑（``EDIT``）。
+    - ESC      → 返回确认菜单（重新询问，不计为取消）。编辑 buffer
+                 与拒绝理由 buffer 的文本 / 光标位置、当前选项焦点
+                 在返回时全部保留。
+    - Ctrl-C   → 取消整个确认流程（``CANCEL``）。
+    """
+    show_edit = is_bash_tool(category)
+    options = _build_confirm_options(show_edit)
+    initial_command = command or ""
+    # 与 cli 提示词输入框共用样式表（让 class:placeholder / class:mycode-input
+    # 等样式类生效）
+    style = _get_renderer().create_prompt_style()
+
+    # 持久 buffer：拒绝理由 + 编辑命令。跨 ask_ui / _run_edit_view 调用
+    # 保留文本与光标位置，ESC 返回后用户输入与变更不丢失。
+    ask_buffer = Buffer()
+    edit_buffer = Buffer(multiline=True)
+    edit_buffer.text = initial_command
+    edit_buffer.cursor_position = len(edit_buffer.text)
+
+    # 持久 ask 状态：ESC 从编辑视图返回时，焦点回到原选项（而非重置到第一项）。
+    cursor_index = 0
+    checked: set[int] = set()
+
+    while True:
+        result = _ask_ui_mod.ask_ui(
+            options=options,
+            custom_buffer=ask_buffer,
+            cursor_index=cursor_index,
+            checked=checked,
+            style=style,
+            input=input,
+            output=output,
+        )
+        # 维持 ask 状态：把提交时的焦点 / 勾选记下，下次调用回传
+        cursor_index = int(result["cursor_index"])
+        checked = set(result["checked"])
+
+        selected = list(result["selected"])
+        custom_input = result["input"]
+
+        # 自定义输入（拒绝）分支：无理由 vs 有理由
+        if ConfirmAction.REJECT.value in selected:
+            reason = (custom_input or "").strip()
+            if reason:
+                return (ConfirmAction.REJECT, reason)
+            return (ConfirmAction.REJECT_NO_REASON, None)
+
+        if ConfirmAction.APPROVE.value in selected:
+            return (ConfirmAction.APPROVE, None)
+
+        if ConfirmAction.EDIT.value in selected:
+            # 仅 bash 工具会出现 EDIT 选项；编辑视图可能反复进入（ESC 返回）
+            outcome = _run_edit_view(
+                edit_buffer,
+                input=input,
+                output=output,
+                style=style,
+            )
+            if outcome.action == "finish":
+                return (ConfirmAction.EDIT, outcome.text)
+            if outcome.action == "abort":
+                return (ConfirmAction.CANCEL, None)
+            # action == "back"：重新询问，edit_buffer / cursor_index / checked 保留
+            continue
+
+        # abort / 空选择 / Ctrl-C → 取消
+        return (ConfirmAction.CANCEL, None)
+
+
+# ===================================================================
+# 结果文本格式化
+# ===================================================================
 
 def format_reject(reason: str) -> str:
     """构造带理由拒绝执行的结果文本。"""

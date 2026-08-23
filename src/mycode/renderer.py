@@ -1033,13 +1033,23 @@ class _DefaultRenderer(_Renderer):
 
     def create_prompt_style(self) -> Style:
         return Style.from_dict({
-            '': 'bg:#333333',
+            # 不再设 class:'' 的 bg——ask_ui 等自定义 layout 弹出时会覆盖
+            # 整个屏幕，``class:'' = bg:#333333`` 会让所有未指定 style 的
+            # Window 都涂灰色（普通选项标签也跟着变色），与输入框看不出
+            # 边界。cli 输入区仍由 ``apply_input_style`` 显式挂
+            # ``class:mycode-input`` 涂底色，不依赖 ``class:''``。
             'mycode-prompt': '#00CC00 bold',
             'mycode-prompt-ask': '#0000FF bold',
             'mycode-prompt-yolo': '#FFA500 bold',
             'mycode-input': 'bg:#333333',
-            # 占位文字：灰色斜体，与输入文字（继承背景色）区分
-            'placeholder': 'italic fg:#999999',
+            # 占位文字：暗灰斜体，与输入文字（继承背景色）区分
+            'placeholder': 'italic fg:#666666',
+            # ask_ui 样式：标题青粗体，描述暗灰，当前选中行亮蓝粗体；
+            # placeholder 共用 PromptSession 的 ``class:placeholder``，
+            # 不在此处登记。
+            'ask-title': 'bold #00c099',
+            'ask-description': 'fg:#6F6F6F',
+            'ask-active': 'bold #009fff',
         })
 
     def apply_input_style(self, session: PromptSession) -> None:
@@ -1110,7 +1120,17 @@ class _ClassicRenderer(_Renderer):
             'mycode-prompt': '#00CC00 bold',
             'mycode-prompt-ask': '#0000FF bold',
             'mycode-prompt-yolo': '#FFA500 bold',
-            'placeholder': 'italic fg:#999999',
+            # 占位文字：暗灰斜体；mycode-input 注册为空样式（classic 风格不
+            # 强制灰底，与原风格保持一致）；placeholder / mycode-input 在
+            # 两风格共用样式类，差异仅在 default 加灰色背景。
+            'placeholder': 'italic fg:#666666',
+            'mycode-input': '',
+            # ask_ui 样式：标题青粗体，描述暗灰，当前选中行亮蓝粗体；
+            # placeholder 共用 PromptSession 的 ``class:placeholder``，
+            # 不在此处登记。
+            'ask-title': 'bold #00c099',
+            'ask-description': 'fg:#6F6F6F',
+            'ask-active': 'bold #009fff',
         })
 
 
