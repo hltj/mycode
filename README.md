@@ -29,8 +29,9 @@ myc/
 ├── src/mycode/             # 主包
 │   ├── __init__.py
 │   ├── __main__.py         # 支持 `python -m mycode`
+│   ├── ask_ui.py           # 通用询问界面（单选/多选/自定义输入，供 confirm 等复用）
 │   ├── cli.py              # CLI 入口逻辑
-│   ├── confirm.py          # 确认交互界面（同意/编辑/拒绝）
+│   ├── confirm.py          # 确认交互（基于 ask_ui：同意/编辑/拒绝）
 │   ├── mode.py             # 模式与权限系统
 │   ├── renderer.py         # 渲染器（default/classic 风格）
 │   ├── session.py          # 会话管理与 ADT 事件类型
@@ -52,6 +53,7 @@ myc/
 ├── tests/                  # 测试（pytest）
 │   ├── _helpers.py         # 测试辅助工具
 │   ├── conftest.py         # pytest 共享 fixtures
+│   ├── test_ask_ui.py
 │   ├── test_cli.py
 │   ├── test_confirm.py
 │   ├── test_mode.py
@@ -62,6 +64,7 @@ myc/
 │   ├── test_tools_registry.py
 │   └── test_truncate.py
 ├── docs/dev/
+│   ├── ask_ui_design.md           # ask_ui 通用询问界面设计
 │   ├── event_design.md            # 事件架构设计
 │   ├── mode_permission_design.md  # 模式与权限系统设计
 │   ├── tools_registry_design.md   # 工具注册系统设计
@@ -240,19 +243,20 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 | 读     | 直接执行 | 直接执行 | 直接执行 |
 | 内部   | 直接执行 | 直接执行 | 直接执行 |
 
-确认界面（仅 `bash` 工具需确认时含【编辑】）：
+确认界面基于通用询问界面 `ask_ui`（仅 `bash` 工具需确认时含【编辑】），
+default 风格示例：
 
 ```
-> 1. 同意
-  2. 编辑 >>
-  3. 拒绝：__理由__
+❯ 🟢 同意
+  ⚪ 编辑 >>
+  ⚪ 拒绝：__理由__
 ```
 
-- 【编辑】进入命令行编辑界面，`↵` 执行、`⎋` 返回菜单。
-  编辑后命令有变化时，派发 `NoticeEvent`（终端黄色高亮显示、写入会话
-  历史，并经 `to_user_msg()` 注入一条 `<notice>` 文本给模型）；命令
+- 【编辑】进入命令行编辑界面，`Alt+Enter` 提交、`ESC` 返回菜单、`Ctrl-C`
+  取消。编辑后命令有变化时，派发 `NoticeEvent`（终端黄色高亮显示、写入
+  会话历史，并经 `to_user_msg()` 注入一条 `<notice>` 文本给模型）；命令
   无变化时直接执行。
-- 选【拒绝】时可直接输入拒绝理由，`↵` 确认、`⎋` 取消。
+- 选【拒绝】时可直接输入拒绝理由，`Enter` 确认。
 - 无理由拒绝 → 跳出 Agent 循环。
 
 ### `todo_write` 与陈旧度提醒
@@ -293,7 +297,8 @@ uv run pytest
 - 行数/KiB 联合截断（`test_truncate.py`）
 - 会话历史与 ADT 序列化往返（`test_session.py`）
 - 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染，`test_renderer.py`）
-- 确认交互界面：同意/拒绝/无理由拒绝/取消/编辑 与布局（`test_confirm.py`）
+- 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示（`test_ask_ui.py`）
+- 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
 - 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 
