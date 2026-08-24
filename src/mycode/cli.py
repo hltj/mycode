@@ -548,7 +548,7 @@ def agent_loop(
 # 命令处理 —— 交互命令的行为入口
 # ===================================================================
 
-def _should_show_retry_hint(entries: list[AgentMessage]) -> bool:
+def _should_show_retry_hint(entries: list[AgentMessage]) -> AgentMessage | None:
     """是否需要在接收下一轮用户输入前提示「可 Ctrl-T 或 /retry 继续」。
 
     实时与重放统一判定：从末尾**跳过工具结果消息**（工具被中断/异常后
@@ -556,12 +556,38 @@ def _should_show_retry_hint(entries: list[AgentMessage]) -> bool:
     事件**是否为中断（InterruptEvent，含真实 Ctrl-C 与用户取消）或异常
     （ExceptionEvent）。正常完成的会话最后一条非工具事件是 assistant
     回复，不会误报。
+
+    返回触发提示的事件（InterruptEvent / ExceptionEvent）或 None。
+    返回事件让 main 用其 id 作为水印：仅当水印变化（新中断/异常事件
+    出现）才重新渲染提示，避免 Ctrl-C 静默继续时反复渲染。
     """
     last_non_tool = next(
         (e for e in reversed(entries) if not isinstance(e, ToolResultEvent)),
         None,
     )
-    return isinstance(last_non_tool, (InterruptEvent, ExceptionEvent))
+    if isinstance(last_non_tool, (InterruptEvent, ExceptionEvent)):
+        return last_non_tool
+    return None
+
+
+def _render_retry_hint_once(
+    entries: list[AgentMessage],
+    last_hint_id: str | None,
+) -> str | None:
+    """根据 entries 状态渲染重试提示并返回新的水印 id；已渲染则不重复。
+
+    传 ``last_hint_id`` 是上一次渲染过提示的事件 id（初始 None）；若当前
+    触发事件 id 相同则跳过渲染（避免 prompt 阶段 Ctrl-C 静默继续时反复
+    渲染同一提示）。返回更新后的水印 id（无论是否渲染，均返回当前触发
+    事件 id 以便上层追踪）。
+    """
+    trigger = _should_show_retry_hint(entries)
+    if trigger is None:
+        return last_hint_id
+    if trigger.id == last_hint_id:
+        return last_hint_id
+    _get_renderer().render_retry_hint()
+    return trigger.id
 
 
 def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
@@ -750,12 +776,16 @@ def main():
 
     session = _create_prompt_session()
 
+    # 已渲染过提示的「触发事件 id」水印：仅当新的中断/异常事件出现时才
+    # 重新渲染提示，避免 prompt 阶段 Ctrl-C 静默继续时反复渲染同一提示。
+    # 实际去重逻辑在 _render_retry_hint_once；首次 last_hint_id 为 None
+    # 保证重放/实时首次走到这里时一定会渲染一次提示。
+    last_hint_id: str | None = None
     while True:
         # 每次接收输入前检测：最近的非工具事件若是中断/异常，提示可继续
         # （Ctrl-T 或 /retry）。重放结束、实时一轮 agent_loop 结束后都会
         # 走到这里，因此实时与重放共用同一判定，逻辑统一。
-        if _should_show_retry_hint(session_hist.entries):
-            _get_renderer().render_retry_hint()
+        last_hint_id = _render_retry_hint_once(session_hist.entries, last_hint_id)
         try:
             user_input = _prompt_user_input(session)
             if user_input is None:

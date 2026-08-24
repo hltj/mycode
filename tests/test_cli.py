@@ -1065,69 +1065,146 @@ class TestReplayRetryHint:
     """_should_show_retry_hint：重放/实时统一判定是否提示可 Ctrl-T 或 /retry 继续。
 
     判定从末尾跳过 ToolResultEvent（工具被中断/异常后会补齐 tool 占位消息），
-    看最近的非工具事件是否中断/异常。
+    看最后一条非工具事件是否中断/异常。是则返回该事件（让 main 用 id 作水印
+    去重，避免 prompt 阶段 Ctrl-C 静默继续时反复渲染提示），否则返回 None。
     """
 
     def _user(self):
         from mycode.session import UserMessage
         return UserMessage(model="m", message={"role": "user", "content": "hi"})
 
-    def test_last_interrupt_shows_hint(self):
-        """末条是 InterruptEvent：应提示。"""
+    def test_last_interrupt_returns_event(self):
+        """末条是 InterruptEvent：返回该事件。"""
         from mycode.session import InterruptEvent
-        entries = [
-            self._user(),
-            InterruptEvent(model="m", interrupt={"abort": False}),
-        ]
-        assert cli._should_show_retry_hint(entries) is True
+        ev = InterruptEvent(model="m", interrupt={"abort": False})
+        ev.id = "intr-1"
+        entries = [self._user(), ev]
+        assert cli._should_show_retry_hint(entries) is ev
 
-    def test_last_exception_shows_hint(self):
-        """末条是 ExceptionEvent：应提示。"""
+    def test_last_exception_returns_event(self):
+        """末条是 ExceptionEvent：返回该事件。"""
         from mycode.session import ExceptionEvent
-        entries = [
-            self._user(),
-            ExceptionEvent(model="m", exception={
-                "type": "ValueError", "message": "boom", "traceback": "x",
-            }),
-        ]
-        assert cli._should_show_retry_hint(entries) is True
+        ev = ExceptionEvent(model="m", exception={
+            "type": "ValueError", "message": "boom", "traceback": "x",
+        })
+        ev.id = "exc-1"
+        entries = [self._user(), ev]
+        assert cli._should_show_retry_hint(entries) is ev
 
-    def test_last_tool_result_after_interrupt_shows_hint(self):
-        """中断后补齐的 ToolResultEvent 在末条：跳过它仍判定应提示（实时场景）。"""
+    def test_last_tool_result_after_interrupt_returns_interrupt(self):
+        """中断后补齐的 ToolResultEvent 在末条：跳过它返回 InterruptEvent（实时场景）。"""
         from mycode.session import InterruptEvent, ToolResultEvent
+        intr = InterruptEvent(model="m", interrupt={"abort": False})
+        intr.id = "intr-2"
         entries = [
             self._user(),
-            InterruptEvent(model="m", interrupt={"abort": False}),
+            intr,
             ToolResultEvent(model="m", tool_result={
                 "tool_call_id": "c1", "content": "Error: 工具执行被用户中断",
                 "tool_name": "bash",
             }),
         ]
-        assert cli._should_show_retry_hint(entries) is True
+        assert cli._should_show_retry_hint(entries) is intr
 
-    def test_normal_assistant_no_hint(self):
-        """末条是正常 assistant 回复：不提示。"""
+    def test_normal_assistant_returns_none(self):
+        """末条是正常 assistant 回复：返回 None。"""
         from mycode.session import AssistantMessage
         entries = [
             self._user(),
             AssistantMessage(model="m", message={"role": "assistant", "content": "done"}),
         ]
-        assert cli._should_show_retry_hint(entries) is False
+        assert cli._should_show_retry_hint(entries) is None
 
-    def test_middle_interrupt_after_normal_reply_no_hint(self):
-        """中断在中间（其后有正常回复）：不提示。"""
+    def test_middle_interrupt_after_normal_reply_returns_none(self):
+        """中断在中间（其后有正常回复）：返回 None。"""
         from mycode.session import InterruptEvent, AssistantMessage
         entries = [
             self._user(),
             InterruptEvent(model="m", interrupt={"abort": False}),
             AssistantMessage(model="m", message={"role": "assistant", "content": "done"}),
         ]
-        assert cli._should_show_retry_hint(entries) is False
+        assert cli._should_show_retry_hint(entries) is None
 
-    def test_empty_or_session_only_no_hint(self):
-        """空列表 / 仅有 session 记录：不提示。"""
-        assert cli._should_show_retry_hint([]) is False
+    def test_empty_or_session_only_returns_none(self):
+        """空列表 / 仅有 session 记录：返回 None。"""
+        assert cli._should_show_retry_hint([]) is None
 
+
+
+class TestRenderRetryHintOnce:
+    """_render_retry_hint_once：按触发事件 id 水印去重渲染。
+
+    验证 prompt 阶段 Ctrl-C 静默继续时不会反复渲染同一提示；当新的
+    中断/异常事件出现（水印 id 变化）才会重新渲染。
+    """
+
+    @pytest.fixture(autouse=True)
+    def classic_style(self, monkeypatch):
+        # classic 纯文本断言，避免 rich ANSI 干扰
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+
+    def _capture(self, fn):
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def _entries_with_interrupt(self):
+        from mycode.session import InterruptEvent, UserMessage
+        u = UserMessage(model="m", message={"role": "user", "content": "hi"})
+        e = InterruptEvent(model="m", interrupt={"abort": False})
+        e.id = "intr-A"
+        return [u, e]
+
+    def test_first_call_renders(self):
+        """首次调用（水印为 None）：渲染提示。"""
+        entries = self._entries_with_interrupt()
+        out = self._capture(lambda: cli._render_retry_hint_once(entries, None))
+        assert "Ctrl-T" in out and "/retry" in out
+
+    def test_same_trigger_id_skips_rendering(self):
+        """同一触发事件 id 不变：不渲染（Ctrl-C 静默继续场景）。"""
+        entries = self._entries_with_interrupt()
+        # 首次渲染
+        self._capture(lambda: cli._render_retry_hint_once(entries, None))
+        # 再次调用：水印已设为 "intr-A"，不再渲染
+        out = self._capture(lambda: cli._render_retry_hint_once(entries, "intr-A"))
+        assert out == ""
+
+    def test_new_trigger_id_renders_again(self):
+        """触发事件 id 变化（新的中断/异常出现）：再次渲染。"""
+        from mycode.session import InterruptEvent, UserMessage
+        u = UserMessage(model="m", message={"role": "user", "content": "hi"})
+        e1 = InterruptEvent(model="m", interrupt={"abort": False})
+        e1.id = "intr-A"
+        e2 = InterruptEvent(model="m", interrupt={"abort": False})
+        e2.id = "intr-B"
+        # 首次：渲染
+        self._capture(lambda: cli._render_retry_hint_once([u, e1], None))
+        # 再次中断（id 变化）：再次渲染
+        out = self._capture(lambda: cli._render_retry_hint_once([u, e2], "intr-A"))
+        assert "Ctrl-T" in out and "/retry" in out
+
+    def test_no_trigger_does_not_change_watermark(self):
+        """无触发事件：保持原水印不渲染（即使中间出现新事件但不是中断/异常）。"""
+        from mycode.session import AssistantMessage, UserMessage
+        u = UserMessage(model="m", message={"role": "user", "content": "hi"})
+        a = AssistantMessage(model="m", message={"role": "assistant", "content": "done"})
+        a.id = "asst-1"
+        # 正常会话：水印保持 None（从不渲染）
+        out = self._capture(lambda: cli._render_retry_hint_once([u, a], None))
+        assert out == ""
+
+    def test_returns_updated_watermark(self):
+        """返回值：渲染后返回新触发事件 id，未渲染则保留原水印。"""
+        entries = self._entries_with_interrupt()
+        # 渲染后水印更新
+        new_id = cli._render_retry_hint_once(entries, None)
+        assert new_id == "intr-A"
+        # 重复调用：返回原水印
+        assert cli._render_retry_hint_once(entries, new_id) == "intr-A"
 
 
 class TestStaleTodoReminder:
