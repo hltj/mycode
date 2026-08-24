@@ -29,14 +29,16 @@ ask_ui 自动为其渲染输入框；占位文字取该选项的 ``description``
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, cast
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.containers import Container
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.formatted_text.base import StyleAndTextTuples
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 
 from mycode import renderer as _renderer_mod
@@ -219,7 +221,7 @@ def _build_option_window(
     if opt.is_custom:
         label_text += ": "
 
-    fragments: list[tuple[str, str]] = [(style, label_text)]
+    fragments: StyleAndTextTuples = [(style, label_text)]
     if opt.description and not opt.is_custom:
         fragments.append((_STYLE_DESCRIPTION, f"  {opt.description}"))
     # 当前行 focusable=True（成为布局默认焦点，取代标题行），但
@@ -318,7 +320,7 @@ def _option_row_offset(state: _AskState) -> int:
 
 def _focused_window(
     state: _AskState,
-    rows: list,
+    rows: list[Container],
     custom_buffer: Buffer | None,
 ) -> Window:
     """按索引直接取当前选中行的可聚焦 Window。
@@ -333,11 +335,11 @@ def _focused_window(
     row = rows[_option_row_offset(state) + state.sel]
     if state.sel == state.custom_idx and state.custom_active and custom_buffer is not None:
         # 自定义选项行已激活：VSplit，输入框在 children[1]
-        return row.children[1]
+        return cast(Window, cast(VSplit, row).children[1])
     if state.sel == state.custom_idx and custom_buffer is not None:
         # 自定义行未激活：VSplit，聚焦 label（children[0]）
-        return row.children[0]
-    return row
+        return cast(Window, cast(VSplit, row).children[0])
+    return cast(Window, row)
 
 
 def _run_ask_ui(
@@ -377,7 +379,7 @@ def _run_ask_ui(
             return
         # 按索引直接取当前选中行并聚焦（自定义激活则聚焦输入框，
         # 否则聚焦 label 行 / 普通选项行）
-        rows = app.layout.container.children
+        rows = cast(HSplit, app.layout.container).children
         win = _focused_window(state, rows, custom_buffer)
         app.layout.focus(win)
 
@@ -516,7 +518,7 @@ def _run_ask_ui(
     # 初始焦点：聚焦当前选中行（自定义已激活则输入框，否则 label/普通行），
     # 不会落到标题等首行。无选项时无焦点。
     if state.options:
-        rows = app.layout.container.children
+        rows = cast(HSplit, app.layout.container).children
         app.layout.focus(_focused_window(state, rows, custom_buffer))
 
     try:
