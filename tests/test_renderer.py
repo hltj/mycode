@@ -37,7 +37,15 @@ from mycode.session import (
     ExceptionEvent,
 )
 
-from tests._helpers import make_tool_call, make_assistant_with_tool_calls
+from tests._helpers import (
+    make_tool_call,
+    make_assistant_with_tool_calls,
+    ansi_fg,
+    ansi_bg,
+    ansi_fg_bg,
+    _fg_sgr,
+    _bg_sgr,
+)
 
 # 兼容旧名（_make_tool_call / _make_assistant_with_tool_calls）
 _make_tool_call = make_tool_call
@@ -50,9 +58,48 @@ def _strip_ansi(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
-# 语法高亮主题色（nord）：语法 token 统一为 low-saturation 蓝灰 109
-_SYNTAX_TOKEN = "\x1B[38;5;109"
-_SYNTAX_TOKEN_BOLD = "\x1B[1;38;5;109"
+# ---------------------------------------------------------------------------
+# 渲染颜色常量（RGB 三元组）：
+# 这些是 pygments nord 主题的原始 RGB 值，rich 在 truecolor 下原样输出、
+# 在 256 色下自动降级为 256 索引（如 nord Keyword #81a1c1 → 38;5;109）。
+# 测试断言的颜色码由 ansi_fg/ansi_bg/ansi_fg_bg 动态生成（按当前 Console
+# color_system 切换 24-bit / 256 色 / 16 色格式），避免硬编码 256 色码。
+# ---------------------------------------------------------------------------
+
+# 代码块背景色（renderer.py 中 _CODE_BG_RGB）
+_CODE_BG_RGB = (30, 30, 30)
+# nord Keyword 颜色 #81a1c1（bold 时变亮；token 默认就用此色）
+_NORD_KEYWORD_RGB = (129, 161, 193)
+# nord Text 颜色 #d8dee9（普通文本 token）
+_NORD_TEXT_RGB = (216, 222, 233)
+# gruvbox-dark Keyword 颜色 #fb4934
+_GRUVBOX_KEYWORD_RGB = (251, 73, 52)
+# 行号前景：rich 把背景色与 nord Text 按 30% 混合得到 (85,87,90)
+# （见 rich.syntax.Syntax._get_line_numbers_color blend=0.3）
+from rich.color import blend_rgb
+_LINE_NUM_RGB = blend_rgb(_CODE_BG_RGB, _NORD_TEXT_RGB, cross_fade=0.3)
+_LINE_NUM_RGB = (_LINE_NUM_RGB.red, _LINE_NUM_RGB.green, _LINE_NUM_RGB.blue)
+
+
+# 渲染器源码中硬编码的 ANSI 常量（与 Console color_system 无关，固定 256 色）。
+# 这些是 renderer.py 直接拼接到 print 的字符串（如 _spacer_text(_CODE_BG)），
+# 不会经过 rich 的颜色降级；测试断言这些字符串出现时仍按源码固定值断言。
+_HIGHLIGHT_MUTED_RAW = "\x1B[38;5;110m"   # renderer._HIGHLIGHT_MUTED
+_CODE_BG_RAW = "\x1B[48;5;234m"           # renderer._CODE_BG
+
+
+# 按当前 color_system 动态生成的语法 token 颜色（用于渲染输出断言）。
+# 注：原 _SYNTAX_TOKEN / _SYNTAX_TOKEN_BOLD 在 256 色终端下是 "\x1B[38;5;109" /
+# "\x1B[1;38;5;109"，但当前真彩色终端会输出 "\x1B[38;2;129;161;193"。用 helper
+# 生成与终端能力匹配的 SGR 子串（不含 \x1b[ 和 m），便于子串匹配
+# （rich 经常把前景+背景合并到同一个 SGR，所以"独立前景 ANSI 序列"匹配不成立）。
+_SYNTAX_TOKEN = _fg_sgr(_NORD_KEYWORD_RGB)
+_SYNTAX_TOKEN_BOLD = _fg_sgr(_NORD_KEYWORD_RGB, bold=True)
+
+# 行号前景：rich 把背景与 nord Text 按 30% 混合得到 (85,87,90)
+# （见 rich.syntax.Syntax._get_line_numbers_color blend=0.3）
+# 用前景 SGR 子串（不含 \x1b[ 和 m）做"是否包含行号色"的负向断言锚点。
+_LINE_NUM_COLOR_FRAGMENT = _fg_sgr(_LINE_NUM_RGB)
 
 
 class TestRenderCommonToolResult:
@@ -235,8 +282,8 @@ class TestDefaultSyntaxHighlight:
         assert "\x1B[1;34m🔧 调用工具 - ls\x1B[0m" in out
         # 无代码围栏
         assert "```" not in out
-        # YAML 键语法高亮（nord 柔和蓝灰 109，带背景色 234）
-        assert f"{_SYNTAX_TOKEN};48;5;234mdir_path\x1B[0m" in out
+        # YAML 键语法高亮（nord Keyword 前景 + 代码块背景；前景/背景合并到一个 SGR）
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB)}dir_path\x1b[0m" in out
         assert "dir_path" in _strip_ansi(out)
 
     def test_tool_result_code_highlight(self):
@@ -257,7 +304,7 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "hello" in _strip_ansi(out)
-        assert "48;5;234" in out
+        assert ansi_bg(_CODE_BG_RGB) in out
 
     def test_code_block_top_bottom_blank(self):
         """default 普通代码块：上下各留 1 行纯背景空行，与 markdown 风格统一。"""
@@ -274,7 +321,7 @@ class TestDefaultSyntaxHighlight:
         assert lines[2].strip() == "hello"
         assert lines[3].strip() == ""
         # 留白行带代码块背景
-        assert "\x1B[48;5;234m" in out
+        assert ansi_bg(_CODE_BG_RGB) in out
 
     def test_read_output_line_numbers(self):
         """default read 输出：带行号语法高亮，剥离原始行号后由 rich 重新编号。"""
@@ -299,10 +346,12 @@ class TestDefaultSyntaxHighlight:
             tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[38;5;240;48;5;234m5 \x1B[0m\x1B[38;5;188;48;5;234malpha" in out
-        # 截断提示行：蓝灰前景 + 深灰背景（与代码块同画布），无行号
-        assert "\x1B[38;5;110m\x1B[48;5;234m... 剩余 5 行未显示（已设置 offset/limit）" in out
-        assert "\x1B[38;5;110m... 剩余" not in out  # 提示行不再无背景
+        # 行号 5 + alpha：rich 行号前景（灰 blend）+ nord Text 前景，都带代码块背景
+        # （行号段与正文段是两个独立 SGR，中间有 RESET）
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}5 \x1b[0m{ansi_fg_bg(_NORD_TEXT_RGB, _CODE_BG_RGB)}alpha" in out
+        # 截断提示行：源码 hardcoded 的蓝灰前景 + 深灰背景（与代码块同画布），无行号
+        assert f"{_HIGHLIGHT_MUTED_RAW}{_CODE_BG_RAW}... 剩余 5 行未显示（已设置 offset/limit）" in out
+        assert f"{_HIGHLIGHT_MUTED_RAW}... 剩余" not in out  # 提示行不再无背景
         assert "\x1B[1;32m" not in out
 
     def test_read_error_no_line_numbers(self):
@@ -334,8 +383,8 @@ class TestDefaultSyntaxHighlight:
         assert "1 line one" in lines[2]
         assert "2 line two" in lines[3]
         assert lines[4].strip() == ""
-        # 背景画布行（48;5;234）存在
-        assert "48;5;234" in out
+        # 背景画布行（rich 渲染的代码块背景）存在
+        assert ansi_bg(_CODE_BG_RGB) in out
 
     def test_read_marker_has_bg_and_no_lineno(self):
         """default read 截断提示行：蓝灰前景 + 深灰背景，无行号，上下有留白。"""
@@ -345,10 +394,10 @@ class TestDefaultSyntaxHighlight:
             tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
         )
         out = self._capture(lambda: _render_common(ev))
-        # 提示行带背景色（48;5;234）与蓝灰前景（38;5;110）
-        assert "\x1B[38;5;110m\x1B[48;5;234m... 已截断" in out
+        # 提示行带背景色与蓝灰前景（renderer 中 hardcoded 字符串拼接，与 color_system 无关）
+        assert f"{_HIGHLIGHT_MUTED_RAW}{_CODE_BG_RAW}... 已截断" in out
         # 提示行后紧跟 1 行纯背景空行（无行号）收尾
-        assert "\x1B[48;5;234m                                                                                \x1B[0m\n" in out
+        assert f"{_CODE_BG_RAW}                                                                                \x1b[0m\n" in out
 
     def test_read_marker_no_background_before(self):
         """default read 截断提示行：不能以无背景的纯蓝灰形式出现（需带画布背景）。"""
@@ -358,7 +407,7 @@ class TestDefaultSyntaxHighlight:
             tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[38;5;110m... 已截断" not in out
+        assert f"{_HIGHLIGHT_MUTED_RAW}... 已截断" not in out
 
     def test_read_marker_adjacent_to_body_no_blank(self):
         """default read：行号正文与截断提示行之间无空行。"""
@@ -392,10 +441,11 @@ class TestDefaultSyntaxHighlight:
         assert lines[1].strip() == ""
         assert lines[2].strip() == "... 已截断"
         assert lines[3].strip() == ""
-        # 无带行号的空块（行号 240 段不出现）
-        assert "38;5;240" not in out
-        # 内容带画布深灰背景
-        assert "\x1B[38;5;188;48;5;234m... 已截断" in out
+        # 无带行号的空块（行号色段不出现：256 色下 38;5;240，真彩色下 38;2;85;87;90，
+        # 都通过"行号前景+代码块背景"组合片段的有无做交叉验证）
+        assert _LINE_NUM_COLOR_FRAGMENT not in out
+        # 内容带画布深灰背景（rich 渲染的 nord Text + 代码块背景）
+        assert f"{ansi_fg_bg(_NORD_TEXT_RGB, _CODE_BG_RGB)}... 已截断" in out
 
     def test_read_output_python_highlight(self):
         """default read python 源码：自动检测语言并语法高亮 + 行号。"""
@@ -405,10 +455,10 @@ class TestDefaultSyntaxHighlight:
             tool_result={"tool_call_id": "c", "content": content, "tool_name": "read"},
         )
         out = self._capture(lambda: _render_common(ev))
-        # Python 关键字 `import` 上色（ansi_dark 下 94m，带背景色）
-        assert "\x1B[1;38;5;109;48;5;234mimport\x1B[0m" in out
-        # 行号仍保留
-        assert "\x1B[38;5;240;48;5;234m1 \x1B[0m" in out
+        # Python 关键字 `import` 上色（nord Keyword bold + 代码块背景）
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB, bold=True)}import\x1b[0m" in out
+        # 行号仍保留（行号前景 + 代码块背景）
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 \x1b[0m" in out
 
     def test_read_output_plain_text_no_ansi(self):
         """default read 纯文本：自动检测不到语言，仅行号无语法着色。"""
@@ -437,7 +487,7 @@ class TestDefaultSyntaxHighlight:
             },
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[1;38;5;109;48;5;234mimport\x1B[0m" in out
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB, bold=True)}import\x1b[0m" in out
 
     def test_read_output_filename_invalid_fallback_content(self):
         """default read 文件名不识别（如 .txt）时按内容猜，纯文本无着色。"""
@@ -519,7 +569,7 @@ class TestDefaultSyntaxHighlight:
             },
         )
         out = self._capture(lambda: _render_common(ev))
-        assert "\x1B[1;38;5;109;48;5;234mimport\x1B[0m" in out
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB, bold=True)}import\x1b[0m" in out
 
     def test_exception_traceback_highlight(self):
         """default 异常 traceback：rich 语法高亮渲染。"""
@@ -540,9 +590,9 @@ class TestDefaultSyntaxHighlight:
             "additional_content": "```yaml\ncommand: ls\n```",
         })
         out = self._capture(lambda: _render_common(ev))
-        # 围栏被剥离，yaml 键语法高亮
+        # 围栏被剥离，yaml 键语法高亮（nord Keyword + 代码块背景）
         assert "```" not in out
-        assert "\x1B[38;5;109;48;5;234mcommand\x1B[0m" in out
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB)}command\x1b[0m" in out
 
     def test_notice_additional_plain(self):
         """default 提醒附加内容非围栏：原样输出。"""
@@ -597,7 +647,7 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         # ANSI 控制码原样保留，无 nord 语法色
         assert "\x1B[32mgreen\x1B[0m files" in out
-        assert "38;5;109" not in out
+        assert _SYNTAX_TOKEN not in out
         # 代码围栏原样包裹（同 classic），末尾空行
         assert "\n```\n\x1B[32mgreen\x1B[0m files\n```\n" in out
         assert out.endswith("\n\n")
@@ -613,7 +663,7 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "\x1B[31merror\x1B[0m file" in out
-        assert "38;5;109" not in out
+        assert _SYNTAX_TOKEN not in out
         # 代码围栏包裹，末尾空行
         assert "\n```\n\x1B[31merror\x1B[0m file\n```\n" in out
         assert out.endswith("\n\n")
@@ -631,9 +681,12 @@ class TestDefaultSyntaxHighlight:
                 tool_result={"tool_call_id": "c", "content": "import json\n", "tool_name": "bash"},
             )
             out = self._capture(lambda: _render_common(ev))
-            # gruvbox-dark 关键字色 203
-            assert "\x1B[38;5;203" in out
+            # gruvbox-dark 关键字色：#fb4934（256 色下 → 38;5;203；truecolor → 38;2;251;73;52）
+            # 仅断言前景 SGR 子串存在（前景/背景常合并为一个完整 SGR）
+            assert _fg_sgr(_GRUVBOX_KEYWORD_RGB) in out
         finally:
+            # 撤销环境变量后再 reload，避免下一个测试仍看到 gruvbox-dark 主题
+            monkeypatch.undo()
             importlib.reload(renderer)
 
     def test_has_ansi_control_helper(self):
@@ -647,8 +700,8 @@ class TestDefaultSyntaxHighlight:
             ToolCallEvent(model="m", tool_call=tool_call)))
 
     def _assert_line_number_for(self, out):
-        """断言输出包含 rich 行号渲染：行号 1（灰 240 前景 + 背景 234）。"""
-        assert "\x1B[38;5;240;48;5;234m1 \x1B[0m" in out
+        """断言输出包含 rich 行号渲染：行号 1（行号前景 + 代码块背景）。"""
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 \x1b[0m" in out
 
     def test_tool_call_bash_specialized(self):
         """default bash 工具调用特化：YAML 去掉 command，bash 语法带行号展示。"""
@@ -715,7 +768,8 @@ class TestDefaultSyntaxHighlight:
         plain = _strip_ansi(out)
         # 两行命令均出现，且行号 1 与 2 均有
         assert "echo a" in plain and "echo b" in plain
-        assert "\x1B[38;5;240;48;5;234m2 \x1B[0m" in out
+        # 行号 2：行号前景 + 代码块背景
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}2 \x1b[0m" in out
         assert "command" not in plain
 
     def test_tool_call_write_specialized(self):
@@ -729,8 +783,8 @@ class TestDefaultSyntaxHighlight:
         assert "content" not in plain
         # 新代码块中展示 content（Python 关键字 import 带语法色 + 行号）
         assert "import json" in plain and "import os" in plain
-        # 带语法着色（关键词 token 前景 + 背景 234）且带行号 1
-        assert "48;5;234mimport\x1B[0m" in out
+        # 带语法着色（关键词 token 前景 + 代码块背景）且带行号 1
+        assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB, bold=True)}import\x1b[0m" in out
         self._assert_line_number_for(out)
 
     def test_tool_call_write_no_file_path(self):
@@ -756,8 +810,8 @@ class TestDefaultSyntaxHighlight:
         # diff 文本整体出现
         assert "--- a/x.py" in plain and "+++ b/x.py" in plain
         assert "-old" in plain and "+new" in plain
-        # 不带行号：无 rich 行号序列
-        assert "38;5;240;48;5;234m1 " not in out
+        # 不带行号：无 rich 行号前景（行号前景 + 代码块背景组合）
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 " not in out
 
     def test_tool_call_edit_specialized(self):
         """default edit 工具调用特化：YAML 去掉 old_text/new_text，diff 无行号展示。"""
@@ -779,7 +833,7 @@ class TestDefaultSyntaxHighlight:
         assert "@@ -1 +1,2 @@" in plain or "@@ ... @@" in plain
         assert "-foo" in plain and "+bar" in plain and "+baz" in plain
         # 不带行号
-        assert "38;5;240;48;5;234m1 " not in out
+        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 " not in out
 
     def test_tool_call_edit_identical_no_diff(self):
         """default edit 相同内容：无 diff 生成，YAML 后不再输出代码块。"""
@@ -1073,10 +1127,10 @@ class TestDefaultAssistantMarkdown:
         assert "# 标题" not in out
 
     def test_code_fence_uses_code_background(self):
-        """代码块：subclass 覆写用背景色 rgb(30,30,30)（256 色 234），非 rich 默认。"""
+        """代码块：subclass 覆写用背景色 rgb(30,30,30)，非 rich 默认。"""
         out = self._capture("```python\nimport os\n```")
-        # 代码块背景色与工具输出一致（48;5;234）
-        assert "48;5;234" in out
+        # 代码块背景色与工具输出一致
+        assert ansi_bg(_CODE_BG_RGB) in out
         # 不是 rich 默认 code_block 样式（cyan on black = 36;40m）
         assert "\x1B[36;40m" not in out
         # 内容保留
@@ -1106,7 +1160,7 @@ class TestDefaultAssistantMarkdown:
         # ANSI 原样保留
         assert "\x1B[32mgreen\x1B[0m msg" in out
         # 无语法高亮/nord 色
-        assert "38;5;109" not in out
+        assert _SYNTAX_TOKEN not in out
 
     def test_assistant_title_line_then_body(self):
         """标题行与正文分行：标题独占一行，正文从下一行开始。"""
