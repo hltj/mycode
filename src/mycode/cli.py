@@ -553,9 +553,12 @@ def _should_show_retry_hint(entries: list[AgentMessage]) -> AgentMessage | None:
 
     实时与重放统一判定：从末尾**跳过工具结果消息**（工具被中断/异常后
     会补齐 tool 占位消息并派发 ToolResultEvent），看**最后一条非工具
-    事件**是否为中断（InterruptEvent，含真实 Ctrl-C 与用户取消）或异常
+    事件**是否为真实中断（InterruptEvent 且 ``abort=False``）或异常
     （ExceptionEvent）。正常完成的会话最后一条非工具事件是 assistant
     回复，不会误报。
+
+    ``InterruptEvent.abort=True`` 表示用户在权限询问时取消/无理由拒绝，
+    是主动放弃，不算中断，不需要重试提示。
 
     返回触发提示的事件（InterruptEvent / ExceptionEvent）或 None。
     返回事件让 main 用其 id 作为水印：仅当水印变化（新中断/异常事件
@@ -565,7 +568,9 @@ def _should_show_retry_hint(entries: list[AgentMessage]) -> AgentMessage | None:
         (e for e in reversed(entries) if not isinstance(e, ToolResultEvent)),
         None,
     )
-    if isinstance(last_non_tool, (InterruptEvent, ExceptionEvent)):
+    if isinstance(last_non_tool, ExceptionEvent):
+        return last_non_tool
+    if isinstance(last_non_tool, InterruptEvent) and not last_non_tool.interrupt["abort"]:
         return last_non_tool
     return None
 

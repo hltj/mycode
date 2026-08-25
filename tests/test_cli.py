@@ -1074,12 +1074,31 @@ class TestReplayRetryHint:
         return UserMessage(model="m", message={"role": "user", "content": "hi"})
 
     def test_last_interrupt_returns_event(self):
-        """末条是 InterruptEvent：返回该事件。"""
+        """末条是 InterruptEvent（abort=False）：返回该事件。"""
         from mycode.session import InterruptEvent
         ev = InterruptEvent(model="m", interrupt={"abort": False})
         ev.id = "intr-1"
         entries = [self._user(), ev]
         assert cli._should_show_retry_hint(entries) is ev
+
+    def test_abort_interrupt_returns_none(self):
+        """末条是 InterruptEvent（abort=True，用户取消/无理由拒绝）：返回 None（不提示）。"""
+        from mycode.session import InterruptEvent
+        ev = InterruptEvent(model="m", interrupt={"abort": True})
+        ev.id = "abort-1"
+        entries = [self._user(), ev]
+        assert cli._should_show_retry_hint(entries) is None
+
+    def test_abort_interrupt_skipped_for_real_interrupt(self):
+        """abort=True 的 InterruptEvent 不应阻塞其后真实中断的判定（向后看而非返回 None 全空）。"""
+        from mycode.session import InterruptEvent
+        real = InterruptEvent(model="m", interrupt={"abort": False})
+        real.id = "intr-real"
+        abort = InterruptEvent(model="m", interrupt={"abort": True})
+        abort.id = "abort-2"
+        # 末尾先 abort，再真实中断：跳过 abort 看更早的真实中断
+        entries = [self._user(), abort, real]
+        assert cli._should_show_retry_hint(entries) is real
 
     def test_last_exception_returns_event(self):
         """末条是 ExceptionEvent：返回该事件。"""
