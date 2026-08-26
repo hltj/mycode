@@ -88,13 +88,20 @@ _HIGHLIGHT_MUTED_RAW = "\x1B[38;5;110m"   # renderer._HIGHLIGHT_MUTED
 _CODE_BG_RAW = "\x1B[48;5;234m"           # renderer._CODE_BG
 
 
-# 按当前 color_system 动态生成的语法 token 颜色（用于渲染输出断言）。
+# 按当前 color_system 动态生成函数（用于渲染输出断言）。
 # 注：原 _SYNTAX_TOKEN / _SYNTAX_TOKEN_BOLD 在 256 色终端下是 "\x1B[38;5;109" /
 # "\x1B[1;38;5;109"，但当前真彩色终端会输出 "\x1B[38;2;129;161;193"。用 helper
 # 生成与终端能力匹配的 SGR 子串（不含 \x1b[ 和 m），便于子串匹配
 # （rich 经常把前景+背景合并到同一个 SGR，所以"独立前景 ANSI 序列"匹配不成立）。
-_SYNTAX_TOKEN = _fg_sgr(_NORD_KEYWORD_RGB)
-_SYNTAX_TOKEN_BOLD = _fg_sgr(_NORD_KEYWORD_RGB, bold=True)
+# 用函数而非模块常量，因为 _current_color_system() 依赖运行时环境变量
+# （parametrize fixture 会按测试切换）。
+def _syntax_token():
+    """nord Keyword 前景色 SGR 子串（按当前 color_system）。"""
+    return _fg_sgr(_NORD_KEYWORD_RGB)
+
+def _syntax_token_bold():
+    """nord Keyword bold 前景色 SGR 子串（按当前 color_system）。"""
+    return _fg_sgr(_NORD_KEYWORD_RGB, bold=True)
 
 # 行号前景：rich 把背景与 nord Text 按 30% 混合得到 (85,87,90)
 # （见 rich.syntax.Syntax._get_line_numbers_color blend=0.3）
@@ -258,7 +265,16 @@ class TestRenderCommonToolCall:
 
 
 class TestDefaultSyntaxHighlight:
-    """default 风格下 rich 语法高亮渲染（工具调用 YAML / 工具结果 / read）。"""
+    """default 风格下 rich 语法高亮渲染（工具调用 YAML / 工具结果 / read）。
+
+    通过 ``_set_color_system`` autouse fixture，每个测试在真彩色 / 256 色 /
+    16 色三种终端能力下各验证一次，覆盖各种 color_system 下的渲染输出。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _auto_color_system(self, _set_color_system):
+        """在三种 color_system 下自动覆盖当前测试。"""
+        return _set_color_system
 
     @pytest.fixture(autouse=True)
     def default_style(self, monkeypatch):
@@ -348,7 +364,7 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         # 行号 5 + alpha：rich 行号前景（灰 blend）+ nord Text 前景，都带代码块背景
         # （行号段与正文段是两个独立 SGR，中间有 RESET）
-        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}5 \x1b[0m{ansi_fg_bg(_NORD_TEXT_RGB, _CODE_BG_RGB)}alpha" in out
+        assert f"{self._line_num_sgr('5')}\x1b[0m{ansi_fg_bg(_NORD_TEXT_RGB, _CODE_BG_RGB)}alpha" in out
         # 截断提示行：源码 hardcoded 的蓝灰前景 + 深灰背景（与代码块同画布），无行号
         assert f"{_HIGHLIGHT_MUTED_RAW}{_CODE_BG_RAW}... 剩余 5 行未显示（已设置 offset/limit）" in out
         assert f"{_HIGHLIGHT_MUTED_RAW}... 剩余" not in out  # 提示行不再无背景
@@ -457,8 +473,8 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         # Python 关键字 `import` 上色（nord Keyword bold + 代码块背景）
         assert f"{ansi_fg_bg(_NORD_KEYWORD_RGB, _CODE_BG_RGB, bold=True)}import\x1b[0m" in out
-        # 行号仍保留（行号前景 + 代码块背景）
-        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 \x1b[0m" in out
+        # 行号仍保留（行号前景 + 代码块背景；STANDARD 下退化为 dim）
+        self._assert_line_number_for(out, num="1")
 
     def test_read_output_plain_text_no_ansi(self):
         """default read 纯文本：自动检测不到语言，仅行号无语法着色。"""
@@ -471,7 +487,7 @@ class TestDefaultSyntaxHighlight:
         # 纯文本无语法着色（不含 nord 语法 token 色 109），但有行号与背景
         assert "```" not in out
         assert "line one" in _strip_ansi(out)
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
 
     def test_read_output_filename_inferred(self):
         """default read 用调用时 file_path 推断语言（.py 扩展名 → python）。"""
@@ -503,7 +519,7 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         # .txt 推断不到 → 内容猜也不到 → 无语法着色，保留行号
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
         assert "1 line one" in _strip_ansi(out)
 
     def test_bash_output_plain_no_highlight(self):
@@ -537,7 +553,7 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "已写入 3 字节到 a.py" in _strip_ansi(out)
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
 
     def test_other_tool_pythonish_content_no_highlight(self):
         """default write 返回 python 片段：写死 text，无语法色。"""
@@ -553,8 +569,8 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "import json" in _strip_ansi(out)
-        assert _SYNTAX_TOKEN not in out
-        assert _SYNTAX_TOKEN_BOLD not in out
+        assert _syntax_token() not in out
+        assert _syntax_token_bold() not in out
 
     def test_bash_output_python_guessed(self):
         """default bash 输出含 Python 代码：内容自动猜成 python 高亮。"""
@@ -614,7 +630,7 @@ class TestDefaultSyntaxHighlight:
         })
         out = self._capture(lambda: _render_common(ev))
         assert "````py\nx=1\n```" in out
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
         # 开头 3 重、收尾 4 重（4>=3）：闭合 → 语法高亮
         ev = NoticeEvent(model="m", notice={
             "tag_name": "notice", "content": "c", "display_content": "c",
@@ -622,7 +638,7 @@ class TestDefaultSyntaxHighlight:
         })
         out = self._capture(lambda: _render_common(ev))
         assert "````" not in out
-        assert _SYNTAX_TOKEN in out or _SYNTAX_TOKEN_BOLD in out
+        assert _syntax_token() in out or _syntax_token_bold() in out
 
     def test_split_read_output_helper(self):
         """_split_read_output：末尾 ```...``` 行单独拿出，带行号行剥离行号。"""
@@ -647,7 +663,7 @@ class TestDefaultSyntaxHighlight:
         out = self._capture(lambda: _render_common(ev))
         # ANSI 控制码原样保留，无 nord 语法色
         assert "\x1B[32mgreen\x1B[0m files" in out
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
         # 代码围栏原样包裹（同 classic），末尾空行
         assert "\n```\n\x1B[32mgreen\x1B[0m files\n```\n" in out
         assert out.endswith("\n\n")
@@ -663,7 +679,7 @@ class TestDefaultSyntaxHighlight:
         )
         out = self._capture(lambda: _render_common(ev))
         assert "\x1B[31merror\x1B[0m file" in out
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
         # 代码围栏包裹，末尾空行
         assert "\n```\n\x1B[31merror\x1B[0m file\n```\n" in out
         assert out.endswith("\n\n")
@@ -699,9 +715,26 @@ class TestDefaultSyntaxHighlight:
         return self._capture(lambda: _render_common(
             ToolCallEvent(model="m", tool_call=tool_call)))
 
-    def _assert_line_number_for(self, out):
-        """断言输出包含 rich 行号渲染：行号 1（行号前景 + 代码块背景）。"""
-        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}1 \x1b[0m" in out
+    def _assert_line_number_for(self, out, num: str = "1"):
+        """断言输出包含 rich 行号渲染：行号 ``num``（默认 1）。
+
+        真彩色 / 256 色终端下行号前景用 blend_rgb 后的 (85,87,90)；
+        16 色（standard）终端下行号退化为 dim 样式（无前景色），
+        只剩背景色 + dim 属性——所以分两种情况断言。
+        """
+        assert f"{self._line_num_sgr(num)}\x1b[0m" in out
+
+    def _line_num_sgr(self, num: str) -> str:
+        """当前 color_system 下"行号 + 空格"的 ANSI 序列（到 ``m`` 为止）。
+
+        调用方可在末尾拼接 ``\\x1b[0m`` 复位、再拼下一段 SGR。
+        """
+        from tests._helpers import _current_color_system
+        from rich.color import ColorSystem
+        if _current_color_system() == ColorSystem.STANDARD:
+            # 标准 16 色下行号前景不可用，rich 退化为 dim + 背景
+            return f"\x1b[2;40m{num} "
+        return f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}{num} "
 
     def test_tool_call_bash_specialized(self):
         """default bash 工具调用特化：YAML 去掉 command，bash 语法带行号展示。"""
@@ -768,8 +801,8 @@ class TestDefaultSyntaxHighlight:
         plain = _strip_ansi(out)
         # 两行命令均出现，且行号 1 与 2 均有
         assert "echo a" in plain and "echo b" in plain
-        # 行号 2：行号前景 + 代码块背景
-        assert f"{ansi_fg_bg(_LINE_NUM_RGB, _CODE_BG_RGB)}2 \x1b[0m" in out
+        # 行号 2：行号前景 + 代码块背景（STANDARD 下退化为 dim 样式）
+        assert f"{self._line_num_sgr('2')}\x1b[0m" in out
         assert "command" not in plain
 
     def test_tool_call_write_specialized(self):
@@ -1089,7 +1122,16 @@ class TestRenderRetryHint:
 
 
 class TestDefaultAssistantMarkdown:
-    """default 风格下 assistant 正文用 rich Markdown 渲染。"""
+    """default 风格下 assistant 正文用 rich Markdown 渲染。
+
+    通过 ``_set_color_system`` autouse fixture，每个测试在真彩色 / 256 色 /
+    16 色三种终端能力下各验证一次，覆盖各种 color_system 下的渲染输出。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _auto_color_system(self, _set_color_system):
+        """在三种 color_system 下自动覆盖当前测试。"""
+        return _set_color_system
 
     @pytest.fixture(autouse=True)
     def default_style(self, monkeypatch):
@@ -1160,7 +1202,7 @@ class TestDefaultAssistantMarkdown:
         # ANSI 原样保留
         assert "\x1B[32mgreen\x1B[0m msg" in out
         # 无语法高亮/nord 色
-        assert _SYNTAX_TOKEN not in out
+        assert _syntax_token() not in out
 
     def test_assistant_title_line_then_body(self):
         """标题行与正文分行：标题独占一行，正文从下一行开始。"""
