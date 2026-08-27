@@ -725,7 +725,7 @@ class TestCreatePromptSession:
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
         """classic：根样式无背景，布局根容器无额外样式。"""
         from prompt_toolkit.utils import to_str
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         root_style = session.app.layout.container.style
         assert to_str(root_style) == ""
         # 提示符样式存在但根样式（''）不含背景
@@ -735,7 +735,7 @@ class TestCreatePromptSession:
     def test_default_root_bg_and_layout_style(self):
         """default：根样式无背景（避免 ask_ui 标签被误涂底色），cli 输入区
         靠 ``class:mycode-input`` 显式涂底色。"""
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         # 根样式不带背景：避免自定义 layout（ask_ui）弹出时把未指定
         # style 的 Window 也涂上灰色，与输入框看不出边界。
         attrs = session.style.get_attrs_for_style_str("")
@@ -748,14 +748,14 @@ class TestCreatePromptSession:
 
     def test_default_prompt_symbol(self):
         """default 提示符为居左竖线。"""
-        cli._create_prompt_session()  # 仅确保可创建
+        cli._create_prompt_session(None, "")  # 仅确保可创建
         assert cli._prompt_fragments() == [('class:mycode-prompt', '│ ')]
 
     def test_default_reserves_blank_lines_in_layout(self):
         """default：输入区布局上下各预留 1 行灰色背景留白。"""
         from prompt_toolkit.layout.containers import Window
         from prompt_toolkit.layout.dimension import Dimension
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         container = session.app.layout.container
         children = container.children
         # 首尾各 1 个固定高度 1 行的留白窗口
@@ -773,7 +773,7 @@ class TestCreatePromptSession:
     def test_classic_no_reserved_blank_lines(self, monkeypatch):
         """classic：输入区布局不预留留白行。"""
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         container = session.app.layout.container
         # classic 根容器 children 数量与默认 PromptSession 布局一致（未插入留白）
         assert container.children[0].__class__.__name__ == "ConditionalContainer"
@@ -785,7 +785,7 @@ class TestCreatePromptSession:
         占位文字为「 ↵ 换行，Alt-↵（ESC ↵）发送」，提示 Enter 换行、
         Alt+Enter（ESC 再按 Enter）发送；开头 1 个空格避开行首光标符号。
         """
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         assert session.placeholder is not None
         from prompt_toolkit.formatted_text import to_formatted_text
         fragments = to_formatted_text(session.placeholder)
@@ -798,7 +798,7 @@ class TestCreatePromptSession:
 
     def test_placeholder_has_gray_style(self):
         """default：占位文字样式类（class:placeholder）为灰色斜体。"""
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         attrs = session.style.get_attrs_for_style_str("class:placeholder")
         assert attrs.color is not None and attrs.color != ""
         assert attrs.italic
@@ -806,7 +806,7 @@ class TestCreatePromptSession:
     def test_placeholder_classic_too(self, monkeypatch):
         """classic：同样注册占位文字，且开头保留 1 个空格。"""
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         assert session.placeholder is not None
         from prompt_toolkit.formatted_text import to_formatted_text
         text = "".join(t for _, t in to_formatted_text(session.placeholder))
@@ -819,7 +819,7 @@ class TestCreatePromptSession:
         c-t 绑定，其结果是返回 /retry 文本（复用命令解析）。该绑定只在
         prompt（输入）阶段有效。
         """
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         kb = session.key_bindings
         assert kb is not None
         # Keys.ControlT / Keys.BackTab 是枚举，v.value 为 "c-t" / "s-tab"
@@ -839,7 +839,7 @@ class TestCreatePromptSession:
         from prompt_toolkit.output import DummyOutput
         from mycode.cli import MycCommandCompleter
         # 用与 _create_prompt_session 相同的 key_bindings 构造注入式会话
-        session = cli._create_prompt_session()
+        session = cli._create_prompt_session(None, "")
         with create_pipe_input() as inp:
             inp.send_text("\x14")  # Ctrl-T
             s2 = PromptSession(
@@ -852,6 +852,67 @@ class TestCreatePromptSession:
             )
             result = s2.prompt()
         assert result == "/retry"
+
+    def test_shift_tab_preserves_buffer_and_cycles_mode(self):
+        """shift-tab 在输入框已有内容时应保留输入内容、不退出 prompt，
+        并把 MODE_STATE 切换到下一档；通过 create_background_task 派发
+        一个 run_in_terminal 包装的异步任务来触发 ModeChangeEvent；
+        同时验证提示符符号 / 颜色类随之更新（必须通过 callable message
+        实现，而不是固定字符串）。
+
+        这里直接抓出 ``s-tab`` 对应的 handler 并以 mock event 调用，避免
+        在 DummyOutput 下驱动完整 prompt 事件循环（run_in_terminal 在
+        app 不运行时直接 yield，方便我们手动 drive coroutine）。
+        """
+        from prompt_toolkit.keys import Keys
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from mycode.cli import ModeChangeEvent
+        from mycode.mode import MODE_STATE, Mode
+        from unittest.mock import MagicMock
+        import asyncio
+
+        MODE_STATE.set(Mode.AUTO)  # 复位起点
+        dispatched: list = []
+
+        class _Bus:
+            def dispatch(self, msg):
+                dispatched.append(msg)
+
+        session = cli._create_prompt_session(_Bus(), "m")
+        kb = session.key_bindings
+        handler = next(
+            b.handler for b in kb.bindings
+            if any(getattr(k, "value", k) == Keys.BackTab.value for k in b.keys)
+        )
+        ran_tasks: list = []
+        event = MagicMock()
+        event.app.create_background_task.side_effect = lambda c: ran_tasks.append(c)
+
+        # session.message 必须是 callable，否则 shift-tab 后提示符不会刷新
+        assert callable(session.message)
+
+        handler(event)
+
+        # 1) 关键修复点：prompt 未被退出（否则输入会被吃掉）
+        event.app.exit.assert_not_called()
+        # 2) MODE_STATE 已循环到下一档
+        assert MODE_STATE.get() == Mode.YOLO
+        # 3) 派发了一个后台任务（包装 run_in_terminal 的 coroutine）
+        assert len(ran_tasks) == 1
+        # 4) drive 该 coroutine：run_in_terminal 在 app 不在 _is_running
+        #    时立刻 yield 并 return，因此内部 lambda 同步触发 dispatch
+        asyncio.run(ran_tasks[0])
+        mode_events = [e for e in dispatched if isinstance(e, ModeChangeEvent)]
+        assert len(mode_events) == 1
+        assert mode_events[0].mode == Mode.YOLO.value
+        assert mode_events[0].model == "m"
+
+        # 5) 提示符随模式刷新：auto 绿 │ → yolo 橙 │!（符号 + 颜色类）
+        rendered = to_formatted_text(session.message, style="class:prompt")
+        flat = "".join(text for _, text in rendered)
+        styles = " ".join(style for style, _ in rendered)
+        assert flat == "│! "
+        assert "class:mycode-prompt-yolo" in styles
 
 
 

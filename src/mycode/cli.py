@@ -637,11 +637,14 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
     Ctrl-C 发生在输入过程中（``session.prompt`` 内部）时静默放弃
     本次输入并返回 ``None``——不输出任何内容，由调用方直接继续
     等待下一轮输入。EOF（Ctrl-D）则照常向上抛出。
+
+    注意：``session.prompt()`` 不再传 ``message`` —— ``session.message``
+    已在创建时设为 ``_prompt_fragments`` callable（每次重渲染动态计算
+    提示符），传固定 list 会把它覆盖回固定值，导致 shift-tab 后提示符
+    不更新。
     """
     try:
-        # prompt 接受 list[tuple[str, str] | tuple[str,str,Callable]]，
-        # 此处仅含二元组，用 cast 让 mypy 通过（list 不变性）。
-        return session.prompt(cast(Any, _prompt_fragments()))
+        return session.prompt()
     except KeyboardInterrupt:
         return None
 
@@ -657,7 +660,7 @@ class MycCommandCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text), display=cmd)
 
 
-def _create_prompt_session() -> PromptSession[str]:
+def _create_prompt_session(bus: AgentEventBus, model: str) -> PromptSession[str]:
     """创建 prompt_toolkit 输入会话（按渲染风格配置样式）。
 
     default 风格输入区灰色背景说明：
@@ -667,20 +670,33 @@ def _create_prompt_session() -> PromptSession[str]:
         ``Window._apply_style → Screen.fill_area``，把「整块输入区」
         （含空行、行尾空白以及向下延伸到终端底部的剩余空间）都填充
         为灰色背景。单靠根样式只会给已渲染的字符上色，空白行不会覆盖。
+
+    ``bus`` / ``model`` 用于 shift-tab 直接在 prompt 内切换模式（保留
+    输入框已输入内容与光标位置）；``message`` 传 callable 是为了让
+    shift-tab 切模式后 prompt 重渲染时提示符（符号 + 颜色类）能随之
+    更新——传入固定字符串的话，prompt 内的提示符将一直保持首次的样式。
     """
     renderer = _get_renderer()
 
     # shift-tab 切换模式（自动 → 全权 → 询问 → 自动）
     from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.application import run_in_terminal
     kb = KeyBindings()
 
     @kb.add("s-tab")
     def _cycle_mode(event):
-        old = MODE_STATE.get()
+        # 同步切换状态：之后 _prompt_fragments 读到的就是新模式，
+        # 重渲染时提示符前缀立刻更新。
         new = MODE_STATE.cycle()
-        # 模式切换作为一个事件分发（交由 main 的 bus 处理）。
-        # 此处仅记录待派发标志，由 main 在下一轮读取。
-        event.app.exit(result="__mode_cycle__")
+        # 通过 run_in_terminal 输出「已切换到【xxx】模式」并触发持久化：
+        # 该上下文会先擦除 prompt、执行 callable（bus.dispatch 同步
+        # 打印提示）、再重绘 prompt 界面，过程中 prompt 缓冲区内容
+        # 与光标位置由 prompt_toolkit 内部状态保持，不受破坏。
+        async def _emit() -> None:
+            await run_in_terminal(
+                lambda: bus.dispatch(ModeChangeEvent(model=model, mode=new.value))
+            )
+        event.app.create_background_task(_emit())
 
     @kb.add("c-t")
     def _retry(event):
@@ -689,7 +705,13 @@ def _create_prompt_session() -> PromptSession[str]:
         # （冲突最小：仅覆盖 emacs transpose-chars / vi indent 低频编辑。）
         event.app.exit(result="/retry")
 
+    # message 传 callable（而非固定字符串）：PromptSession._get_prompt
+    # 每次 layout 渲染时都会调用 ``to_formatted_text(self.message, …)``，
+    # callable 分支会被同步调用并读到当前 MODE_STATE，从而让 shift-tab
+    # 切模式后提示符符号 / 颜色类同步刷新（默认风格：
+    # auto 绿 │、ask 蓝 │?、yolo 橙 │!）。详见 cli_render_design.md 第 4 节。
     session: PromptSession[str] = PromptSession(
+        message=_prompt_fragments,
         history=FileHistory(HISTORY_FILE),
         completer=MycCommandCompleter(),
         multiline=True,
@@ -779,7 +801,7 @@ def main():
 
     # ---- prompt_toolkit 配置 ----
 
-    session = _create_prompt_session()
+    session = _create_prompt_session(bus, model)
 
     # 已渲染过提示的「触发事件 id」水印：仅当新的中断/异常事件出现时才
     # 重新渲染提示，避免 prompt 阶段 Ctrl-C 静默继续时反复渲染同一提示。
@@ -798,11 +820,6 @@ def main():
                 continue
 
             stripped = user_input.strip()
-
-            # ---- shift-tab 循环切换模式 ----
-            if stripped == "__mode_cycle__":
-                _switch_mode(model, bus, MODE_STATE.get())
-                continue
 
             # ---- 模式切换命令 ----
             if stripped in {"/ask", "/auto", "/yolo"}:

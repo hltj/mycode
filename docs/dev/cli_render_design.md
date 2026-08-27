@@ -353,8 +353,16 @@ classic 风格不预留。
 2. `completer=MycCommandCompleter()`：`/` 开头补全 `/q /quit /ask /auto /yolo`；
 3. `style=renderer.create_prompt_style()`：模式 → 样式类
    （`mycode-prompt` 绿 / `mycode-prompt-ask` 蓝 / `mycode-prompt-yolo` 橙）；
-4. `key_bindings`：`shift-tab` 绑定模式循环切换，以 `__mode_cycle__` 退出 prompt，
-   由 `main` 下一轮读取后派发 `ModeChangeEvent`；
+4. `key_bindings`：`shift-tab` 绑定模式循环切换 —— 直接在 key binding 内
+   同步更新 `MODE_STATE`，并通过 `run_in_terminal` 把
+   `ModeChangeEvent` 的派发（输出「已切换到【xxx】模式」+ 持久化）放到
+   prompt_toolkit 异步事件循环中执行；整个过程不退出 prompt，已输入的
+   内容和光标位置由 prompt_toolkit 内部状态保持不变。
+   `PromptSession.message` 传 `_prompt_fragments` callable（而非固定
+   字符串）：`_get_prompt` 每次 layout 渲染都会调用
+   `to_formatted_text(self.message, ...)`，callable 分支会被同步调用并
+   读到当前 `MODE_STATE`，从而让提示符符号 / 颜色类（默认风格：
+   auto 绿 `│`、ask 蓝 `│?`、yolo 橙 `│!`）随 shift-tab 立刻刷新。
    `ctrl-t` 绑定 `/retry` 快捷触发：输入阶段按 Ctrl-T 直接返回 `/retry` 文本，
    复用 `/retry` 命令解析（仅输入阶段有效，等价于输入 `/retry`）；
 5. `erase_when_done=True`：下一轮渲染前擦除上一行输入。
