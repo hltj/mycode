@@ -138,6 +138,7 @@ tool_def = ToolsRegistry.get_tool_def(func_name) # 定义（测试/校验）
 | 模块 | 工具名 | 类别（mode.py） | 说明 |
 |------|--------|-----------------|------|
 | `bash.py` | `bash` | dangerous / caution / unknown | 执行 shell 命令 |
+| `ask_user.py` | `ask_user` | internal | 交互式询问（ask_ui） |
 | `write.py` | `write` | write | 覆盖写入文件 |
 | `edit.py` | `edit` | write | old_text/new_text 替换 |
 | `patch.py` | `patch` | write | 应用 unified diff |

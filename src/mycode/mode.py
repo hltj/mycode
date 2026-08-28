@@ -11,7 +11,7 @@
     - 未知（unknown）：bash 且未命中上述两类
     - 写（write）：write / edit / patch
     - 读（read）：ls / glob / grep / read
-    - 内部（internal）：todo_write
+    - 内部（internal）：todo_write / ask_user
 """
 
 from __future__ import annotations
@@ -99,6 +99,7 @@ _TOOL_CATEGORIES: dict[str, ToolCategory] = {
     "grep": ToolCategory.READ,
     "read": ToolCategory.READ,
     "todo_write": ToolCategory.INTERNAL,
+    "ask_user": ToolCategory.INTERNAL,
 }
 
 

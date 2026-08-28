@@ -211,6 +211,17 @@ class ModeChangeEvent(MessageProtocol):
     time: str = ""
 
 
+class AbortLoop(BaseException):
+    """内部异常：用户取消 / 无理由拒绝 / ask_user 用户中止时跳出 agent 循环。
+
+    ``tool_result`` 为要写入 tool 消息的结果文本（区分取消与无理由拒绝等）。
+    """
+
+    def __init__(self, tool_result: str) -> None:
+        super().__init__(tool_result)
+        self.tool_result = tool_result
+
+
 @dataclass
 class NoticeEvent(MessageProtocol):
     """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。"""

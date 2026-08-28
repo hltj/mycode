@@ -107,6 +107,7 @@ from mycode.session import (
     NoticeEvent,
     AgentMessage,
     SessionHistory,
+    AbortLoop,
 )
 from mycode.mode import (
     MODE_STATE,
@@ -210,20 +211,6 @@ def replay_history(session_hist: SessionHistory) -> None:
         bus_replay.dispatch(entry)
 
 
-# ===================================================================
-# 智能体自循环
-# ===================================================================
-
-class _AbortLoop(BaseException):
-    """内部异常：用户取消 / 无理由拒绝工具调用时跳出 agent 循环。
-
-    ``tool_result`` 为要写入 tool 消息的结果文本（区分取消与无理由拒绝）。
-    """
-    def __init__(self, tool_result: str) -> None:
-        super().__init__(tool_result)
-        self.tool_result = tool_result
-
-
 def _run_tool_with_permission(
     func_name: str,
     args: dict,
@@ -235,7 +222,7 @@ def _run_tool_with_permission(
     """按模式与操作分类决定工具是否执行，返回工具结果文本。
 
     危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
-    编辑 / 取消（取消与无理由拒绝通过 ``_AbortLoop`` 抛出以跳出 agent 循环）。
+    编辑 / 取消（取消与无理由拒绝通过 ``AbortLoop`` 抛出以跳出 agent 循环）。
 
     编辑命令时：与陈旧提醒一样先分发 ``NoticeEvent``（渲染 + 持久化），
     再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能看到命令被
@@ -258,10 +245,10 @@ def _run_tool_with_permission(
     match action:
         case ConfirmAction.REJECT_NO_REASON:
             # 无理由拒绝 → 跳出 agent 循环
-            raise _AbortLoop(format_reject_no_reason())
+            raise AbortLoop(format_reject_no_reason())
         case ConfirmAction.CANCEL:
             # 取消 → 跳出 agent 循环
-            raise _AbortLoop(format_cancel())
+            raise AbortLoop(format_cancel())
         case ConfirmAction.REJECT:
             return format_reject(extra or "")
         case ConfirmAction.EDIT:
@@ -457,9 +444,10 @@ def agent_loop(
                         bus=bus,
                         messages=messages,
                     )
-            except _AbortLoop as e:
-                # 用户取消/无理由拒绝：跳出（结果文本区分两种情况）。
-                # 分发 abort 标记的 InterruptEvent，replay 时不渲染 ^C。
+            except AbortLoop as e:
+                # 用户取消/无理由拒绝/ask_user 中止：跳出 agent 循环
+                # （结果文本区分不同情况）。分发 abort 标记的 InterruptEvent，
+                # replay 时不渲染 ^C。
                 cause = e
                 interrupted_at = idx
                 tool_result = e.tool_result

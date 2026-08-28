@@ -9,6 +9,9 @@
 from mycode.tools import bash as _bash_mod  # noqa: F401, E402
 from mycode.tools.bash import bash as bash  # noqa: E402
 
+from mycode.tools import ask_user as _ask_user_mod  # noqa: F401, E402
+from mycode.tools.ask_user import ask_user as ask_user  # noqa: E402
+
 from mycode.tools import edit as _edit_mod  # noqa: F401, E402
 from mycode.tools.edit import edit as edit  # noqa: E402
 
@@ -34,6 +37,7 @@ from mycode.tools import write as _write_mod  # noqa: F401, E402
 from mycode.tools.write import write as write  # noqa: E402
 
 __all__ = [
+    "ask_user",
     "bash",
     "edit",
     "glob",

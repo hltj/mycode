@@ -10,6 +10,7 @@
 - **文件检索**：内置 `ls`、`glob`、`grep`，按行号/KiB 截断输出
 - **文件读写**：内置 `read`、`write`、`edit`、`patch`，统一走路径安全检查
 - **任务跟踪**：内置 `todo_write`，搭配陈旧度自动提醒与重放同步
+- **交互询问**：内置 `ask_user`，提供预置选项（单选/多选）与自定义输入，支持推荐选项前置
 - **模式权限**：询问/自动/全权三种模式 + 确认界面（同意/编辑/拒绝），按操作分类决定是否需人工确认
 - **双渲染风格**：default（emoji 标题 + 灰色输入区 + rich 语法高亮代码块，
   并对 `bash`/`write`/`patch`/`edit` 工具调用做特化展示）/ classic（无 emoji +
@@ -20,7 +21,6 @@
 
 近期规划：
 
-- **ask_user 工具**
 - **模型切换**
 - **AGENTS.md 支持**
 - **Skill 支持**
@@ -55,12 +55,14 @@ myc/
 │   │   ├── write.py         # 写文件
 │   │   ├── edit.py          # 字符串替换编辑
 │   │   ├── patch.py         # 应用 unified diff
+│   │   ├── ask_user.py      # 交互式询问（基于 ask_ui）
 │   │   └── todo_write.py    # 内存待办事项列表
 │   └── py.typed            # PEP 561 类型标记
 ├── tests/                  # 测试（pytest）
 │   ├── _helpers.py         # 测试辅助工具
 │   ├── conftest.py         # pytest 共享 fixtures
 │   ├── test_ask_ui.py
+│   ├── test_ask_user.py
 │   ├── test_cli.py
 │   ├── test_confirm.py
 │   ├── test_mode.py
@@ -190,6 +192,7 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 | 工具          | 用途                                                                 |
 | ------------- | -------------------------------------------------------------------- |
 | `bash`        | 执行 shell 命令；按 `BASH_TIMEOUT` 超时，命中 `BASH_DANGEROUS` 拒绝   |
+| `ask_user`    | 交互式询问：预置选项（单选/多选）+ 自定义输入，支持推荐选项前置        |
 | `ls`          | 类似 `ls -laF`：权限、大小、ISO-8601 日期、类型后缀（`/` `*` `@` `|` `=`） |
 | `glob`        | 按 glob 模式匹配路径（`fd --glob -C <wksp>` 优先，回退 `find -name`） |
 | `grep`        | 在文件/目录中按正则/字面量搜索（`rg` 优先，回退 `grep`）             |
@@ -237,7 +240,7 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 | 未知     | `bash` 且未命中以上两类                                            |
 | 写       | `write` / `edit` / `patch`                                        |
 | 读       | `ls` / `glob` / `grep` / `read`                                   |
-| 内部     | `todo_write`                                                      |
+| 内部     | `todo_write` / `ask_user`                                          |
 
 ### 各模式确认规则
 
@@ -306,6 +309,7 @@ uv run pytest
 - 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染，`test_renderer.py`）
 - 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示（`test_ask_ui.py`）
 - 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
+- 交互询问 ask_user：选项拼接、JSON 返回值与 abort 退出集成（`test_ask_user.py`）
 - 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 
