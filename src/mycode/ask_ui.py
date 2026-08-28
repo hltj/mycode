@@ -10,15 +10,16 @@
 
 返回值::
 
-    {
-        "selected": [value1, ..., valueN],
-        "input": "自定义输入字符串" | None,
-    }
+    ``AskResult`` 数据类，字段：
 
-- ``selected``：选中项的 ``value``（无 ``value`` 时回退 ``label``）；
-  单选长度 1，多选按 options 顺序列出所有勾选项。
-- ``input``：仅当选中了自定义选项时为输入框当前文本（可能为空串），
-  其余情况为 ``None``。
+    - ``selected``：选中项 ``value`` 列表（无 ``value`` 时回退 ``label``）；
+      单选长度 1，多选按 options 顺序列出所有勾选项。
+    - ``input``：仅当选中了自定义选项时为输入框当前文本（可能为空串），
+      其余情况为 ``None``。
+    - ``cursor_index``：提交时焦点所在选项索引（供下次调用维持焦点）。
+    - ``checked``：多选模式下提交时的勾选集合（供下次调用维持勾选）。
+    - ``aborted``：True 表示用户以 Ctrl-C 中止了交互；此时 ``selected``
+      为空列表、``input`` 为 ``None``。
 
 调用约定：``options`` 列表中**最后一个**元素建议为 ``is_custom=True``，
 ask_ui 自动为其渲染输入框；占位文字取该选项的 ``description``。
@@ -93,14 +94,6 @@ class AskResult:
     cursor_index: int = 0
     checked: set[int] = field(default_factory=set)
     aborted: bool = False
-
-    def to_dict(self) -> dict:
-        return {
-            "selected": list(self.selected),
-            "input": self.input,
-            "cursor_index": self.cursor_index,
-            "checked": set(self.checked),
-        }
 
 
 class _AskState:
@@ -541,8 +534,8 @@ def ask_ui(
     style=None,
     input=None,
     output=None,
-) -> dict:
-    """运行一次询问界面，返回结果字典。
+) -> AskResult:
+    """运行一次询问界面，返回 ``AskResult``。
 
     Args:
         title: 标题（可空；空时跳过对应行）。
@@ -562,18 +555,19 @@ def ask_ui(
         output: 可选，注入的 prompt_toolkit output（测试用）。
 
     Returns:
-        dict::
+        ``AskResult`` 数据类，字段：
 
-            {
-                "selected": [value, ...],
-                "input": str | None,
-                "cursor_index": int,
-                "checked": set[int],
-            }
+            - ``selected``：提交的选项 value 列表。
+            - ``input``：仅当选中自定义选项为输入框文本（可为空串），
+              否则为 ``None``。
+            - ``cursor_index``：提交时焦点所在选项索引。
+            - ``checked``：提交时的勾选集合。
+            - ``aborted``：True 表示用户以 Ctrl-C 中止；此时其余字段
+              不反映提交状态（``selected`` 为空列表、``input`` 为
+              ``None``）。调用方应以 ``aborted`` 为准判断是否取消。
 
-        Ctrl-C 终止时 ``selected`` 为空列表，``input`` 为 ``None``。
-        ``cursor_index`` / ``checked`` 反映提交时的焦点与勾选状态，可
-        在下次调用时回传给 ``ask_ui`` 维持位置。
+        其中 ``cursor_index`` / ``checked`` 反映提交时的焦点与勾选状态，
+        可在下次调用时回传给 ``ask_ui`` 维持位置。
     """
     state = _AskState(
         title=title,
@@ -584,8 +578,7 @@ def ask_ui(
         cursor_index=cursor_index,
         checked=checked,
     )
-    result = _run_ask_ui(state, input=input, output=output, style=style)
-    return result.to_dict()
+    return _run_ask_ui(state, input=input, output=output, style=style)
 
 
 __all__ = [

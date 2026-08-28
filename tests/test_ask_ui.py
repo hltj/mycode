@@ -48,7 +48,7 @@ class TestAskOption:
 # ===================================================================
 
 def _run_with_keys(seq: str, options, *, title="Q", description="", multi=False):
-    """用注入的按键序列运行 ask_ui，返回结果字典。"""
+    """用注入的按键序列运行 ask_ui，返回 ``AskResult``。"""
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
     with create_pipe_input() as inp:
@@ -73,8 +73,8 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\r", opts)
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
+        assert r.selected == ["a"]
+        assert r.input is None
 
     def test_move_and_select(self):
         """Down 到第二项后 Enter 提交。"""
@@ -83,7 +83,7 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x0e\r", opts)  # down + enter
-        assert r["selected"] == ["b"]
+        assert r.selected == ["b"]
 
     def test_move_cycle(self):
         """Down 到底后循环回第一项。"""
@@ -92,7 +92,7 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x0e\x0e\r", opts)
-        assert r["selected"] == ["a"]
+        assert r.selected == ["a"]
 
     def test_move_up_cycle(self):
         """Up 第一项循环到最后一项。"""
@@ -101,13 +101,13 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x10\r", opts)
-        assert r["selected"] == ["b"]
+        assert r.selected == ["b"]
 
     def test_value_fallback_to_label(self):
         """无 value 的选项返回值用 label。"""
         opts = [AskOption(label="OK")]
         r = _run_with_keys("\r", opts)
-        assert r["selected"] == ["OK"]
+        assert r.selected == ["OK"]
 
     def test_single_mark_prefix(self):
         """默认风格单选前缀：当前行 `❯ 🟢`，其余 `  ⚪`。"""
@@ -157,8 +157,8 @@ class TestAskUiMulti:
         # 焦点 0，空格勾选 A，向下，空格勾选 B，再向下到 C，直接 Enter 提交
         seq = " \x0e \x0e\r"
         r = _run_with_keys(seq, opts, multi=True)
-        assert r["selected"] == ["a", "b"]
-        assert r["input"] is None
+        assert r.selected == ["a", "b"]
+        assert r.input is None
 
     def test_space_uncheck(self):
         """空格切换是双向的：再次空格取消勾选。"""
@@ -168,7 +168,7 @@ class TestAskUiMulti:
         ]
         seq = " \x0e \r"  # 勾 A，移到 B，勾 B，Enter
         r = _run_with_keys(seq, opts, multi=True)
-        assert r["selected"] == ["a", "b"]
+        assert r.selected == ["a", "b"]
 
     def test_multi_empty_when_none_checked(self):
         """多选模式下没有任何勾选时，Enter 返回空列表。"""
@@ -178,9 +178,9 @@ class TestAskUiMulti:
         ]
         seq = "\x0e\r"  # 移到 B，Enter，没有 checked
         r = _run_with_keys(seq, opts, multi=True)
-        assert r["selected"] == []
-        assert r["checked"] == set()
-        assert r["input"] is None
+        assert r.selected == []
+        assert r.checked == set()
+        assert r.input is None
 
     def test_multi_cursor_mark_prefix(self):
         """多选选项行最左有当前行指示，勾选态用符号（默认风格）。"""
@@ -238,43 +238,43 @@ class TestAskUiMultiCustom:
         # 到自定义行（sel=2），未选中，直接输入 x → 应被丢弃
         seq = "\x0e\x0ex\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["selected"] == []  # 未勾选任何项，无选中
-        assert r["input"] is None  # 未选中自定义，input 为 None
-        assert r["checked"] == set()
+        assert r.selected == []  # 未勾选任何项，无选中
+        assert r.input is None  # 未选中自定义，input 为 None
+        assert r.checked == set()
 
     def test_space_activates_then_accepts_space_char(self):
         """空格选中激活自定义；激活后再按空格输入空格字符。"""
         # 到自定义（sel=2），空格激活，空格输入，abc 输入，提交
         seq = "\x0e\x0e  abc\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == " abc"  # 第一个空格激活，第二个空格是输入
-        assert r["checked"] == {2}
+        assert r.selected == ["custom"]
+        assert r.input == " abc"  # 第一个空格激活，第二个空格是输入
+        assert r.checked == {2}
 
     def test_space_type_into_custom_buffer(self):
         """激活后空格归输入框正常输入（不切换勾选）。"""
         # 到自定义，空格激活，连续输入 "hello world"
         seq = "\x0e\x0e hello world\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["input"] == "hello world"
-        assert r["checked"] == {2}
+        assert r.input == "hello world"
+        assert r.checked == {2}
 
     def test_backspace_at_start_deactivates(self):
         """输入框光标最左按 Backspace → 失活并取消选中。"""
         # 到自定义，空格激活，输入 x，光标到最左，Backspace 失活，提交
         seq = "\x0e\x0e x\x01\x7f\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["selected"] == []  # 取消勾选后无选中
-        assert r["checked"] == set()  # 已取消选中
+        assert r.selected == []  # 取消勾选后无选中
+        assert r.checked == set()  # 已取消选中
 
     def test_backspace_deactivates_then_space_selects_other(self):
         """失活后空格恢复切换普通选项的勾选。"""
         # 到自定义，空格激活，x，最左 Backspace 失活，up 到 A，空格勾选 A
         seq = "\x0e\x0e x\x01\x7f\x10\x10 \r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
-        assert r["checked"] == {0}
+        assert r.selected == ["a"]
+        assert r.input is None
+        assert r.checked == {0}
 
     def test_backspace_deactivates_then_space_reactivates_custom(self):
         """失活后空格可再次选中并激活自定义输入框，原输入保留。
@@ -286,9 +286,9 @@ class TestAskUiMultiCustom:
         # 再空格重新激活，输入 y（光标在最左，y 插到 x 前）
         seq = "\x0e\x0e x\x01\x7f y\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == "yx"  # 原 x 保留，y 插到光标（最左）前
-        assert r["checked"] == {2}
+        assert r.selected == ["custom"]
+        assert r.input == "yx"  # 原 x 保留，y 插到光标（最左）前
+        assert r.checked == {2}
 
 
 class TestAskUiCustomOption:
@@ -302,8 +302,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\x0e补充信息\r"
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == "补充信息"
+        assert r.selected == ["custom"]
+        assert r.input == "补充信息"
 
     def test_single_custom_accepts_space(self):
         """单选自定义输入框可直接输入空格（空格不被切换勾选占用）。"""
@@ -313,8 +313,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\x0ehello world\r"  # 单选：焦点在自定义行即可输入，含空格
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == "hello world"
+        assert r.selected == ["custom"]
+        assert r.input == "hello world"
 
     def test_single_custom_accepts_leading_space(self):
         """单选自定义输入框支持前导空格（焦点已在自定义行直接输入）。"""
@@ -323,8 +323,8 @@ class TestAskUiCustomOption:
         ]
         seq = " hello\r"  # 默认焦点在自定义行，输入含前导空格
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == " hello"
+        assert r.selected == ["custom"]
+        assert r.input == " hello"
 
     def test_single_normal_option_space_ignored(self):
         """单选下普通选项按空格无操作（不切换也不进输入框）。"""
@@ -334,8 +334,8 @@ class TestAskUiCustomOption:
         ]
         seq = " \r"  # 焦点在 A，按空格然后 Enter
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
+        assert r.selected == ["a"]
+        assert r.input is None
 
     def test_select_custom_empty_input(self):
         """选中自定义但未输入时，input 是空字符串（不是 None）。"""
@@ -344,8 +344,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\r"  # 默认焦点已在自定义，直接 Enter
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["custom"]
-        assert r["input"] == ""
+        assert r.selected == ["custom"]
+        assert r.input == ""
 
     def test_select_non_custom_returns_no_input(self):
         """未选自定义选项时，input 始终为 None。"""
@@ -355,8 +355,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\r"
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
+        assert r.selected == ["a"]
+        assert r.input is None
 
     def test_typing_when_not_on_custom_is_dropped(self):
         """焦点不在自定义选项时输入字符被丢弃。"""
@@ -366,8 +366,8 @@ class TestAskUiCustomOption:
         ]
         seq = "abc\r"  # 在 A 上输入字符（应被丢弃），Enter 提交
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
+        assert r.selected == ["a"]
+        assert r.input is None
 
 
 class TestAskUiAbortion:
@@ -380,8 +380,19 @@ class TestAskUiAbortion:
         ]
         seq = "\x03"
         r = _run_with_keys(seq, opts)
-        assert r["selected"] == []
-        assert r["input"] is None
+        assert r.selected == []
+        assert r.input is None
+        assert r.aborted is True
+
+    def test_enter_not_aborted(self):
+        """正常 Enter 提交时 aborted 为 False。"""
+        opts = [
+            AskOption(label="A", value="a"),
+            AskOption(label="B", value="b"),
+        ]
+        r = _run_with_keys("\r", opts)
+        assert r.selected == ["a"]
+        assert r.aborted is False
 
 
 class TestAskUiLayout:
@@ -565,8 +576,8 @@ class TestAskUiLayout:
                 options=[AskOption(label="A", value="a")],
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["a"]
-        assert r["input"] is None
+        assert r.selected == ["a"]
+        assert r.input is None
 
 
 class TestAskUiStatePersistence:
@@ -588,8 +599,8 @@ class TestAskUiStatePersistence:
                 input=inp, output=DummyOutput(),
             )
         # 初始焦点在 C，Enter 提交 C
-        assert r["selected"] == ["c"]
-        assert r["cursor_index"] == 2
+        assert r.selected == ["c"]
+        assert r.cursor_index == 2
 
     def test_cursor_index_returns_at_submit(self):
         """返回 cursor_index 反映提交时的焦点位置。"""
@@ -605,8 +616,8 @@ class TestAskUiStatePersistence:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["c"]
-        assert r["cursor_index"] == 2
+        assert r.selected == ["c"]
+        assert r.cursor_index == 2
 
     def test_cursor_index_passes_through_for_next_call(self):
         """上一次 cursor_index 作为下一次初始焦点（ESC 往返场景）。"""
@@ -623,7 +634,7 @@ class TestAskUiStatePersistence:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert r1["cursor_index"] == 2
+        assert r1.cursor_index == 2
 
         # 第二次：传入上次的 cursor_index，再直接 Enter
         with create_pipe_input() as inp:
@@ -634,11 +645,11 @@ class TestAskUiStatePersistence:
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                cursor_index=r1["cursor_index"],
+                cursor_index=r1.cursor_index,
                 input=inp, output=DummyOutput(),
             )
         # 焦点仍是 C，提交 C
-        assert r2["selected"] == ["c"]
+        assert r2.selected == ["c"]
 
     def test_cursor_index_out_of_range_falls_back_to_zero(self):
         """cursor_index 越界时回退到 0（防御性）。"""
@@ -654,8 +665,8 @@ class TestAskUiStatePersistence:
                 cursor_index=10,  # 越界
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["a"]  # 回退到第一项
-        assert r["cursor_index"] == 0
+        assert r.selected == ["a"]  # 回退到第一项
+        assert r.cursor_index == 0
 
     def test_checked_init_multi(self):
         """多选模式 initial checked 集合生效。"""
@@ -674,8 +685,8 @@ class TestAskUiStatePersistence:
                 input=inp, output=DummyOutput(),
             )
         # Enter 提交所有 checked
-        assert r["selected"] == ["a", "c"]
-        assert r["checked"] == {0, 2}
+        assert r.selected == ["a", "c"]
+        assert r.checked == {0, 2}
 
     def test_checked_returns_at_submit_multi(self):
         """返回 checked 反映提交时的勾选集合。"""
@@ -693,8 +704,8 @@ class TestAskUiStatePersistence:
                 multi=True,
                 input=inp, output=DummyOutput(),
             )
-        assert r["checked"] == {0, 1}
-        assert r["selected"] == ["a", "b"]
+        assert r.checked == {0, 1}
+        assert r.selected == ["a", "b"]
 
     def test_multi_cursor_index_independent_of_checked(self):
         """多选提交时 cursor_index（焦点位置）与 checked（勾选）相互独立。
@@ -717,9 +728,9 @@ class TestAskUiStatePersistence:
                 input=inp, output=DummyOutput(),
             )
         # checked 独立于焦点：勾了 A、B，焦点在 C
-        assert r["checked"] == {0, 1}
-        assert r["selected"] == ["a", "b"]
-        assert r["cursor_index"] == 2  # 焦点位置与勾选集合无关
+        assert r.checked == {0, 1}
+        assert r.selected == ["a", "b"]
+        assert r.cursor_index == 2  # 焦点位置与勾选集合无关
 
     def test_multi_cursor_and_checked_pass_through_next_call(self):
         """多选时上一次 cursor_index / checked 一起作为下一次的初始状态。
@@ -741,8 +752,8 @@ class TestAskUiStatePersistence:
                 multi=True,
                 input=inp, output=DummyOutput(),
             )
-        assert first["checked"] == {0, 1}
-        assert first["cursor_index"] == 2
+        assert first.checked == {0, 1}
+        assert first.cursor_index == 2
 
         # 第二次：把 checked 和 cursor_index 一起回传。
         # 预勾 A、B 且焦点在 C；用户在 C 按空格（C 未勾 → 勾上 C）。
@@ -755,15 +766,15 @@ class TestAskUiStatePersistence:
                     AskOption(label="C", value="c"),
                 ],
                 multi=True,
-                cursor_index=first["cursor_index"],
-                checked=set(first["checked"]),
+                cursor_index=first.cursor_index,
+                checked=set(first.checked),
                 input=inp, output=DummyOutput(),
             )
         # 初始状态：checked={0,1}，cursor=2（C 行）
         # 用户按键 " "（空格）在 C 行：C 未勾，空格勾上 C → checked={0,1,2}
         # Enter → selected=[a,b,c]
-        assert r2["checked"] == {0, 1, 2}
-        assert r2["selected"] == ["a", "b", "c"]
+        assert r2.checked == {0, 1, 2}
+        assert r2.selected == ["a", "b", "c"]
 
 
 class TestAskUiEndToEndScenarios:
@@ -785,9 +796,9 @@ class TestAskUiEndToEndScenarios:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["backup_delete"]
-        assert r["input"] is None
-        assert r["cursor_index"] == 0
+        assert r.selected == ["backup_delete"]
+        assert r.input is None
+        assert r.cursor_index == 0
 
     def test_single_each_option_has_description(self):
         """单选：每个选项带 description，移到第二项提交。"""
@@ -805,8 +816,8 @@ class TestAskUiEndToEndScenarios:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["integration"]
-        assert r["cursor_index"] == 1
+        assert r.selected == ["integration"]
+        assert r.cursor_index == 1
 
     def test_multi_with_title_description_and_option_descriptions(self):
         """多选：标题 + 描述 + 每个选项带 description。
@@ -831,8 +842,8 @@ class TestAskUiEndToEndScenarios:
                 input=inp, output=DummyOutput(),
             )
         # selected 按 options 顺序列出勾选项
-        assert r["selected"] == ["fe", "be", "db"]
-        assert r["checked"] == {0, 1, 2}
+        assert r.selected == ["fe", "be", "db"]
+        assert r.checked == {0, 1, 2}
 
     def test_confirm_style_multiple_normal_plus_custom(self):
         """confirm 风格：多个普通选项 + 末尾自定义选项。
@@ -855,8 +866,8 @@ class TestAskUiEndToEndScenarios:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert r["selected"] == ["reject"]
-        assert r["input"] == "想改"
+        assert r.selected == ["reject"]
+        assert r.input == "想改"
 
     def test_multi_checked_passes_through_real_call(self):
         """多选第一次调用拿到 checked，传给第二次调用验证预勾选生效。
@@ -880,10 +891,10 @@ class TestAskUiEndToEndScenarios:
                 ],
                 input=inp, output=DummyOutput(),
             )
-        assert first["checked"] == {0, 1}
-        assert first["selected"] == ["a", "b"]
+        assert first.checked == {0, 1}
+        assert first.selected == ["a", "b"]
 
-        # 第二次：传入 first["checked"] 作为初始勾选，移到 C 空格取消 A 与 B
+        # 第二次：传入 first.checked 作为初始勾选，移到 C 空格取消 A 与 B
         # 再 ↓ 到 C，Enter 提交（全取消后 selected 应为空）
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \x0e\r")  # 焦点 0：取消 A；↓ 到 1：取消 B；↓ 到 2：Enter
@@ -895,13 +906,13 @@ class TestAskUiEndToEndScenarios:
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                checked=set(first["checked"]),
+                checked=set(first.checked),
                 input=inp, output=DummyOutput(),
             )
         # 关键：第二次的初始 checked 应是 {0, 1}；用户取消 A、B 后，
         # checked 与 selected 都为空
-        assert second["checked"] == set()
-        assert second["selected"] == []
+        assert second.checked == set()
+        assert second.selected == []
 
 
 class TestAskUiApplication:

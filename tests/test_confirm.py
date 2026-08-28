@@ -34,7 +34,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                                 input=None,
-                            ).to_dict())
+                            ))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.APPROVE
@@ -46,7 +46,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="不想执行",
-                            ).to_dict())
+                            ))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT
@@ -58,7 +58,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="   ",
-                            ).to_dict())
+                            ))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT_NO_REASON
@@ -70,7 +70,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="",
-                            ).to_dict())
+                            ))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT_NO_REASON
@@ -81,7 +81,7 @@ class TestConfirmToolMapping:
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
                             lambda *a, **kw: AskResult(
                                 selected=[], input=None, aborted=True,
-                            ).to_dict())
+                            ))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.CANCEL
@@ -93,7 +93,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                                 input=None,
-                            ).to_dict())
+                            ))
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
                             lambda edit_buffer, input=None, output=None, style=None:
                                 confirm_mod._EditOutcome(action="finish", text="echo edited"))
@@ -108,7 +108,7 @@ class TestConfirmToolMapping:
                             lambda *a, **kw: AskResult(
                                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                                 input=None,
-                            ).to_dict())
+                            ))
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
                             lambda edit_buffer, input=None, output=None, style=None:
                                 confirm_mod._EditOutcome(action="abort"))
@@ -128,11 +128,11 @@ class TestConfirmToolMapping:
                 return AskResult(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
-                ).to_dict()
+                )
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
-            ).to_dict()
+            )
 
         edit_calls = {"count": 0}
 
@@ -160,11 +160,11 @@ class TestConfirmToolMapping:
                 return AskResult(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
-                ).to_dict()
+                )
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            ).to_dict()
+            )
 
         edit_calls = {"count": 0}
 
@@ -202,13 +202,13 @@ class TestConfirmToolMapping:
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
                     cursor_index=1,  # 焦点在「编辑」上
-                ).to_dict()
+                )
             # 第二次：直接 approve 退出循环
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
                 cursor_index=0,
-            ).to_dict()
+            )
 
         # 编辑视图：直接 ESC 返回
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
@@ -248,13 +248,13 @@ class TestConfirmToolMapping:
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
                     cursor_index=1,
-                ).to_dict()
+                )
             # 第二次：直接 approve 退出循环（验证 buffer 仍含先前输入）
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
                 cursor_index=0,
-            ).to_dict()
+            )
 
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
@@ -280,7 +280,7 @@ class TestConfirmToolMapping:
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            ).to_dict()
+            )
 
         # 第一次进入：追加 " -x" 后 ESC 返回
         # 第二次进入：buffer 仍含 " -x"，再追加 "Y"，提交
@@ -326,7 +326,7 @@ class TestConfirmToolMapping:
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            ).to_dict()
+            )
 
         # 第一次编辑：ESC 返回（→ 重新询问）
         # 第二次编辑：直接提交，避免无谓循环
@@ -366,11 +366,11 @@ class TestConfirmToolMapping:
                 return AskResult(
                     selected=[confirm_mod.ConfirmAction.REJECT.value],
                     input="想改理由",
-                ).to_dict()
+                )
             return AskResult(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
-            ).to_dict()
+            )
 
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
         action, extra = confirm_mod.confirm_tool(

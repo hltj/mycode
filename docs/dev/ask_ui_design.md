@@ -31,14 +31,14 @@ class AskOption:
 
 ## 返回值
 
-```python
-{"selected": [value...], "input": str|None, "cursor_index": int, "checked": set[int]}
-```
+调用方拿到 ``AskResult`` 数据类（``selected`` / ``input`` / ``cursor_index`` /
+``checked`` / ``aborted`` 五个字段）：
 
-- `selected`：选中项 `value` 列表（无 `value` 回退 `label`）；单选长度 1，多选按 options 顺序列出勾选项。
-- `input`：仅当选中自定义选项时为输入框当前文本（可能为空串），未选则为 `None`。
-- `cursor_index`：提交时焦点所在选项索引（供下次调用维持焦点位置）。
-- `checked`：多选模式下提交时的勾选集合（供下次调用维持勾选）。
+- ``selected``：选中项 `value` 列表（无 `value` 回退 `label`）；单选长度 1，多选按 options 顺序列出勾选项。
+- ``input``：仅当选中自定义选项时为输入框当前文本（可能为空串），未选则为 `None`。
+- ``cursor_index``：提交时焦点所在选项索引（供下次调用维持焦点位置）。
+- ``checked``：多选模式下提交时的勾选集合（供下次调用维持勾选）。
+- ``aborted``：`True` 表示用户以 Ctrl-C 终止交互；此时 `selected` 为空列表、`input` 为 `None`。调用方应**优先以 `aborted` 判断是否取消**，而不是依据 `selected` 是否为空（confirm 兼容两种方式）。
 
 ## 焦点控制
 

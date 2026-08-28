@@ -199,11 +199,15 @@ def confirm_tool(
             output=output,
         )
         # 维持 ask 状态：把提交时的焦点 / 勾选记下，下次调用回传
-        cursor_index = int(result["cursor_index"])
-        checked = set(result["checked"])
+        cursor_index = result.cursor_index
+        checked = set(result.checked)
 
-        selected = list(result["selected"])
-        custom_input = result["input"]
+        # 用户以 Ctrl-C 中止：取消
+        if result.aborted:
+            return (ConfirmAction.CANCEL, None)
+
+        selected = list(result.selected)
+        custom_input = result.input
 
         # 自定义输入（拒绝）分支：无理由 vs 有理由
         if ConfirmAction.REJECT.value in selected:
@@ -230,7 +234,7 @@ def confirm_tool(
             # action == "back"：重新询问，edit_buffer / cursor_index / checked 保留
             continue
 
-        # abort / 空选择 / Ctrl-C → 取消
+        # 空选择 / 其他未命中已知选项 → 取消
         return (ConfirmAction.CANCEL, None)
 
 

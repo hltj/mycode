@@ -161,7 +161,7 @@ action, extra = confirm_tool(func_name, category, command)
 2. 解析 `ask_ui` 返回值，映射到 `ConfirmAction`。
 3. 编辑动作（仅 bash 工具）触发独立的多行编辑视图 `_run_edit_view`（`Buffer(multiline=True)`，`Alt+Enter` 提交、`ESC` 返回确认菜单、`Ctrl-C` 取消），与确认菜单彼此独立 `app.run()`；`confirm_tool` 在收到 `"back"` 时循环重跑 `ask_ui`。
 
-**未选中拒绝但 abort 时**返回 `CANCEL`；选中拒绝时依输入是否为空区分 `REJECT` / `REJECT_NO_REASON`。
+**`ask_ui` 返回 `AskResult` 且 `aborted=True` 时**（Ctrl-C 中止）直接返回 `CANCEL`；选中拒绝时根据输入是否为空区分 `REJECT` / `REJECT_NO_REASON`。
 
 ### 动作映射
 
@@ -173,7 +173,7 @@ action, extra = confirm_tool(func_name, category, command)
 | `edit` | `None` | `EDIT`（`_run_edit_view`） |
 | `reject` | 非空 / 有理由 | `REJECT` |
 | `reject` | `""` / 空白 | `REJECT_NO_REASON` |
-| abort / 空 selected | — | `CANCEL` |
+| 空（`aborted=True`，Ctrl-C 中止） | `None` | `CANCEL` |
 
 确认界面与编辑视图都允许注入 `input` / `output`（测试中驱动按键序列）。
 
