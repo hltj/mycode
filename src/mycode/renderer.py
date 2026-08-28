@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 渲染器（处理器）模块：按渲染风格（default / classic）定义所有消息与
 事件的终端展示方式。公共渲染流程在 _Renderer 基类复用，风格差异由

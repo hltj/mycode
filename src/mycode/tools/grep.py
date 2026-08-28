@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """grep 工具：在文件中搜索模式。优先 rg，无 rg 用 grep。"""
 import shutil
 import subprocess

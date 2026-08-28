@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 输出截断工具。
 

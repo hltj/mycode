@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """write 工具：写入文件（覆盖式）。"""
 
 import os

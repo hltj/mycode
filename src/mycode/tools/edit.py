@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """edit 工具：在文件中替换文本。"""
 
 import os

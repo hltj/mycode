@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """safe_path 模块的单元测试。"""
 import os
 from pathlib import Path

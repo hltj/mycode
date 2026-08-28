@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 元编程工具定义模块，以函数式风格编写，直接返回 OpenAI SDK 原生类型。
 使用 typing.Annotated 为参数提供可选描述。

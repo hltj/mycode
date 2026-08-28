@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """read 工具：读取文件内容（cat -n 风格，带行号）。"""
 import os
 from typing import Annotated

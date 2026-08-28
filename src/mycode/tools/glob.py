@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """glob 工具：按模式匹配文件路径，优先 fd，无 fd 用 find。"""
 import shutil
 import subprocess

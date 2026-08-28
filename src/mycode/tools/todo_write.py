@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """todo_write 工具：在内存中维护待办列表，不做持久化。"""
 
 import json

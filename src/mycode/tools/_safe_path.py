@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 路径安全检查模块。
 

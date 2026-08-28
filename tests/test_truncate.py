@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """cap_lines 的单元测试：行数 + KiB 联合截断，字节流驱动逐行扫描。"""
 import pytest
 

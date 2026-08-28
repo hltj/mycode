@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """ls 工具：列出目录内容（自实现 ls -laF 风格）。"""
 import datetime
 import os

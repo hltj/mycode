@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """patch 工具：在目录中应用 unified diff。"""
 import os
 import re
