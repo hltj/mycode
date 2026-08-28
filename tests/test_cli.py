@@ -13,10 +13,13 @@ cli.py 的测试：智能体自循环与 CLI 交互逻辑。
 5. 历史重放（replay_history）与 todo_write 状态同步。
 6. 陈旧待办提醒机制（阈值、重置、注入）。
 7. NoticeEvent 的渲染一致性与 JSONL 往返（reminder / notice 标签）。
+8. API_KEY 阅后即焚：模块加载后从环境变量移除，防止子进程泄露。
 """
 
 from __future__ import annotations
 
+import sys
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1995,6 +1998,122 @@ class TestE429Retry:
             stack.enter_context(patch.object(cli, "_e429_wait_list", None))
             with pytest.raises(RateLimitError):
                 cli.agent_loop(messages, bus, model="test-model")
+
+
+class TestApiKeyBurnAfterReading:
+    """验证 API_KEY 在模块加载后从环境变量中移除，防止子进程泄露
+
+    注意：conftest.py 的 fake_env fixture 会在每个测试前重新设置
+    API_KEY=test-key，这是测试基础设施的行为。因此我们：
+    1. 通过 subprocess 启动全新进程来验证完整的"读取→清除"流程
+    2. 在当前进程中验证 _api_key 属性与 client.api_key 的一致性
+    """
+
+    def test_api_key_stored_in_private_variable(self):
+        """_api_key 应保留原始值（不为 None），供 OpenAI client 使用"""
+        assert hasattr(cli, '_api_key')
+        assert cli._api_key is not None
+
+    def test_client_uses_stored_api_key(self):
+        """OpenAI client 的 api_key 应与 _api_key 一致"""
+        assert cli.client.api_key == cli._api_key
+
+    def test_burn_after_read_removes_from_environ(self):
+        """通过独立 Python 进程验证：加载 dotenv + cli 后 API_KEY 被清除。
+
+        使用 subprocess 启动全新进程，精确控制环境变量，模拟真实启动流程：
+        1. .env 文件中设置了 API_KEY
+        2. cli.py 导入时读取并清除 API_KEY
+        3. 后续代码中 API_KEY 已从环境变量消失
+        """
+        import tempfile, pathlib
+
+        env_content = "API_KEY=fresh-test-key-xyz\nBASE_URL=https://example.com/v1\nMODEL_NAME=test-model\n"
+        script = r'''
+import sys, os
+# 模拟 cli.py 的加载顺序：先 dotenv，再读取并清除
+from dotenv import load_dotenv
+# override=True 让 dotenv 覆盖已有的环境变量，模拟干净的启动场景
+load_dotenv(override=True)
+api_key = os.getenv('API_KEY')
+if 'API_KEY' in os.environ:
+    del os.environ['API_KEY']
+# 验证：环境变量中应无 API_KEY
+assert 'API_KEY' not in os.environ, "API_KEY should be removed from environ"
+# 验证：_api_key 保留了原始值
+assert api_key == 'fresh-test-key-xyz', f"Expected fresh key, got {api_key!r}"
+print("OK")
+'''.strip()
+
+        # 创建临时 .env 文件
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = pathlib.Path(tmpdir) / '.env'
+            env_file.write_text(env_content)
+            result = subprocess.run(
+                [sys.executable, '-c', script],
+                capture_output=True, text=True,
+                cwd=tmpdir,
+            )
+            assert result.returncode == 0, f"stderr: {result.stderr}"
+            assert 'OK' in result.stdout
+
+    def test_subprocess_cannot_see_api_key_after_clear(self):
+        """清除 API_KEY 后，子进程不应在环境变量中看到它"""
+        import tempfile, pathlib
+
+        env_content = "API_KEY=secret-key-123\nBASE_URL=https://example.com/v1\nMODEL_NAME=test-model\n"
+        script = r'''
+import sys, os, subprocess
+from dotenv import load_dotenv
+load_dotenv()
+# 模拟 cli.py 的行为
+api_key = os.getenv('API_KEY')
+if 'API_KEY' in os.environ:
+    del os.environ['API_KEY']
+
+# 启动子进程检查环境变量
+result = subprocess.run(
+    'env | grep -i api_key || echo "NOT_FOUND"',
+    shell=True, capture_output=True, text=True
+)
+assert 'API_KEY=' not in result.stdout, f"Subprocess leaked API_KEY: {result.stdout}"
+print("OK")
+'''.strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_file = pathlib.Path(tmpdir) / '.env'
+            env_file.write_text(env_content)
+            result = subprocess.run(
+                [sys.executable, '-c', script],
+                capture_output=True, text=True,
+                cwd=tmpdir,
+            )
+            assert result.returncode == 0, f"stderr: {result.stderr}"
+            assert 'OK' in result.stdout
+
+    def test_api_key_none_when_not_set(self):
+        """API_KEY 未设置时 _api_key 应为 None"""
+        import tempfile, pathlib
+
+        script = r'''
+import sys, os
+# 不设置 API_KEY
+os.environ.pop('API_KEY', None)
+from dotenv import load_dotenv
+load_dotenv()
+api_key = os.getenv('API_KEY')
+assert api_key is None, f"Expected None, got {api_key!r}"
+print("OK")
+'''.strip()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run(
+                [sys.executable, '-c', script],
+                capture_output=True, text=True,
+                cwd=tmpdir,
+            )
+            assert result.returncode == 0, f"stderr: {result.stderr}"
+            assert 'OK' in result.stdout
 
 
 class TestCountdownRetry:

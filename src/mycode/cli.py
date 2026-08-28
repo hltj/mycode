@@ -87,8 +87,13 @@ _e429_wait_list: list[int] | None = _parse_e429_wait_seconds(os.getenv('E429_WAI
 # ---------------------------------------------------------------------------
 from mycode.tools_registry import ToolsRegistry
 
+_api_key = os.getenv('API_KEY')
+# 阅后即焚：从环境变量中移除 API_KEY，防止子进程（如 bash 工具）泄露
+if 'API_KEY' in os.environ:
+    del os.environ['API_KEY']
+
 client = OpenAI(
-    api_key=os.getenv('API_KEY'),
+    api_key=_api_key,
     base_url=os.getenv('BASE_URL'),
 )
 
