@@ -739,13 +739,45 @@ def parse_args():
 # main
 # ===================================================================
 
-from mycode.session import find_latest_session_file, get_session_file
+from mycode.session import find_latest_session_file, get_session_file, is_dir_trusted, trust_dir
+
+
+def _check_dir_trust() -> None:
+    """确认当前目录是否可信。未信任时弹出 ask_ui 询问，选择不信任或 Ctrl-C 则 sys.exit(1)。"""
+    current_dir = os.getcwd()
+    if is_dir_trusted(current_dir):
+        return
+
+    from mycode.ask_ui import ask_ui, AskOption
+
+    result = ask_ui(
+        title="是否信任当前目录",
+        description=f"当前目录是 `{current_dir}`。\nmycode 会读取、分析、修改当前目录中的文件，并可能会运行其中的代码。为避免不可信内容的安全风险，请先确认目录中的内容来源是否可信。",
+        options=[
+            AskOption(label="不信任", value="untrust", description="退出"),
+            AskOption(label="信任", value="trust", description="继续"),
+        ],
+        style=_get_renderer().create_prompt_style(),
+    )
+
+    if result.aborted:
+        sys.exit(1)
+
+    selected = result.selected[0] if result.selected else ""
+    if selected == "trust":
+        trust_dir(current_dir)
+    else:
+        sys.exit(1)
+
 
 def main():
     args = parse_args()
 
     # 设置全局渲染风格
     set_render_style(args.style)
+
+    # 目录信任确认
+    _check_dir_trust()
 
     model = os.getenv('MODEL_NAME') or ''
 

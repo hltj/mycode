@@ -98,6 +98,46 @@ def get_session_file(session_id_: str) -> Path | None:
     return target if target.exists() else None
 
 
+def _get_dirs_file(dir_path: str) -> Path:
+    """获取目录信任记录文件路径。
+
+    返回 SESSIONS_DIR / sanitized_cwd / ".dirs"。
+    """
+    sanitized_cwd = sanitize_path(dir_path)
+    return SESSIONS_DIR / sanitized_cwd / ".dirs"
+
+
+def is_dir_trusted(dir_path: str) -> bool:
+    """检查指定目录是否已被信任。
+
+    在 .dirs 文件中查找该目录的绝对路径。
+    """
+    dirs_file = _get_dirs_file(dir_path)
+    if not dirs_file.exists():
+        return False
+    abs_path = os.path.abspath(dir_path)
+    with open(dirs_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.strip() == abs_path:
+                return True
+    return False
+
+
+def trust_dir(dir_path: str) -> None:
+    """将目录标记为已信任。
+
+    将目录的绝对路径追加到 .dirs 文件，每行一个。
+    """
+    dirs_file = _get_dirs_file(dir_path)
+    dirs_file.parent.mkdir(parents=True, exist_ok=True)
+    abs_path = os.path.abspath(dir_path)
+    # 避免重复写入
+    if is_dir_trusted(dir_path):
+        return
+    with open(dirs_file, 'a', encoding='utf-8') as f:
+        f.write(abs_path + '\n')
+
+
 # ===================================================================
 # Protocol & ADT —— 消息/动作类型
 # ===================================================================

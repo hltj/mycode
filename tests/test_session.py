@@ -19,6 +19,8 @@ from mycode.session import (
     _msg_to_dict,
     get_session_file,
     find_latest_session_file,
+    is_dir_trusted,
+    trust_dir,
 )
 
 from openai.types.chat import (
@@ -938,3 +940,53 @@ class TestFindLatestSessionFile:
         with patch('mycode.session.SESSIONS_DIR', fake_sessions):
             result = find_latest_session_file()
             assert result is None
+
+
+class TestDirTrust:
+    def test_untrusted_by_default(self, temp_home, tmp_path):
+        """新目录默认未被信任"""
+        sessions_dir = temp_home / "sessions"
+        test_dir = str(tmp_path / "test_project")
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            assert not is_dir_trusted(test_dir)
+
+    def test_trust_then_trusted(self, temp_home, tmp_path):
+        """trust_dir 后 is_dir_trusted 返回 True"""
+        sessions_dir = temp_home / "sessions"
+        test_dir = str(tmp_path / "test_project")
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            trust_dir(test_dir)
+            assert is_dir_trusted(test_dir)
+
+    def test_idempotent(self, temp_home, tmp_path):
+        """重复信任不会写入多次"""
+        sessions_dir = temp_home / "sessions"
+        test_dir = str(tmp_path / "test_project")
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            trust_dir(test_dir)
+            trust_dir(test_dir)
+            # 读取 .dirs 文件，应该只有一行
+            dirs_file = sessions_dir / sanitize_path(test_dir) / ".dirs"
+            lines = [l for l in dirs_file.read_text().strip().split('\n') if l]
+            assert len(lines) == 1
+
+    def test_different_dirs_independent(self, temp_home, tmp_path):
+        """不同目录的信任状态相互独立"""
+        sessions_dir = temp_home / "sessions"
+        dir_a = str(tmp_path / "project_a")
+        dir_b = str(tmp_path / "project_b")
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            trust_dir(dir_a)
+            assert is_dir_trusted(dir_a)
+            assert not is_dir_trusted(dir_b)
+
+    def test_trust_dir_creates_parent_dirs(self, temp_home, tmp_path):
+        """trust_dir 会自动创建父目录"""
+        sessions_dir = temp_home / "sessions"
+        test_dir = str(tmp_path / "new_project")
+        # sessions_dir 下对应目录不存在
+        sanitized = sanitize_path(test_dir)
+        assert not (sessions_dir / sanitized).exists()
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            trust_dir(test_dir)
+        assert (sessions_dir / sanitized).exists()

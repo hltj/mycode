@@ -6,7 +6,7 @@ mycode 采用 **事件驱动 + 观察者模式** 的架构：所有交互动作�
 
 核心文件：
 - `session.py` — ADT 类型定义、MessageProtocol、SessionHistory（持久化）
-- `myc.py` — AgentEventBus、渲染处理器、主循环
+- `cli.py` — AgentEventBus、渲染处理器、主循环
 
 ---
 
@@ -101,67 +101,7 @@ for entry in session_hist.entries:
 
 ---
 
-## 三、SessionHistory
-
-会话历史记录管理器，负责**文件持久化 + 内存存储**。
-
-### 核心接口
-
-```python
-class SessionHistory:
-    def inject_meta(self, msg: AgentMessage) -> None
-    def append(self, msg: AgentMessage) -> None
-    def get_messages(self) -> List[ChatCompletionMessageParam]
-```
-
-- `inject_meta()` — 注入元数据（id/parent_id/time）
-- `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
-- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception）
-
-### 内存结构
-
-`entries: List[AgentMessage]` 存储所有记录，**包含 SessionRecord**。
-
-```
-entries[0] = SessionRecord     # 会话初始化
-entries[1] = UserMessage       # 用户输入
-entries[2] = AssistantMessage  # AI 回复
-entries[3] = ToolCallEvent     # 工具调用
-entries[4] = ToolResultEvent   # 工具结果
-...
-```
-
-### JSONL 文件格式
-
-每行一条 JSON 记录，结构统一：
-
-```json
-{"time":"...","type":"session","id":"a1b2c3d4","parent_id":null,"model":"gpt-4o","session":{"id":"full-uuid...","cwd":"/path"}}
-{"time":"...","type":"message","id":"e5f6g7h8","parent_id":"a1b2c3d4","model":"gpt-4o","message":{"role":"user","content":"hello"}}
-{"time":"...","type":"interrupt","id":"...","parent_id":"...","model":"gpt-4o","interrupt":{"abort":true}}
-{"time":"...","type":"notice","id":"...","parent_id":"...","model":"gpt-4o","notice":{"content":"...","tag_name":"notice","display_content":"...","additional_content":"..."}}
-{"time":"...","type":"tool_result","id":"...","parent_id":"...","model":"gpt-4o","tool_result":{"tool_call_id":"...","content":"...","tool_name":"bash"}}
-```
-
-**序列化规范**：
-
-1. 只有 `MessageProtocol` 定义的公共字段（`time` / `type` / `id` /
-   `parent_id` / `model` / `mode`）平铺在 JSON 顶层；
-2. 每个事件**自己的扩展字段**聚合在 JSON 中 `type` 值对应的 key 下
-   （`session` / `message` / `tool_call` / `interrupt` / `exception` /
-   `notice` / `tool_result`），即扩展字段的 key 名与 `type` 值一致；
-3. `parent_id` 链构成完整的消息树。
-
-### ID 生成策略
-
-1. 生成完整 UUID
-2. 取前 8 位作为短 ID
-3. 与内存中所有已有 id 比对，不冲突则用短 ID，冲突则用完整 36 位 UUID
-4. 比对范围仅为**内存 entries**，不读文件（load 时 entries 已完整恢复）
-
----
-
-## 四、渲染处理器（渲染器架构）
+## 三、渲染处理器（渲染器架构）
 
 渲染按渲染风格（`--style`，默认 `default`）拆分为不同的渲染器（处理器），
 公共渲染流程在基类复用，风格差异由子类覆写。
@@ -234,7 +174,7 @@ def render_replay(msg: AgentMessage) -> None:
 
 ---
 
-## 五、持久化处理器
+## 四、持久化处理器
 
 ```python
 def make_persist_handler(session_hist: SessionHistory) -> Handler:
@@ -245,13 +185,13 @@ def make_persist_handler(session_hist: SessionHistory) -> Handler:
 
 极简实现——AgentEventBus dispatch 已注入元数据，处理器只需调用 append。
 
+关于 SessionHistory 参见 [会话管理设计](./session_design.md)。
+
 ---
 
-## 六、开发规范
+## 五、开发规范
 
 1. **新增事件类型**：在 `session.py` 中添加新的 `@dataclass` 继承 `MessageProtocol`，放入 `AgentMessage` 联合类型中适当位置（SessionRecord 始终第一，ExceptionEvent 始终最后）
 2. **match-case 顺序**：必须与联合类型顺序一致，末尾必须加 `case _ as unreachable: assert_never(unreachable)`
 3. **构造消息**：只传业务字段 + model，id/parent_id/time 由 bus dispatch 自动注入
-4. **直接调用 append**（如测试场景）：必须先手动调用 `inject_meta()`
-5. **entries 包含 SessionRecord 等全部类型**：过滤消息时 `UserMessage` / `AssistantMessage` 直接取 `message`，`ToolResultEvent` / `NoticeEvent` 则分别经 `to_tool_msg()` / `to_user_msg()` 转成 OpenAI 消息（见 `get_messages`）
-6. **render_replay 委托原则**：若某事件在 render_replay 中的行为与 `_render_common` 完全相同，则不在 render_replay 中单独处理，统一交由 `_render_common` 处理
+4. **render_replay 委托原则**：若某事件在 render_replay 中的行为与 `_render_common` 完全相同，则不在 render_replay 中单独处理，统一交由 `_render_common` 处理
