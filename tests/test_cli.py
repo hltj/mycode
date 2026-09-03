@@ -7,7 +7,8 @@ cli.py 的测试：智能体自循环与 CLI 交互逻辑。
    - 每个 tool_call 都必须对应一个 tool 消息，避免供应商因
      "tool call result does not follow tool call" 校验失败（HTTP 400）；
    - 工具正常 / KeyboardInterrupt / 普通异常 / eval 参数失败的各分支。
-2. 用户输入读取（_prompt_user_input）：输入中 Ctrl-C 静默继续、Ctrl-D 退出。
+2. 用户输入读取（_prompt_user_input）：输入中 Ctrl-C（有内容时清空继续、
+   无内容时等同 Ctrl-D 退出）、Ctrl-D 退出。
 3. prompt_toolkit 会话创建（_create_prompt_session）：按渲染风格配置样式。
 4. 命令行参数解析（parse_args）：-s/--style 默认值等。
 5. 历史重放（replay_history）与 todo_write 状态同步。
@@ -674,7 +675,11 @@ class TestAgentLoopReturnsInterrupted:
 
 
 class TestPromptUserInput:
-    """cli._prompt_user_input：Ctrl-C 发生在输入过程中的静默处理。"""
+    """cli._prompt_user_input：Ctrl-C 发生在输入过程中的行为。
+
+    - 输入框有内容：放弃本次输入、静默返回 None；
+    - 输入框无内容：与 Ctrl-D 一致，向上抛出 EOFError 由外层退出程序。
+    """
 
     def _capture(self, fn):
         import io
@@ -684,21 +689,36 @@ class TestPromptUserInput:
             fn()
         return buf.getvalue()
 
+    def _session_with_prompt(self, buffer_text=""):
+        """构造带 default_buffer 的 session（buffer.text 可控）。"""
+        session = MagicMock()
+        buffer = MagicMock()
+        buffer.text = buffer_text
+        session.default_buffer = buffer
+        return session
+
     def test_returns_input_on_success(self):
         """正常输入：返回输入文本。"""
         session = MagicMock()
         session.prompt = MagicMock(return_value="hello")
         assert cli._prompt_user_input(session) == "hello"
 
-    def test_keyboard_interrupt_during_input_returns_none_silently(self):
-        """输入过程中 Ctrl-C：返回 None 且不输出任何内容（留白由布局预留）。"""
-        session = MagicMock()
+    def test_keyboard_interrupt_with_empty_input_raises_eof(self):
+        """输入框无内容时 Ctrl-C：与 Ctrl-D 一致，向上抛出 EOFError。"""
+        session = self._session_with_prompt(buffer_text="")
+        session.prompt = MagicMock(side_effect=KeyboardInterrupt)
+        with pytest.raises(EOFError):
+            cli._prompt_user_input(session)
+
+    def test_keyboard_interrupt_with_text_clears_and_returns_none(self):
+        """输入框有内容时 Ctrl-C：放弃本次输入、返回 None 继续下一轮。"""
+        session = self._session_with_prompt(buffer_text="hello world")
         session.prompt = MagicMock(side_effect=KeyboardInterrupt)
         holder: dict = {}
         out = self._capture(
             lambda: holder.update(result=cli._prompt_user_input(session)))
         assert holder["result"] is None
-        # PromptSession 未在真实终端运行，_prompt_user_input 不输出任何内容
+        # 不输出任何内容（留白由布局预留）
         assert out == ""
 
     def test_returns_input_classic_no_blank(self, monkeypatch):

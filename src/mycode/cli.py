@@ -627,9 +627,12 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
     default 风格的输入区上下留白由布局提前预留（见
     ``renderer.apply_input_style``：输入区根容器上下各挂 1 行灰色背景空行）。
 
-    Ctrl-C 发生在输入过程中（``session.prompt`` 内部）时静默放弃
-    本次输入并返回 ``None``——不输出任何内容，由调用方直接继续
-    等待下一轮输入。EOF（Ctrl-D）则照常向上抛出。
+    Ctrl-C 发生在输入过程中（``session.prompt`` 内部）时的行为：
+      - 输入框有内容：放弃本次输入、静默返回 ``None``，由外层继续
+        等待下一轮输入（输入框随之清空）；
+      - 输入框无内容：与 Ctrl-D（EOF）一致，向上抛出 ``EOFError``
+        由外层退出程序。
+    EOF（Ctrl-D）则照常向上抛出。
 
     注意：``session.prompt()`` 不再传 ``message`` —— ``session.message``
     已在创建时设为 ``_prompt_fragments`` callable（每次重渲染动态计算
@@ -639,7 +642,11 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
     try:
         return session.prompt()
     except KeyboardInterrupt:
-        return None
+        if session.default_buffer.text:
+            # 输入框有内容：放弃本次输入，交由外层继续等待下一轮
+            return None
+        # 输入框无内容：与 Ctrl-D 一致，退出程序
+        raise EOFError
 
 
 class MycCommandCompleter(Completer):
