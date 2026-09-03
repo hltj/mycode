@@ -19,6 +19,12 @@ class AskOption:
 
 - 单选 / 多选由 `multi` 参数切换（多选用 `Space` 切换勾选、`Enter` 提交全部）。自定义输入框激活时 `Space` 始终作为普通空格输入（单选下焦点到自定义行即激活）；多选下的自定义输入框需先用 `Space` 选中激活，光标移到输入框最左按 `Backspace` 可失活并取消选中（`Space` 恢复为切换勾选）。单选下普通选项的 `Space` 无操作。
 - 标题与描述都可选：为空时跳过对应行（confirm 不传二者）。
+- 描述（问题描述）支持**多行**：真实换行按行展开，行高随内容自动决定；行数不影响焦点行索引（描述在根布局中始终只占一个 child 槽位）。default 风格下描述还支持 **markdown 渲染**（加粗 / 内联代码 / 列表 / 代码块等，复用 `renderer._markdown_ansi` 的 rich 渲染）；classic 保留纯文本（仍支持多行）。
+- **描述换行策略（default）**：宽度断行不依赖 rich 的词级折行（rich 按空白分词，连续中文会整体划为一块，当超出行宽时整体移到下一行），而是：
+  1. `renderer._markdown_ansi(..., soft_wrap=True)` 让 rich **不折行**（超宽行保持单行，同时保留段落/代码块结构，换行交给下游）；
+  2. 描述 Window 设 `wrap_lines=True`，由 prompt_toolkit 逐字符按显示宽度折行——中文可**任意汉字换行**；
+  3. `_strip_trailing_pad` 剥离 rich 块级元素行尾补满的背景 pad 空格，避免短列表项被误判为整宽而错误折行。
+- **描述换行语义**：ask_ui 不做任何文本改写，换行完全遵循标准 markdown 语义——相邻行（无空行分隔）会被 rich 折叠进同一段落（换行变空格）；需要显式换行时，入参应使用 hard break（行尾两个空格，`line1  \nline2`），与 `PromptSession` / 普通 markdown 渲染一致。
 - 普通选项展示 `label`；`description` 非空时同行展示。
 - 自定义选项：`label` 后追加输入框，输入框占位文本为 `description`。
 
@@ -45,6 +51,7 @@ class AskOption:
 - 自定义输入框的焦点由"激活态"决定：单选下跟随 `sel`（焦点在自定义行即激活）；多选下需被 `Space` 显式选中才激活（`custom_idx in checked`），未选中时输入框不可聚焦，避免 prompt_toolkit 默认聚焦第一个 focusable 控件。
 - 普通选项行（当前选中项）：`FormattedTextControl` 设为 `focusable=True` 且 `show_cursor=False`——焦点落在当前选中行而不是标题等首行，但因不是输入控件不闪现光标。
 - 其他选项上输入字符被丢弃，避免焦点残留污染。
+- **描述多行不影响焦点行计算**：焦点行用的是「根 HSplit 的 child 下标」而非屏幕行号；描述无论多少行都在根布局里占一个 child 槽位（见 `_option_row_offset`），`_focused_window` 仍按 `_option_row_offset + sel` 准确取到当前选中行。
 
 ## 样式
 
@@ -53,6 +60,8 @@ class AskOption:
 - `ask-title`（标题）：`bold #00c099`。
 - `ask-description`（问题描述 / 选项描述）：`fg:#6F6F6F`。
 - `ask-active`（当前选中行）：`bold #009fff`。
+
+描述窗口（default markdown / classic 纯文本）整体挂 `ask-description`：未着色的纯文本部分继承暗灰描述色，markdown 富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。
 
 - **占位文本**：用 `AfterInput + ConditionalProcessor`（与 `PromptSession.placeholder` 同款机制）渲染 `opt.description`（前导一个空格给光标留可视距离）；样式类 `class:placeholder` 与 cli 输入框共用，`italic fg:#666666` 暗灰斜体。
 - **自定义输入框背景**：挂 `class:mycode-input`，default 风格下 `bg:#333333`（与 cli 提示词输入区一致），classic 风格为空（保持原风格）。

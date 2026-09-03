@@ -3,7 +3,7 @@
 
 为各工具（包括 confirm）提供交互式问答界面：
 
-- 标题 + 描述
+- 标题 + 描述（描述支持多行；default 风格下支持 markdown 渲染）
 - 普通选项（label / 可选 value / 可选 description）
 - 末尾「自定义输入」选项（与选项值一起返回）
 - 单选 / 多选支持
@@ -39,6 +39,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import Container
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.formatted_text.base import StyleAndTextTuples
 from prompt_toolkit.layout.processors import AfterInput, ConditionalProcessor
 
@@ -149,6 +150,91 @@ class _AskState:
             self.checked.discard(self.custom_idx)
         else:
             self.checked.add(self.custom_idx)
+
+
+def _strip_trailing_pad(frags: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """剥离 rich 块级元素（列表/引用/代码块）行尾的 pad 空格。
+
+    rich 为了让块级元素背景色铺满整行，会在 ``soft_wrap`` 渲染下仍给
+    行尾补齐空格到终端宽度。ask_ui 描述交给 prompt_toolkit ``wrap_lines``
+    折行后，这些 pad 空格会污染宽度测量（短列表项被误判为整宽而折行）。
+    逐行清理：换行符之前连续出现的纯空格 fragment 直接丢弃。
+
+    代码块留白行（整行都是带背景的空格，rich 为代码块填充的上下留白）
+    全剥后背景会丢失——压成单个带背景的空格（宽度 1 不会造成误折行），
+    视觉上留白背景仍在。rich 代码块底部留白也可能是「自带背景样式的
+    换行符」片段（``(bg, '\\n')``），同样补一个背景空格。
+    """
+    out: list[tuple[str, str]] = []
+    pending: list[tuple[str, str]] = []
+    for style, text in frags:
+        if text == "\n":
+            # 分支1：行结束——pending 里的空格即为行尾 pad。
+            # 若它们带背景（代码块上下留白行），压成单个背景空格保留背景色；
+            # 否则整组剥掉。随后清空 pending，换行符本尊写入 out。
+            bg_style = next((s for s, _ in pending if s and "bg" in s), None)
+            if not bg_style and style and "bg" in style:
+                bg_style = style
+            if bg_style:
+                out.append((bg_style, " "))
+            pending = []
+            out.append((style, "\n"))
+        elif text.strip() == "":
+            # 分支2：纯空白片段（空格/制表符）→ 无法立即判断是行中分隔还是
+            # 行尾 pad，先暂存 pending，待看到后面片段再裁决去留。
+            pending.append((style, text))
+        else:
+            # 分支3：含非空白内容——说明 pending 里的空格在行中间必须保留，
+            # 先把它们落进 out，再追加当前内容片段。
+            if pending:
+                out.extend(pending)
+                pending = []
+            out.append((style, text))
+    # 收尾：文本以空格结尾（无换行）时 pending 仍有残留——同样规则：
+    # 带背景压成单个背景空格（代码块底部留白），否则丢弃（rich 输出末尾空白）。
+    if pending:
+        bg_style = next((s for s, _ in pending if s and "bg" in s), None)
+        if bg_style:
+            out.append((bg_style, " "))
+    return out
+
+
+def _description_fragments(text: str) -> tuple[list, str]:
+    """把问题描述文本转成 prompt_toolkit 富文本 fragments。
+
+    换行策略：rich 侧用 ``soft_wrap`` **不折行**，真正按终端宽度断行交给
+    prompt_toolkit 的 ``wrap_lines``——逐字符按显示宽度折行，中文可任意
+    汉字断行。rich 按空白把文本划分为若干块，折行只发生在块间空白处，
+    无法在汉字间折行；因此描述窗口必须设置 ``wrap_lines=True``。
+
+    - classic 风格：纯文本 + 暗灰样式，按原文本换行（多行描述）。
+    - default 风格：直接交给 rich Markdown ``soft_wrap`` 渲染成富文本
+      （加粗 / 内联代码 / 列表 / 代码块等），剥离块级元素行尾 pad 空格
+      后解析为 fragments。按标准 markdown 语义：
+        - 相邻行（无空行）会被 rich 折叠为同一段落（换行变空格）；
+        - 需要显式换行时入参应使用 hard break（行尾两个空格，
+          ``line1  \\nline2``），与 ``PromptSession`` / markdown 行为一致；
+        - 空行分隔、列表、代码块等结构与普通 markdown 相同。
+       ask_ui 不做任何文本改写，换行语义完全由入参的 markdown 决定。
+
+    两种风格都返回 ``_STYLE_DESCRIPTION`` 作为窗口样式：未着色的纯文本
+    部分继承暗灰描述色，富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。
+
+    返回 ``(fragments, style)``。markdown 渲染异常时回退纯文本，
+    保证界面不因描述格式崩溃。
+    """
+    if _renderer_mod.RENDER_STYLE == "classic":
+        return [(_STYLE_DESCRIPTION, text)], _STYLE_DESCRIPTION
+    try:
+        ansi = _renderer_mod._markdown_ansi(text, soft_wrap=True)
+        frags = list(ANSI(ansi).__pt_formatted_text__())
+        # rich 输出末尾带换行（fragments 末尾会多一个空串行），去掉它
+        if frags and frags[-1][1] == "\n":
+            frags = frags[:-1]
+        frags = _strip_trailing_pad(frags)
+        return frags, _STYLE_DESCRIPTION
+    except Exception:
+        return [(_STYLE_DESCRIPTION, text)], _STYLE_DESCRIPTION
 
 
 def _placeholder_processors(buf: Buffer, placeholder: str | None):
@@ -274,12 +360,25 @@ def _build_ask_layout(
         ))
 
     # 描述（非空时展示）
+    # - 问题描述支持多行与 markdown：default 风格经 rich Markdown 渲染成
+    #   富文本（加粗 / 内联代码 / 列表 / 代码块等），classic 保留纯文本；
+    #   文本里的真实换行按行展开。
+    # - wrap_lines=True：宽度断行由 prompt_toolkit 逐字符进行（中文可任意
+    #   汉字换行），rich 侧 soft_wrap 不折行，折行不限于块间空白处。
+    #   行高由折行结果自动决定（dont_extend_height）。
+    # - 描述行高随内容扩展不影响最高层布局的基线（见 _option_row_offset）：
+    #   描述无论占几行，在根 HSplit 中都只占一个 child 槽位，焦点行索引
+    #   仍按 child 下标计算，不随描述行数漂移。
     if state.description:
+        desc_frags, desc_style = _description_fragments(state.description)
         rows.append(Window(
             content=FormattedTextControl(
-                [(_STYLE_DESCRIPTION, state.description)]
+                desc_frags,
+                focusable=False,
             ),
-            height=1,
+            style=desc_style,
+            wrap_lines=True,
+            dont_extend_height=True,
             dont_extend_width=True,
         ))
 
@@ -299,7 +398,12 @@ def _build_ask_layout(
 
 
 def _option_row_offset(state: _AskState) -> int:
-    """返回选项行在根 HSplit 中的起始索引（标题/描述/空行占前几行）。"""
+    """返回根 HSplit 中第一个选项的 child 索引（即 header 所占 child 数）。
+
+    该索引用作焦点定位的下标：``_focused_window`` 以 ``offset + sel``
+    取当前选中选项在根 HSplit 中的 child。描述即使多行也只是单个 child，
+    故该值不随描述行数变化。
+    """
     offset = 0
     if state.title:
         offset += 1

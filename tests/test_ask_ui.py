@@ -580,6 +580,271 @@ class TestAskUiLayout:
         assert r.input is None
 
 
+class TestAskUiDescriptionMultiLine:
+    """问题描述支持多行；default 风格下支持 markdown 渲染。
+
+    描述在根布局中始终只占一个 child 槽位，多行展开不改变焦点行索引
+    （见 ``_option_row_offset``）。
+    """
+
+    @staticmethod
+    def _desc_fragments(text):
+        from mycode.ask_ui import _description_fragments
+        frags, style = _description_fragments(text)
+        if frags and frags[-1][1] == "\n":
+            frags = frags[:-1]
+        return frags, style
+
+    @staticmethod
+    def _desc_height(text) -> int:
+        """描述窗口的 preferred_height（真实展开行数）。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState(title="Q", description=text, options=[
+            AskOption(label="A", value="a"),
+        ], multi=False)
+        layout = _build_ask_layout(state, custom_buffer=None)
+        # children：0 标题 / 1 描述 / 2 空行 / 3 选项
+        return layout.children[1].preferred_height(80, 24).preferred
+
+    def test_multiline_collapses_without_hard_break(self, monkeypatch):
+        """default：裸换行按标准 markdown 折叠进同一段落（换行变空格）。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        # 无行尾两空格 → rich 合并为一段
+        assert self._desc_height("第一行\n第二行\n第三行") == 1
+        frags, _ = self._desc_fragments("第一行\n第二行")
+        plain = "".join(t for _, t in frags)
+        assert "第一行" in plain and "第二行" in plain
+
+    def test_multiline_lines_with_hard_break(self, monkeypatch):
+        """default：行尾两空格（hard break）实现显式换行，逐行展开。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        assert self._desc_height("第一行  \n第二行  \n第三行") == 3
+
+    def test_paragraph_break_with_blank_line(self, monkeypatch):
+        """空行分隔段落：保留段落间空行。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        assert self._desc_height("第一段\n\n第二段") == 3
+
+    def test_markdown_bold_and_inline_code(self, monkeypatch):
+        """default：加粗 / 内联代码被富文本渲染。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        frags, style = self._desc_fragments("**加粗** 和 `code`")
+        plain = "".join(t for _, t in frags)
+        assert "加粗" in plain and "code" in plain
+        # 加粗 / 内联代码（cyan on black）样式存在
+        assert any("bold" in (s or "") for s, _ in frags)
+        assert any("ansicyan" in (s or "") for s, _ in frags)
+        # 窗口统一挂描述样式（未着色文本继承暗灰）
+        assert style == "class:ask-description"
+
+    def test_list_rendered(self, monkeypatch):
+        """default：列表项保留。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        frags, _ = self._desc_fragments("- 项目一\n- 项目二")
+        plain = "".join(t for _, t in frags)
+        assert "项目一" in plain and "项目二" in plain
+
+    def test_code_block_preserved(self, monkeypatch):
+        """default：代码块原样渲染，围栏内换行保留。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        frags, _ = self._desc_fragments("```\nl1\nl2\n```")
+        plain = "".join(t for _, t in frags)
+        assert "l1" in plain and "l2" in plain
+        # 代码块 = 上下留白 + 2 行内容 = 4 行
+        assert self._desc_height("```\nl1\nl2\n```") == 4
+
+    def test_classic_multiline(self, monkeypatch):
+        """classic：纯文本多行，不解析 markdown。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        frags, style = self._desc_fragments("第一行 **加粗**\n第二行")
+        plain = "".join(t for _, t in frags)
+        # markdown 语法原样保留（不解析）
+        assert "**加粗**" in plain
+        assert style == "class:ask-description"
+        assert self._desc_height("第一行\n第二行") == 2
+
+    def test_ansi_content_fallback_plain(self, monkeypatch):
+        """default：描述含 ANSI 控制码时原样输出、不解析 markdown。
+
+        ``_markdown_ansi`` 对含 ANSI 的输入走豁免（原样返回，不解析
+        markdown），经 prompt_toolkit `ANSI` 解析后控制码被消费，正文
+        原样保留（不会把 ``**`` 等当 markdown 语法折叠）。
+        """
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        frags, _ = self._desc_fragments("\x1B[32m**加粗**\x1B[0m msg")
+        plain = "".join(t for _, t in frags)
+        # 正文保留，markdown 语法原样（未被解析为加粗）
+        assert "**加粗**" in plain
+        assert "msg" in plain
+
+    def test_desc_window_wrap_lines_enabled(self, monkeypatch):
+        """描述窗口设置 wrap_lines=True（换行职责在 prompt_toolkit 侧）。"""
+        from mycode import renderer
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        state = _AskState(title="Q", description="多行", options=[
+            AskOption(label="A", value="a"),
+        ], multi=False)
+        layout = _build_ask_layout(state, custom_buffer=None)
+        desc_win = layout.children[1]
+        assert desc_win.wrap_lines() is True
+
+    def test_long_line_wraps_at_any_char(self, monkeypatch):
+        """default：超宽行按字符折行，折行点可在任意字符处。
+
+        rich 按空白把文本划块，只能整块换行、块内不能折。改为
+        prompt_toolkit 字符级折行后，超宽行在任意字符处折行，
+        折行处不再限块间空白。
+        """
+        from mycode import renderer
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        from prompt_toolkit.layout.screen import Screen
+        from prompt_toolkit.layout.screen import WritePosition
+        from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+
+        def rendered_lines(desc, term):
+            state = _AskState(title="", description=desc, options=[], multi=False)
+            layout = _build_ask_layout(state, custom_buffer=None)
+            desc_win = layout.children[0]
+            screen = Screen(initial_width=term, initial_height=30)
+            desc_win.write_to_screen(
+                screen, MouseHandlers(),
+                WritePosition(xpos=0, ypos=0, width=term - 1, height=30),
+                "", erase_bg=True, z_index=None,
+            )
+            rows = []
+            for y in range(0, 30):
+                chars = "".join(
+                    screen.data_buffer[y][x].char for x in range(0, term - 1)
+                ).rstrip()
+                if chars.strip():
+                    rows.append(chars)
+            return rows
+
+        desc = "mycode 会读取、分析、修改当前目录中的文件，并可能会运行其中的代码。"
+        # 窄终端（36 列）强制折行
+        lines = rendered_lines(desc, 36)
+        # 折成多行
+        assert len(lines) > 1
+        # 无任何一行仅含 mycode（整块换行若发生在行首块后，会把它单独留下）
+        for ln in lines:
+            assert ln.strip() != "mycode"
+        # 每行都有内容且折行在字符处
+        assert all(ln.strip() for ln in lines)
+        # 内容整体保留
+        assert "".join(lines).replace(" ", "") == desc.replace(" ", "")
+
+    def test_short_list_items_not_wrapped(self, monkeypatch):
+        """default：短列表项不被行尾 pad 空格误判为整宽而折行。"""
+        from mycode import renderer
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        state = _AskState(title="Q", description="- 短项\n- 另一个短项", options=[
+            AskOption(label="A", value="a"),
+        ], multi=False)
+        layout = _build_ask_layout(state, custom_buffer=None)
+        desc_win = layout.children[1]
+        # 两个短项都应是 1 行（加上列表前空行 = 3 行）
+        assert desc_win.preferred_height(79, 24).preferred == 3
+
+    def test_four_backtick_fence_preserved(self, monkeypatch):
+        """default：4 反引号 + 语言标记的代码块正确渲染。"""
+        from mycode import renderer
+        from mycode.ask_ui import _description_fragments
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        code = "````py\n```inner```\n````"
+        frags, _ = self._desc_fragments(code)
+        plain = "".join(t for _, t in frags)
+        assert "inner" in plain
+
+
+class TestAskUiDescriptionFocus:
+    """描述多行时焦点行计算不漂移（child 槽位计数）。"""
+
+    def test_option_row_offset_ignores_description_height(self, monkeypatch):
+        """多行描述与单行描述的选项起始索引一致。"""
+        from mycode import renderer
+        from mycode.ask_ui import _AskState, _option_row_offset
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        single = _AskState(title="T", description="单行", options=[])
+        multi = _AskState(title="T", description="多行\n\n**长**\n\n- x\n- y", options=[])
+        assert _option_row_offset(single) == _option_row_offset(multi)
+
+    def test_focus_window_with_multiline_description(self, monkeypatch):
+        """多行描述下 _focused_window 仍取到当前选中行。"""
+        from mycode import renderer
+        from mycode.ask_ui import _AskState, _build_ask_layout, _focused_window
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        state = _AskState(
+            title="T",
+            description="第一行  \n第二行  \n第三行",
+            options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+            ],
+            multi=False, cursor_index=1,
+        )
+        layout = _build_ask_layout(state, custom_buffer=None)
+        win = _focused_window(state, layout.children, None)
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        ctrl = win.content
+        frags = ctrl.text if hasattr(ctrl, "text") else ctrl()
+        text = "".join(t for _, t in frags) if isinstance(frags, list) else str(frags)
+        # 焦点窗口应包含当前选中行 B 的标签，且不含未选中项 A
+        assert "B" in text
+        assert "A" not in text
+
+    def test_real_interaction_multiline_desc_focus(self, monkeypatch):
+        """真实交互：多行 markdown 描述下 Down 移动焦点提交第二项。"""
+        from mycode import renderer
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        desc = "第一行  \n第二行  \n**第三行**  \n```\ncode\n```"
+        with create_pipe_input() as inp:
+            inp.send_text("\x0e\r")  # down + enter
+            r = ask_ui(
+                title="Q",
+                description=desc,
+                options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ],
+                input=inp, output=DummyOutput(),
+            )
+        assert r.selected == ["b"]
+        assert r.cursor_index == 1
+
+    def test_real_interaction_multiline_desc_default(self, monkeypatch):
+        """真实交互：多行描述下默认焦点第一项可直接 Enter。"""
+        from mycode import renderer
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        with create_pipe_input() as inp:
+            inp.send_text("\r")
+            r = ask_ui(
+                title="Q",
+                description="第一行  \n第二行",
+                options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ],
+                input=inp, output=DummyOutput(),
+            )
+        assert r.selected == ["a"]
+        assert r.cursor_index == 0
+
+
 class TestAskUiStatePersistence:
     """cursor_index / checked 在多次调用间维持。"""
 

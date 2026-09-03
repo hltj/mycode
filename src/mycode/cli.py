@@ -752,7 +752,13 @@ def _check_dir_trust() -> None:
 
     result = ask_ui(
         title="是否信任当前目录",
-        description=f"当前目录是 `{current_dir}`。\nmycode 会读取、分析、修改当前目录中的文件，并可能会运行其中的代码。为避免不可信内容的安全风险，请先确认目录中的内容来源是否可信。",
+        # 注意：description 按标准 markdown 渲染，显式换行需用行尾两空格
+        # （hard break），裸 \n 会被 rich 折叠进同一段落。
+        description=(
+            f"当前目录是 `{current_dir}`。  \n"
+            "mycode 会读取、分析、修改当前目录中的文件，并可能会运行其中的代码。"
+            "为避免不可信内容的安全风险，请先确认目录中的内容来源是否可信。"
+        ),
         options=[
             AskOption(label="不信任", value="untrust", description="退出"),
             AskOption(label="信任", value="trust", description="继续"),

@@ -1216,6 +1216,34 @@ class TestDefaultAssistantMarkdown:
         # 标题不带冒号
         assert "🤖 m:" not in out
 
+    def test_markdown_ansi_returns_ansi_string(self):
+        """_markdown_ansi 返回带 ANSI 的渲染字符串（供布局复用）。"""
+        from mycode.renderer import _markdown_ansi
+        out = _markdown_ansi("**加粗**")
+        assert isinstance(out, str)
+        assert "\x1B[1m加粗\x1B[0m" in out
+        # 带尾部换行（print 语义）
+        assert out.endswith("\n")
+
+    def test_markdown_ansi_preserves_ansi_input(self):
+        """_markdown_ansi 对含 ANSI 控制码的输入原样返回（豁免 markdown 解析）。"""
+        from mycode.renderer import _markdown_ansi
+        out = _markdown_ansi("\x1B[32mgreen\x1B[0m msg")
+        assert "\x1B[32mgreen\x1B[0m msg" in out
+
+    def test_markdown_ansi_multiline_collapsed(self):
+        """_markdown_ansi 对普通裸换行按 markdown 合并（hard break 才能真正分行）。
+
+        这是 ask_ui 描述需要先转 hard break 的原因；本用例锁定该行为以防
+        回归（若 rich 未来改变合并策略，ask_ui 侧的 soft-break 处理也要升级）。
+        """
+        from mycode.renderer import _markdown_ansi
+        import re
+        _strip = lambda s: re.sub(r"\x1b\[[0-9;]*m", "", s)
+        out = _strip(_markdown_ansi("第一行\n第二行"))
+        for line in out.rstrip("\n").split("\n"):
+            assert line.strip() == "第一行 第二行"
+
 
 class TestFormatTodos:
     """renderer._format_todos 的单元测试：CLI 内部的 TODO 渲染辅助。

@@ -408,21 +408,29 @@ def _syntax_plain(code: str, language: str | None = None,
     return buf.getvalue()
 
 
-def _markdown_plain(markup: str) -> None:
-    """用 rich Markdown 把 assistant 正文渲染到终端（default 风格）。
+def _markdown_ansi(markup: str, soft_wrap: bool = False) -> str:
+    """用 rich Markdown 把文本渲染成带 ANSI 转义的字符串（default 风格）。
 
     - 段落 / 标题 / 列表 / 表格 / 引用 / 分割线等按 rich 默认样式渲染，
       字体、行数继承默认主题（markdown.code 等内联样式即富文本着色）；
     - 代码块交给覆写版 ``CodeBlock``：与工具输出/read 一致用深灰背景
       ``_CODE_BG_RGB``、``_CODE_THEME``，避免富文本对 ``` 围栏做二次上色；
       代码块上下各留 1 行同背景色留白，与 .md 渲染风格的代码块留白一致；
-    - ANSI 控制码豁免：正文自带的 ANSI 转义原样输出，不经过 markdown
+    - ANSI 控制码豁免：输入自带的 ANSI 转义原样返回，不经过 markdown
       解析（否则转义序列可能在代码块/链接里被再次装箱导致泄漏）；
     - 链接保留 rich 默认行为（``hyperlinks`` 开终端 OSC8 超链接，默认 True）。
+
+    ``soft_wrap``：False（默认）时 rich 按终端宽度做词级折行并给块级元素
+    （列表/引用/代码块）行补齐到整宽——用于直接 stdout 展示；True 时 rich
+    完全不折行（超长行保持单行），把换行职责交给下游（如 ask_ui 描述用
+    prompt_toolkit 的 ``wrap_lines`` 做逐字符折行，中文可任意汉字换行）。
+
+    返回末尾带换行的 ANSI 字符串：stdout 场景直接 ``print``（与
+    ``_markdown_plain`` 相同）；prompt_toolkit 场景（如 ask_ui 的描述）用
+    ``ANSI(ret).__pt_formatted_text__()`` 转成富文本 fragments 嵌入布局。
     """
     if _has_ansi_control(markup):
-        print(markup.rstrip(chr(0x0A)))
-        return
+        return markup.rstrip(chr(0x0A)) + chr(0x0A)
 
     class _CodeBlockBg(CodeBlock):
         """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。
@@ -442,20 +450,35 @@ def _markdown_plain(markup: str) -> None:
                              word_wrap=True, padding=(1, 0, 1, 0),
                              background_color=_CODE_BG_RGB)
 
-    # 实例级覆写 elements：仅影响本次打印，不改 rich.markdown 全局映射，
-    # 避免污染其他使用方。
+    # 实例级覆写 elements：仅影响本次渲染，不改 rich.markdown 全局映射，
+    # 避免污染其他使用方（_CodeBlockBg 定义在函数内，每次调用新建）。
     elements = dict(Markdown.elements)
     elements["fence"] = _CodeBlockBg
     elements["code_block"] = _CodeBlockBg
 
     md = Markdown(markup, code_theme=_CODE_THEME)
     md.elements = elements  # type: ignore[misc]  # 实例级覆写 ClassVar 映射
-    console = Console(force_terminal=True, width=_terminal_columns())
+    buf = io.StringIO()
+    console = Console(
+        file=buf,
+        force_terminal=True,
+        width=_terminal_columns(),
+        soft_wrap=soft_wrap,
+    )
     try:
         console.print(md)
     except Exception:
         # 极端输入导致 rich 解析/渲染失败时兜底为纯文本
-        print(markup.rstrip(chr(0x0A)))
+        return markup.rstrip(chr(0x0A)) + chr(0x0A)
+    return buf.getvalue()
+
+
+def _markdown_plain(markup: str) -> None:
+    """用 rich Markdown 把 assistant 正文渲染到终端（default 风格）。
+
+    复用 ``_markdown_ansi`` 生成 ANSI 字符串后直接输出。
+    """
+    print(_markdown_ansi(markup), end="")
 
 
 def _spacer_text(bg: str) -> str:
