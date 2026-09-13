@@ -403,6 +403,48 @@ class TestAgentLoopModePolicy:
         assert content == "wrote"
 
 
+class TestAgentLoopMissingRequiredParam:
+    """必填参数缺失：返回友好错误文本（而非 TypeError traceback）。"""
+
+    def test_ask_user_missing_title(self):
+        MODE_STATE.set(Mode.AUTO)
+        content, _ = _run_call("ask_user", {}, handler=lambda **_: "boom")
+        assert content == "Error: 缺少必填参数：title"
+        MODE_STATE.set(Mode.AUTO)
+
+    def test_missing_param_listed_in_required_order(self):
+        MODE_STATE.set(Mode.AUTO)
+        content, _ = _run_call("edit", {}, handler=lambda **_: "boom")
+        assert content == "Error: 缺少必填参数：file_path, old_text, new_text"
+        MODE_STATE.set(Mode.AUTO)
+
+    def test_partial_params_only_reports_missing(self):
+        MODE_STATE.set(Mode.AUTO)
+        content, _ = _run_call(
+            "edit", {"old_text": "a"}, handler=lambda **_: "boom")
+        assert content == "Error: 缺少必填参数：file_path, new_text"
+        MODE_STATE.set(Mode.AUTO)
+
+    def test_all_params_present_executes(self):
+        MODE_STATE.set(Mode.AUTO)
+        content, _ = _run_call(
+            "write", {"file_path": "/tmp/x", "content": "hi"},
+            mode=Mode.YOLO, handler=lambda **_: "wrote")
+        assert content == "wrote"
+        MODE_STATE.set(Mode.AUTO)
+
+    def test_missing_param_short_circuits_confirm_ui(self):
+        """缺参检查先于确认界面：即使该类别需确认，也直接返回缺参错误，不弹确认。"""
+        MODE_STATE.set(Mode.ASK)  # ask 模式下写操作需确认
+        with patch.object(cli, "confirm_tool") as mock_confirm:
+            content, _ = _run_call(
+                "write", {"file_path": "/tmp/x"},  # 缺 content
+                mode=Mode.ASK, handler=lambda **_: "wrote")
+            mock_confirm.assert_not_called()
+        assert content == "Error: 缺少必填参数：content"
+        MODE_STATE.set(Mode.AUTO)
+
+
 class TestAgentLoopEditCommand:
     """编辑 bash 命令：有变化分发提醒事件并注入模型，无变化直接执行。"""
 

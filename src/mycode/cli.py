@@ -216,6 +216,25 @@ def replay_history(session_hist: SessionHistory) -> None:
         bus_replay.dispatch(entry)
 
 
+def _check_missing_params(func_name: str, args: dict) -> list[str]:
+    """返回工具调用中缺失的必填参数名列表（按注册 schema 的 required 顺序）。
+
+    部分模型供应商不强制校验工具参数的 ``required`` 约束，可能漏传必填
+    参数；直接 ``handler(**args)`` 会抛 ``TypeError`` 并以异常 traceback
+    呈现。执行前先做此检查，缺失时返回友好错误文本让模型自我纠正。
+    未知工具或参数解析异常时返回空列表（交由后续逻辑处理）。
+    """
+    tool_def = ToolsRegistry.get_tool_def(func_name)
+    if tool_def is None:
+        return []
+    parameters = tool_def.get("function", {}).get("parameters") or {}
+    required = parameters.get("required") or []
+    if not isinstance(required, list):
+        return []
+    return [name for name in required
+            if isinstance(name, str) and name not in args]
+
+
 def _run_tool_with_permission(
     func_name: str,
     args: dict,
@@ -226,8 +245,10 @@ def _run_tool_with_permission(
 ) -> str:
     """按模式与操作分类决定工具是否执行，返回工具结果文本。
 
-    危险操作一律拒绝；需确认的操作弹出确认界面，按用户选择执行 / 拒绝 /
-    编辑 / 取消（取消与无理由拒绝通过 ``AbortLoop`` 抛出以跳出 agent 循环）。
+    危险操作一律拒绝；必填参数缺失时返回友好错误（让模型自我纠正，避免
+    ``TypeError`` traceback）；需确认的操作弹出确认界面，按用户选择
+    执行 / 拒绝 / 编辑 / 取消（取消与无理由拒绝通过 ``AbortLoop`` 抛出
+    以跳出 agent 循环）。
 
     编辑命令时：与陈旧提醒一样先分发 ``NoticeEvent``（渲染 + 持久化），
     再经 ``to_user_msg()`` 注入 ``messages``，让终端与模型都能看到命令被
@@ -238,6 +259,11 @@ def _run_tool_with_permission(
     # 所有模式对【危险】操作一律拒绝
     if category == ToolCategory.DANGEROUS:
         return "Error: 拒绝执行危险命令"
+
+    # 必填参数缺失（模型漏传）：友好报错让模型自我纠正，而非 TypeError
+    missing = _check_missing_params(func_name, args)
+    if missing:
+        return f"Error: 缺少必填参数：{', '.join(missing)}"
 
     # 无需确认：直接执行
     if not needs_confirmation(MODE_STATE.get(), category):
