@@ -227,7 +227,9 @@ def _description_fragments(text: str) -> tuple[list, str]:
         return [(_STYLE_DESCRIPTION, text)], _STYLE_DESCRIPTION
     try:
         ansi = _renderer_mod._markdown_ansi(text, soft_wrap=True)
-        frags = list(ANSI(ansi).__pt_formatted_text__())
+        # ANSI 解析产出的 fragments 实际均为 2 元组 (style, text)，收窄类型
+        # 以匹配 _strip_trailing_pad（list 不变量，宽类型无法直接传入/赋值）
+        frags = cast("list[tuple[str, str]]", list(ANSI(ansi).__pt_formatted_text__()))
         # rich 输出末尾带换行（fragments 末尾会多一个空串行），去掉它
         if frags and frags[-1][1] == "\n":
             frags = frags[:-1]
