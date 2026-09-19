@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import pytest
 
-from mycode.ask_ui import AskOption, ask_ui
+from mycode.ask_ui import AskOption, AskQuestion, ask_ui
 
 
 # ===================================================================
@@ -54,12 +54,16 @@ def _run_with_keys(seq: str, options, *, title="Q", description="", multi=False)
     with create_pipe_input() as inp:
         inp.send_text(seq)
         return ask_ui(
-            title=title,
-            description=description,
-            options=options,
-            multi=multi,
+            [
+                AskQuestion(
+                    title=title,
+                    description=description,
+                    options=options,
+                    multi=multi
+                ),
+            ],
             input=inp,
-            output=DummyOutput(),
+            output=DummyOutput()
         )
 
 
@@ -73,8 +77,8 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\r", opts)
-        assert r.selected == ["a"]
-        assert r.input is None
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
 
     def test_move_and_select(self):
         """Down 到第二项后 Enter 提交。"""
@@ -83,7 +87,7 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x0e\r", opts)  # down + enter
-        assert r.selected == ["b"]
+        assert r.answers[0].selected == ["b"]
 
     def test_move_cycle(self):
         """Down 到底后循环回第一项。"""
@@ -92,7 +96,7 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x0e\x0e\r", opts)
-        assert r.selected == ["a"]
+        assert r.answers[0].selected == ["a"]
 
     def test_move_up_cycle(self):
         """Up 第一项循环到最后一项。"""
@@ -101,25 +105,24 @@ class TestAskUiSingle:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\x10\r", opts)
-        assert r.selected == ["b"]
+        assert r.answers[0].selected == ["b"]
 
     def test_value_fallback_to_label(self):
         """无 value 的选项返回值用 label。"""
         opts = [AskOption(label="OK")]
         r = _run_with_keys("\r", opts)
-        assert r.selected == ["OK"]
+        assert r.answers[0].selected == ["OK"]
 
     def test_single_mark_prefix(self):
         """默认风格单选前缀：当前行 `❯ 🟢`，其余 `  ⚪`。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(
-            title="", description="",
+        state = _AskState([AskQuestion(title="", description="",
             options=[
                 AskOption(label="A", value="a"),
                 AskOption(label="B", value="b"),
             ],
             multi=False, cursor_index=0,
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = TestAskUiLayout._layout_text(layout)
         assert "❯ 🟢 A" in text
@@ -130,14 +133,13 @@ class TestAskUiSingle:
         from mycode import renderer
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(
-            title="", description="",
+        state = _AskState([AskQuestion(title="", description="",
             options=[
                 AskOption(label="A", value="a"),
                 AskOption(label="B", value="b"),
             ],
             multi=False, cursor_index=0,
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = TestAskUiLayout._layout_text(layout)
         assert "> A" in text
@@ -157,8 +159,8 @@ class TestAskUiMulti:
         # 焦点 0，空格勾选 A，向下，空格勾选 B，再向下到 C，直接 Enter 提交
         seq = " \x0e \x0e\r"
         r = _run_with_keys(seq, opts, multi=True)
-        assert r.selected == ["a", "b"]
-        assert r.input is None
+        assert r.answers[0].selected == ["a", "b"]
+        assert r.answers[0].input is None
 
     def test_space_uncheck(self):
         """空格切换是双向的：再次空格取消勾选。"""
@@ -168,7 +170,7 @@ class TestAskUiMulti:
         ]
         seq = " \x0e \r"  # 勾 A，移到 B，勾 B，Enter
         r = _run_with_keys(seq, opts, multi=True)
-        assert r.selected == ["a", "b"]
+        assert r.answers[0].selected == ["a", "b"]
 
     def test_multi_empty_when_none_checked(self):
         """多选模式下没有任何勾选时，Enter 返回空列表。"""
@@ -178,22 +180,21 @@ class TestAskUiMulti:
         ]
         seq = "\x0e\r"  # 移到 B，Enter，没有 checked
         r = _run_with_keys(seq, opts, multi=True)
-        assert r.selected == []
-        assert r.checked == set()
-        assert r.input is None
+        assert r.answers[0].selected == []
+        assert r.answers[0].checked == set()
+        assert r.answers[0].input is None
 
     def test_multi_cursor_mark_prefix(self):
         """多选选项行最左有当前行指示，勾选态用符号（默认风格）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(
-            title="", description="",
+        state = _AskState([AskQuestion(title="", description="",
             options=[
                 AskOption(label="A", value="a"),
                 AskOption(label="B", value="b"),
                 AskOption(label="C", value="c"),
             ],
             multi=True, cursor_index=1, checked={0},
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = TestAskUiLayout._layout_text(layout)
         # 当前行（B）用 ❯ 指示；A 未选中但已勾选（✅）；C 未选（🔳）
@@ -207,15 +208,14 @@ class TestAskUiMulti:
         from mycode import renderer
         monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(
-            title="", description="",
+        state = _AskState([AskQuestion(title="", description="",
             options=[
                 AskOption(label="A", value="a"),
                 AskOption(label="B", value="b"),
                 AskOption(label="C", value="c"),
             ],
             multi=True, cursor_index=1, checked={0},
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = TestAskUiLayout._layout_text(layout)
         # 当前行（B）有 > 指示；A 未选中但已勾选
@@ -238,43 +238,43 @@ class TestAskUiMultiCustom:
         # 到自定义行（sel=2），未选中，直接输入 x → 应被丢弃
         seq = "\x0e\x0ex\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.selected == []  # 未勾选任何项，无选中
-        assert r.input is None  # 未选中自定义，input 为 None
-        assert r.checked == set()
+        assert r.answers[0].selected == []  # 未勾选任何项，无选中
+        assert r.answers[0].input is None  # 未选中自定义，input 为 None
+        assert r.answers[0].checked == set()
 
     def test_space_activates_then_accepts_space_char(self):
         """空格选中激活自定义；激活后再按空格输入空格字符。"""
         # 到自定义（sel=2），空格激活，空格输入，abc 输入，提交
         seq = "\x0e\x0e  abc\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.selected == ["custom"]
-        assert r.input == " abc"  # 第一个空格激活，第二个空格是输入
-        assert r.checked == {2}
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == " abc"  # 第一个空格激活，第二个空格是输入
+        assert r.answers[0].checked == {2}
 
     def test_space_type_into_custom_buffer(self):
         """激活后空格归输入框正常输入（不切换勾选）。"""
         # 到自定义，空格激活，连续输入 "hello world"
         seq = "\x0e\x0e hello world\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.input == "hello world"
-        assert r.checked == {2}
+        assert r.answers[0].input == "hello world"
+        assert r.answers[0].checked == {2}
 
     def test_backspace_at_start_deactivates(self):
         """输入框光标最左按 Backspace → 失活并取消选中。"""
         # 到自定义，空格激活，输入 x，光标到最左，Backspace 失活，提交
         seq = "\x0e\x0e x\x01\x7f\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.selected == []  # 取消勾选后无选中
-        assert r.checked == set()  # 已取消选中
+        assert r.answers[0].selected == []  # 取消勾选后无选中
+        assert r.answers[0].checked == set()  # 已取消选中
 
     def test_backspace_deactivates_then_space_selects_other(self):
         """失活后空格恢复切换普通选项的勾选。"""
         # 到自定义，空格激活，x，最左 Backspace 失活，up 到 A，空格勾选 A
         seq = "\x0e\x0e x\x01\x7f\x10\x10 \r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.selected == ["a"]
-        assert r.input is None
-        assert r.checked == {0}
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
+        assert r.answers[0].checked == {0}
 
     def test_backspace_deactivates_then_space_reactivates_custom(self):
         """失活后空格可再次选中并激活自定义输入框，原输入保留。
@@ -286,9 +286,9 @@ class TestAskUiMultiCustom:
         # 再空格重新激活，输入 y（光标在最左，y 插到 x 前）
         seq = "\x0e\x0e x\x01\x7f y\r"
         r = _run_with_keys(seq, self.CUSTOM_OPTS, multi=True)
-        assert r.selected == ["custom"]
-        assert r.input == "yx"  # 原 x 保留，y 插到光标（最左）前
-        assert r.checked == {2}
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == "yx"  # 原 x 保留，y 插到光标（最左）前
+        assert r.answers[0].checked == {2}
 
 
 class TestAskUiCustomOption:
@@ -302,8 +302,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\x0e补充信息\r"
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["custom"]
-        assert r.input == "补充信息"
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == "补充信息"
 
     def test_single_custom_accepts_space(self):
         """单选自定义输入框可直接输入空格（空格不被切换勾选占用）。"""
@@ -313,8 +313,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\x0ehello world\r"  # 单选：焦点在自定义行即可输入，含空格
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["custom"]
-        assert r.input == "hello world"
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == "hello world"
 
     def test_single_custom_accepts_leading_space(self):
         """单选自定义输入框支持前导空格（焦点已在自定义行直接输入）。"""
@@ -323,8 +323,8 @@ class TestAskUiCustomOption:
         ]
         seq = " hello\r"  # 默认焦点在自定义行，输入含前导空格
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["custom"]
-        assert r.input == " hello"
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == " hello"
 
     def test_single_normal_option_space_ignored(self):
         """单选下普通选项按空格无操作（不切换也不进输入框）。"""
@@ -334,8 +334,8 @@ class TestAskUiCustomOption:
         ]
         seq = " \r"  # 焦点在 A，按空格然后 Enter
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["a"]
-        assert r.input is None
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
 
     def test_select_custom_empty_input(self):
         """选中自定义但未输入时，input 是空字符串（不是 None）。"""
@@ -344,8 +344,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\r"  # 默认焦点已在自定义，直接 Enter
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["custom"]
-        assert r.input == ""
+        assert r.answers[0].selected == ["custom"]
+        assert r.answers[0].input == ""
 
     def test_select_non_custom_returns_no_input(self):
         """未选自定义选项时，input 始终为 None。"""
@@ -355,8 +355,8 @@ class TestAskUiCustomOption:
         ]
         seq = "\r"
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["a"]
-        assert r.input is None
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
 
     def test_typing_when_not_on_custom_is_dropped(self):
         """焦点不在自定义选项时输入字符被丢弃。"""
@@ -366,8 +366,8 @@ class TestAskUiCustomOption:
         ]
         seq = "abc\r"  # 在 A 上输入字符（应被丢弃），Enter 提交
         r = _run_with_keys(seq, opts)
-        assert r.selected == ["a"]
-        assert r.input is None
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
 
 
 class TestAskUiAbortion:
@@ -380,8 +380,7 @@ class TestAskUiAbortion:
         ]
         seq = "\x03"
         r = _run_with_keys(seq, opts)
-        assert r.selected == []
-        assert r.input is None
+        assert r.answers == []
         assert r.aborted is True
 
     def test_enter_not_aborted(self):
@@ -391,7 +390,7 @@ class TestAskUiAbortion:
             AskOption(label="B", value="b"),
         ]
         r = _run_with_keys("\r", opts)
-        assert r.selected == ["a"]
+        assert r.answers[0].selected == ["a"]
         assert r.aborted is False
 
 
@@ -426,9 +425,9 @@ class TestAskUiLayout:
 
     def test_title_and_description_in_layout(self):
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="标题", description="描述", options=[
+        state = _AskState([AskQuestion(title="标题", description="描述", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = self._layout_text(layout)
         assert "标题" in text
@@ -439,9 +438,9 @@ class TestAskUiLayout:
         """标题/描述与选项之间有一个空行（header 区存在时）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
         # 标题 + 描述：header 区（2 行）+ 空行 + 选项
-        state = _AskState(title="T", description="D", options=[
+        state = _AskState([AskQuestion(title="T", description="D", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         assert len(layout.children) == 4  # 标题 + 描述 + 空行 + 选项
         # 空行是第三个元素（内容为空文本）
@@ -452,9 +451,9 @@ class TestAskUiLayout:
     def test_blank_line_only_title(self):
         """只有标题没有描述时，标题与选项之间也有空行。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="T", description="", options=[
+        state = _AskState([AskQuestion(title="T", description="", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         assert len(layout.children) == 3  # 标题 + 空行 + 选项
         # 第二个元素为空行
@@ -464,18 +463,18 @@ class TestAskUiLayout:
     def test_no_blank_line_without_header(self):
         """标题与描述都没有时，不加空行。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="", description="", options=[
+        state = _AskState([AskQuestion(title="", description="", options=[
             AskOption(label="A", value="a"),
             AskOption(label="B", value="b"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         assert len(layout.children) == 2  # 仅两个选项，无空行
 
     def test_description_omitted_when_empty(self):
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="标题", description="", options=[
+        state = _AskState([AskQuestion(title="标题", description="", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = self._layout_text(layout)
         assert "标题" in text
@@ -487,10 +486,10 @@ class TestAskUiLayout:
         from prompt_toolkit.buffer import Buffer
         from prompt_toolkit.layout import VSplit
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="", options=[
+        state = _AskState([AskQuestion(title="Q", description="", options=[
             AskOption(label="A", value="a"),
             AskOption(label="其它", value="custom", is_custom=True),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=Buffer())
         # 第二个选项行（label 为「其它」）应为 VSplit
         rows = layout.children
@@ -503,10 +502,10 @@ class TestAskUiLayout:
         from prompt_toolkit.buffer import Buffer
         from prompt_toolkit.layout import VSplit
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="", options=[
+        state = _AskState([AskQuestion(title="Q", description="", options=[
             AskOption(label="A", value="a"),
             AskOption(label="B", value="b"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         # 普通选项行不含 BufferControl（不是 VSplit）
         rows = layout.children
@@ -517,9 +516,9 @@ class TestAskUiLayout:
     def test_description_appended_to_normal_row(self):
         """普通选项的 description 同行展示（紧跟 label）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="", options=[
+        state = _AskState([AskQuestion(title="Q", description="", options=[
             AskOption(label="A", value="a", description="A 的描述"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = self._layout_text(layout)
         assert "A" in text
@@ -528,16 +527,16 @@ class TestAskUiLayout:
     def test_layout_for_no_options(self):
         """无选项时也构造出合法布局。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="desc", options=[], multi=False)
+        state = _AskState([AskQuestion(title="Q", description="desc", options=[], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         assert layout is not None
 
     def test_title_optional(self):
         """title 为空时不渲染标题行。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="", description="d", options=[
+        state = _AskState([AskQuestion(title="", description="d", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         text = self._layout_text(layout)
         # 标题为空：不含任何空标题文本；描述与选项仍展示
@@ -549,9 +548,9 @@ class TestAskUiLayout:
     def test_description_optional(self):
         """description 为空时不渲染描述行（但有标题 → 仍留 header 空行）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="", options=[
+        state = _AskState([AskQuestion(title="Q", description="", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         # 标题行 + 空行 + 选项 = 3 行
         assert len(layout.children) == 3
@@ -559,10 +558,10 @@ class TestAskUiLayout:
     def test_both_optional_only_options(self):
         """title / description 都为空时只渲染选项。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="", description="", options=[
+        state = _AskState([AskQuestion(title="", description="", options=[
             AskOption(label="A", value="a"),
             AskOption(label="B", value="b"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         assert len(layout.children) == 2  # 仅两个选项
 
@@ -573,11 +572,16 @@ class TestAskUiLayout:
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r = ask_ui(
-                options=[AskOption(label="A", value="a")],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["a"]
-        assert r.input is None
+            [
+                AskQuestion(
+                    options=[AskOption(label="A", value="a")]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].input is None
 
 
 class TestAskUiDescriptionMultiLine:
@@ -599,9 +603,9 @@ class TestAskUiDescriptionMultiLine:
     def _desc_height(text) -> int:
         """描述窗口的 preferred_height（真实展开行数）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description=text, options=[
+        state = _AskState([AskQuestion(title="Q", description=text, options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         # children：0 标题 / 1 描述 / 2 空行 / 3 选项
         return layout.children[1].preferred_height(80, 24).preferred
@@ -638,8 +642,8 @@ class TestAskUiDescriptionMultiLine:
         # 加粗 / 内联代码（cyan on black）样式存在
         assert any("bold" in (s or "") for s, _ in frags)
         assert any("ansicyan" in (s or "") for s, _ in frags)
-        # 窗口统一挂描述样式（未着色文本继承暗灰）
-        assert style == "class:ask-description"
+        # 窗口统一挂问题描述样式（未着色文本继承粗体）
+        assert style == "class:ask-question"
 
     def test_list_rendered(self, monkeypatch):
         """default：列表项保留。"""
@@ -667,7 +671,7 @@ class TestAskUiDescriptionMultiLine:
         plain = "".join(t for _, t in frags)
         # markdown 语法原样保留（不解析）
         assert "**加粗**" in plain
-        assert style == "class:ask-description"
+        assert style == "class:ask-question"
         assert self._desc_height("第一行\n第二行") == 2
 
     def test_ansi_content_fallback_plain(self, monkeypatch):
@@ -690,9 +694,9 @@ class TestAskUiDescriptionMultiLine:
         from mycode import renderer
         from mycode.ask_ui import _AskState, _build_ask_layout
         monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
-        state = _AskState(title="Q", description="多行", options=[
+        state = _AskState([AskQuestion(title="Q", description="多行", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         desc_win = layout.children[1]
         assert desc_win.wrap_lines() is True
@@ -712,7 +716,7 @@ class TestAskUiDescriptionMultiLine:
         monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
 
         def rendered_lines(desc, term):
-            state = _AskState(title="", description=desc, options=[], multi=False)
+            state = _AskState([AskQuestion(title="", description=desc, options=[], multi=False)])
             layout = _build_ask_layout(state, custom_buffer=None)
             desc_win = layout.children[0]
             screen = Screen(initial_width=term, initial_height=30)
@@ -748,9 +752,9 @@ class TestAskUiDescriptionMultiLine:
         from mycode import renderer
         from mycode.ask_ui import _AskState, _build_ask_layout
         monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
-        state = _AskState(title="Q", description="- 短项\n- 另一个短项", options=[
+        state = _AskState([AskQuestion(title="Q", description="- 短项\n- 另一个短项", options=[
             AskOption(label="A", value="a"),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
         desc_win = layout.children[1]
         # 两个短项都应是 1 行（加上列表前空行 = 3 行）
@@ -775,8 +779,8 @@ class TestAskUiDescriptionFocus:
         from mycode import renderer
         from mycode.ask_ui import _AskState, _option_row_offset
         monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
-        single = _AskState(title="T", description="单行", options=[])
-        multi = _AskState(title="T", description="多行\n\n**长**\n\n- x\n- y", options=[])
+        single = _AskState([AskQuestion(title="T", description="单行", options=[])])
+        multi = _AskState([AskQuestion(title="T", description="多行\n\n**长**\n\n- x\n- y", options=[])])
         assert _option_row_offset(single) == _option_row_offset(multi)
 
     def test_focus_window_with_multiline_description(self, monkeypatch):
@@ -784,15 +788,14 @@ class TestAskUiDescriptionFocus:
         from mycode import renderer
         from mycode.ask_ui import _AskState, _build_ask_layout, _focused_window
         monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
-        state = _AskState(
-            title="T",
+        state = _AskState([AskQuestion(title="T",
             description="第一行  \n第二行  \n第三行",
             options=[
                 AskOption(label="A", value="a"),
                 AskOption(label="B", value="b"),
             ],
             multi=False, cursor_index=1,
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=None)
         win = _focused_window(state, layout.children, None)
         from prompt_toolkit.layout.controls import FormattedTextControl
@@ -813,16 +816,21 @@ class TestAskUiDescriptionFocus:
         with create_pipe_input() as inp:
             inp.send_text("\x0e\r")  # down + enter
             r = ask_ui(
-                title="Q",
-                description=desc,
-                options=[
+            [
+                AskQuestion(
+                    title="Q",
+                    description=desc,
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["b"]
-        assert r.cursor_index == 1
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["b"]
+        assert r.answers[0].cursor_index == 1
 
     def test_real_interaction_multiline_desc_default(self, monkeypatch):
         """真实交互：多行描述下默认焦点第一项可直接 Enter。"""
@@ -833,16 +841,21 @@ class TestAskUiDescriptionFocus:
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r = ask_ui(
-                title="Q",
-                description="第一行  \n第二行",
-                options=[
+            [
+                AskQuestion(
+                    title="Q",
+                    description="第一行  \n第二行",
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["a"]
-        assert r.cursor_index == 0
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].cursor_index == 0
 
 
 class TestAskUiStatePersistence:
@@ -855,17 +868,22 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                cursor_index=2,
-                input=inp, output=DummyOutput(),
-            )
+                    cursor_index=2
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # 初始焦点在 C，Enter 提交 C
-        assert r.selected == ["c"]
-        assert r.cursor_index == 2
+        assert r.answers[0].selected == ["c"]
+        assert r.answers[0].cursor_index == 2
 
     def test_cursor_index_returns_at_submit(self):
         """返回 cursor_index 反映提交时的焦点位置。"""
@@ -874,15 +892,20 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text("\x0e\x0e\r")  # 移到 C
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["c"]
-        assert r.cursor_index == 2
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["c"]
+        assert r.answers[0].cursor_index == 2
 
     def test_cursor_index_passes_through_for_next_call(self):
         """上一次 cursor_index 作为下一次初始焦点（ESC 往返场景）。"""
@@ -892,29 +915,39 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text("\x0e\x0e\r")
             r1 = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r1.cursor_index == 2
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r1.answers[0].cursor_index == 2
 
         # 第二次：传入上次的 cursor_index，再直接 Enter
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r2 = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                cursor_index=r1.cursor_index,
-                input=inp, output=DummyOutput(),
-            )
+                    cursor_index=r1.answers[0].cursor_index
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # 焦点仍是 C，提交 C
-        assert r2.selected == ["c"]
+        assert r2.answers[0].selected == ["c"]
 
     def test_cursor_index_out_of_range_falls_back_to_zero(self):
         """cursor_index 越界时回退到 0（防御性）。"""
@@ -923,15 +956,21 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                 ],
-                cursor_index=10,  # 越界
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["a"]  # 回退到第一项
-        assert r.cursor_index == 0
+                    cursor_index=10,
+                    # 越界
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["a"]  # 回退到第一项
+        assert r.answers[0].cursor_index == 0
 
     def test_checked_init_multi(self):
         """多选模式 initial checked 集合生效。"""
@@ -940,18 +979,24 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text("\r")
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                multi=True,
-                checked={0, 2},  # 预勾 A 与 C
-                input=inp, output=DummyOutput(),
-            )
+                    multi=True,
+                    checked={0, 2},
+                    # 预勾 A 与 C
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # Enter 提交所有 checked
-        assert r.selected == ["a", "c"]
-        assert r.checked == {0, 2}
+        assert r.answers[0].selected == ["a", "c"]
+        assert r.answers[0].checked == {0, 2}
 
     def test_checked_returns_at_submit_multi(self):
         """返回 checked 反映提交时的勾选集合。"""
@@ -961,16 +1006,21 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \x0e\r")
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                multi=True,
-                input=inp, output=DummyOutput(),
-            )
-        assert r.checked == {0, 1}
-        assert r.selected == ["a", "b"]
+                    multi=True
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].checked == {0, 1}
+        assert r.answers[0].selected == ["a", "b"]
 
     def test_multi_cursor_index_independent_of_checked(self):
         """多选提交时 cursor_index（焦点位置）与 checked（勾选）相互独立。
@@ -984,18 +1034,23 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \x0e\r")
             r = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                multi=True,
-                input=inp, output=DummyOutput(),
-            )
+                    multi=True
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # checked 独立于焦点：勾了 A、B，焦点在 C
-        assert r.checked == {0, 1}
-        assert r.selected == ["a", "b"]
-        assert r.cursor_index == 2  # 焦点位置与勾选集合无关
+        assert r.answers[0].checked == {0, 1}
+        assert r.answers[0].selected == ["a", "b"]
+        assert r.answers[0].cursor_index == 2  # 焦点位置与勾选集合无关
 
     def test_multi_cursor_and_checked_pass_through_next_call(self):
         """多选时上一次 cursor_index / checked 一起作为下一次的初始状态。
@@ -1009,37 +1064,47 @@ class TestAskUiStatePersistence:
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \x0e\r")
             first = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                multi=True,
-                input=inp, output=DummyOutput(),
-            )
-        assert first.checked == {0, 1}
-        assert first.cursor_index == 2
+                    multi=True
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert first.answers[0].checked == {0, 1}
+        assert first.answers[0].cursor_index == 2
 
         # 第二次：把 checked 和 cursor_index 一起回传。
         # 预勾 A、B 且焦点在 C；用户在 C 按空格（C 未勾 → 勾上 C）。
         with create_pipe_input() as inp:
             inp.send_text(" \r")  # 在 C（焦点）按空格勾上 C
             r2 = ask_ui(
-                options=[
+            [
+                AskQuestion(
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                multi=True,
-                cursor_index=first.cursor_index,
-                checked=set(first.checked),
-                input=inp, output=DummyOutput(),
-            )
+                    multi=True,
+                    cursor_index=first.answers[0].cursor_index,
+                    checked=set(first.answers[0].checked)
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # 初始状态：checked={0,1}，cursor=2（C 行）
         # 用户按键 " "（空格）在 C 行：C 未勾，空格勾上 C → checked={0,1,2}
         # Enter → selected=[a,b,c]
-        assert r2.checked == {0, 1, 2}
-        assert r2.selected == ["a", "b", "c"]
+        assert r2.answers[0].checked == {0, 1, 2}
+        assert r2.answers[0].selected == ["a", "b", "c"]
 
 
 class TestAskUiEndToEndScenarios:
@@ -1052,18 +1117,23 @@ class TestAskUiEndToEndScenarios:
         with create_pipe_input() as inp:
             inp.send_text("\r")  # 默认焦点在第一项，Enter 提交
             r = ask_ui(
-                title="确认文件操作",
-                description="请选择如何处理 src/old.py",
-                options=[
+            [
+                AskQuestion(
+                    title="确认文件操作",
+                    description="请选择如何处理 src/old.py",
+                    options=[
                     AskOption(label="备份后删除", value="backup_delete"),
                     AskOption(label="直接删除", value="delete"),
                     AskOption(label="保留不动", value="keep"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["backup_delete"]
-        assert r.input is None
-        assert r.cursor_index == 0
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["backup_delete"]
+        assert r.answers[0].input is None
+        assert r.answers[0].cursor_index == 0
 
     def test_single_each_option_has_description(self):
         """单选：每个选项带 description，移到第二项提交。"""
@@ -1072,17 +1142,22 @@ class TestAskUiEndToEndScenarios:
         with create_pipe_input() as inp:
             inp.send_text("\x0e\r")  # 移到 B，Enter
             r = ask_ui(
-                title="选择测试策略",
-                description="（每个选项后面是说明文字）",
-                options=[
+            [
+                AskQuestion(
+                    title="选择测试策略",
+                    description="（每个选项后面是说明文字）",
+                    options=[
                     AskOption(label="单元测试", value="unit", description="覆盖核心逻辑"),
                     AskOption(label="集成测试", value="integration", description="模块间协作"),
                     AskOption(label="端到端", value="e2e", description="完整用户路径"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["integration"]
-        assert r.cursor_index == 1
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["integration"]
+        assert r.answers[0].cursor_index == 1
 
     def test_multi_with_title_description_and_option_descriptions(self):
         """多选：标题 + 描述 + 每个选项带 description。
@@ -1095,20 +1170,25 @@ class TestAskUiEndToEndScenarios:
             # 焦点 0：空格勾选 A；↓ 到 1：空格勾选 B；↓ 到 2：空格勾选 C；Enter
             inp.send_text(" \x0e \x0e \r")
             r = ask_ui(
-                title="选择技术栈组件",
-                description="（可多选；空格勾选，Enter 提交）",
-                multi=True,
-                options=[
+            [
+                AskQuestion(
+                    title="选择技术栈组件",
+                    description="（可多选；空格勾选，Enter 提交）",
+                    multi=True,
+                    options=[
                     AskOption(label="前端", value="fe", description="HTML/CSS/JS"),
                     AskOption(label="后端", value="be", description="Python/Java/Go"),
                     AskOption(label="数据库", value="db", description="PostgreSQL"),
                     AskOption(label="缓存", value="cache", description="Redis"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # selected 按 options 顺序列出勾选项
-        assert r.selected == ["fe", "be", "db"]
-        assert r.checked == {0, 1, 2}
+        assert r.answers[0].selected == ["fe", "be", "db"]
+        assert r.answers[0].checked == {0, 1, 2}
 
     def test_confirm_style_multiple_normal_plus_custom(self):
         """confirm 风格：多个普通选项 + 末尾自定义选项。
@@ -1121,18 +1201,23 @@ class TestAskUiEndToEndScenarios:
             # 移到末项（index 2），输入"想改"，Enter
             inp.send_text("\x0e\x0e想改\r")
             r = ask_ui(
-                title="确认工具调用",
-                description="bash echo hi",
-                options=[
+            [
+                AskQuestion(
+                    title="确认工具调用",
+                    description="bash echo hi",
+                    options=[
                     AskOption(label="同意", value="approve"),
                     AskOption(label="编辑", value="edit"),
                     AskOption(label="拒绝", value="reject",
                               description="拒绝理由", is_custom=True),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert r.selected == ["reject"]
-        assert r.input == "想改"
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert r.answers[0].selected == ["reject"]
+        assert r.answers[0].input == "想改"
 
     def test_multi_checked_passes_through_real_call(self):
         """多选第一次调用拿到 checked，传给第二次调用验证预勾选生效。
@@ -1147,37 +1232,47 @@ class TestAskUiEndToEndScenarios:
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \r")
             first = ask_ui(
-                title="第一次",
-                multi=True,
-                options=[
+            [
+                AskQuestion(
+                    title="第一次",
+                    multi=True,
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
-                ],
-                input=inp, output=DummyOutput(),
-            )
-        assert first.checked == {0, 1}
-        assert first.selected == ["a", "b"]
+                ]
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
+        assert first.answers[0].checked == {0, 1}
+        assert first.answers[0].selected == ["a", "b"]
 
-        # 第二次：传入 first.checked 作为初始勾选，移到 C 空格取消 A 与 B
+        # 第二次：传入 first.answers[0].checked 作为初始勾选，移到 C 空格取消 A 与 B
         # 再 ↓ 到 C，Enter 提交（全取消后 selected 应为空）
         with create_pipe_input() as inp:
             inp.send_text(" \x0e \x0e\r")  # 焦点 0：取消 A；↓ 到 1：取消 B；↓ 到 2：Enter
             second = ask_ui(
-                title="第二次（预勾相同项）",
-                multi=True,
-                options=[
+            [
+                AskQuestion(
+                    title="第二次（预勾相同项）",
+                    multi=True,
+                    options=[
                     AskOption(label="A", value="a"),
                     AskOption(label="B", value="b"),
                     AskOption(label="C", value="c"),
                 ],
-                checked=set(first.checked),
-                input=inp, output=DummyOutput(),
-            )
+                    checked=set(first.answers[0].checked)
+                ),
+            ],
+            input=inp,
+            output=DummyOutput()
+        )
         # 关键：第二次的初始 checked 应是 {0, 1}；用户取消 A、B 后，
         # checked 与 selected 都为空
-        assert second.checked == set()
-        assert second.selected == []
+        assert second.answers[0].checked == set()
+        assert second.answers[0].selected == []
 
 
 class TestAskUiApplication:
@@ -1187,10 +1282,10 @@ class TestAskUiApplication:
         from prompt_toolkit.application import Application
         from prompt_toolkit.layout import Layout
         from mycode.ask_ui import _AskState, _build_ask_layout
-        state = _AskState(title="Q", description="", options=[
+        state = _AskState([AskQuestion(title="Q", description="", options=[
             AskOption(label="A", value="a"),
             AskOption(label="其它", value="custom", is_custom=True),
-        ], multi=False)
+        ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=__import__("prompt_toolkit.buffer", fromlist=["Buffer"]).Buffer())
         app = Application(layout=Layout(layout), full_screen=False)
         assert app.layout is not None
@@ -1222,10 +1317,14 @@ class TestAskUiApplication:
             with create_pipe_input() as inp:
                 inp.send_text("\r")
                 ask_ui(
-                    title="Q",
-                    options=[AskOption(label="A", value="a")],
+                    [
+                        AskQuestion(
+                            title="Q",
+                            options=[AskOption(label="A", value="a")]
+                        ),
+                    ],
                     input=inp,
-                    output=DummyOutput(),
+                    output=DummyOutput()
                 )
         assert seen.get("erase_when_done") is True
 
@@ -1255,12 +1354,16 @@ class TestAskUiApplication:
             with create_pipe_input() as inp:
                 inp.send_text("\r")
                 ask_ui(
+            [
+                AskQuestion(
                     title="Q",
-                    options=[AskOption(label="A", value="a")],
-                    style=sentinel_style,
-                    input=inp,
-                    output=DummyOutput(),
-                )
+                    options=[AskOption(label="A", value="a")]
+                ),
+            ],
+            style=sentinel_style,
+            input=inp,
+            output=DummyOutput()
+        )
         assert seen.get("style") is sentinel_style
 
     def test_custom_input_unfocusable_when_not_selected(self):
@@ -1275,8 +1378,7 @@ class TestAskUiApplication:
         from prompt_toolkit.buffer import Buffer
         from mycode.ask_ui import _AskState, _build_ask_layout
 
-        state = _AskState(
-            title="",
+        state = _AskState([AskQuestion(title="",
             description="",
             options=[
                 AskOption(label="A", value="a"),
@@ -1285,7 +1387,7 @@ class TestAskUiApplication:
             multi=False,
             cursor_index=0,  # 焦点在 A，不在自定义
             custom_buffer=Buffer(),
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=state.custom_buffer)
         app = Application(layout=Layout(layout), full_screen=False)
 
@@ -1309,8 +1411,7 @@ class TestAskUiApplication:
         from prompt_toolkit.buffer import Buffer
         from mycode.ask_ui import _AskState, _build_ask_layout
 
-        state = _AskState(
-            title="",
+        state = _AskState([AskQuestion(title="",
             description="",
             options=[
                 AskOption(label="A", value="a"),
@@ -1319,7 +1420,7 @@ class TestAskUiApplication:
             multi=False,
             cursor_index=1,  # 焦点在自定义
             custom_buffer=Buffer(),
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=state.custom_buffer)
         app = Application(layout=Layout(layout), full_screen=False)
 
@@ -1340,8 +1441,7 @@ class TestAskUiApplication:
         from prompt_toolkit.buffer import Buffer
         from mycode.ask_ui import _AskState, _build_ask_layout
 
-        state = _AskState(
-            title="",
+        state = _AskState([AskQuestion(title="",
             description="",
             options=[
                 AskOption(label="其它", value="custom",
@@ -1350,7 +1450,7 @@ class TestAskUiApplication:
             multi=False,
             cursor_index=0,
             custom_buffer=Buffer(),
-        )
+        )])
         layout = _build_ask_layout(state, custom_buffer=state.custom_buffer)
         app = Application(layout=Layout(layout), full_screen=False)
 
@@ -1403,3 +1503,341 @@ class TestAskUiPlaceholderProcessors:
         buf.text = "已输入"
         procs = _placeholder_processors(buf, "拒绝理由")
         assert procs[0].filter() is False  # 有文本时 placeholder 不显示
+
+
+# ===================================================================
+# 多问题模式测试
+# ===================================================================
+
+class TestAskUiMultiQuestionInteract:
+    """多问题模式交互：标题行 / 导航 / 提交预览 / 取消。"""
+
+    @staticmethod
+    def _questions():
+        return [
+            AskQuestion(
+                title="Q1", description="问题一",
+                options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ],
+            ),
+            AskQuestion(
+                title="Q2", description="问题二",
+                options=[
+                    AskOption(label="C", value="c"),
+                    AskOption(label="D", value="d"),
+                ],
+            ),
+            AskQuestion(
+                title="Q3", description="问题三",
+                options=[
+                    AskOption(label="E", value="e"),
+                    AskOption(label="F", value="f"),
+                ],
+            ),
+        ]
+
+    def test_each_question_enter_advances_and_preview_confirm(self):
+        """逐题 Enter 选定并前进；最后一题 Enter 进入预览，确认返回全部答案。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 默认 A，Enter → Q2；Enter 选 C → Q3；Enter 选 E → 预览；Enter 确认
+            inp.send_text("\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert len(r.answers) == 3
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+    def test_left_right_navigate_between_questions(self):
+        """左右键在问题间切换；上一题选定答案后仍保留。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Right → Q2，Down 选 D，Enter → Q3；Left → Q2，Left → Q1，
+            # Down 选 B，Enter → Q2；Right → Q3，Enter 选 E → 预览；确认
+            inp.send_text("\x1b[C\x0e\r\x1b[D\x1b[D\x0e\r\x1b[C\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert [a.selected for a in r.answers] == [["b"], ["d"], ["e"]]
+
+    def test_left_cycle_from_first(self):
+        """第一个问题按 Left 循环到最后一个问题。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Left：Q1 → Q3；Down 选 F；Enter → 预览；Enter 确认（Q1/Q2 未答）
+            inp.send_text("\x1b[D\x0e\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert [a.selected for a in r.answers] == [[], [], ["f"]]
+
+    def test_unanswered_shown_in_preview_and_returns_empty(self):
+        """未回答的问题在预览展示「未回答」，确认后该问题答案空。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 Enter 选 A → Q2；Right → Q3；Enter 选 E → 预览（Q2 未答）；确认
+            inp.send_text("\r\x1b[C\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], [], ["e"]]
+
+    def test_preview_cancel_aborts_whole(self):
+        """预览页选「取消」整体取消回答（等价 Ctrl-C 中止）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 Enter 选 A → Q2；Right → Q3；Enter 选 E → 预览；Down 到取消；Enter
+            inp.send_text("\r\x1b[C\r\x1b[B\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is True
+        assert r.answers == []
+
+    def test_preview_left_right_navigation(self):
+        """预览页向左切到最后一个问题，向右切到第一个问题。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1/Q2/Q3 全答进入预览；Left → 最后一个问题(Q3) Enter → 预览；
+            # Right → 第一个问题(Q1) Enter → Q2 Enter → Q3 Enter → 预览；确认
+            inp.send_text("\r\r\r\x1b[D\r\x1b[C\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+
+class TestAskUiMultiQuestionAnswers:
+    """多问题答案收集：自定义输入 / 多选 / 焦点索引。"""
+
+    def test_custom_input_and_multi(self):
+        """各问题独立：自定义输入 + 多选。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(
+                title="原因", options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="其他", value="other",
+                              description="输入你的回答", is_custom=True),
+                ],
+            ),
+            AskQuestion(
+                title="多选", multi=True, options=[
+                    AskOption(label="X", value="x"),
+                    AskOption(label="Y", value="y"),
+                    AskOption(label="Z", value="z"),
+                ],
+            ),
+        ]
+        with create_pipe_input() as inp:
+            # Q1：Down 到自定义，输入 abc，Enter；Q2：空格勾 X，Down，空格勾 Y，Enter；预览确认
+            inp.send_text("\x0eabc\r \x0e \r\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert r.answers[0].selected == ["other"]
+        assert r.answers[0].input == "abc"
+        assert r.answers[0].skipped is False
+        assert r.answers[1].selected == ["x", "y"]
+        assert r.answers[1].checked == {0, 1}
+        assert r.answers[1].skipped is False
+
+    def test_skipped_distinguishes_unanswered_from_empty_multi(self):
+        """skipped 区分「未作答」与「多选主动勾选 0 项」。
+
+        - 未被 Enter 选定（跳过 / Tab 直达预览）→ skipped=True。
+        - 多选下 Enter 提交但被动勾选 0 项 → skipped=False 且 selected=[]。
+        """
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", multi=True, options=[
+                AskOption(label="X", value="x"),
+                AskOption(label="Y", value="y"),
+            ]),
+        ]
+        # 场景 A：两题都未 Enter，Tab 直达预览并确认
+        with create_pipe_input() as inp:
+            inp.send_text("\t\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert [a.skipped for a in r.answers] == [True, True]
+
+        # 场景 B：Q1 Enter 选 A；Q2 Enter（多选不勾任何项）；预览确认
+        with create_pipe_input() as inp:
+            inp.send_text("\r\r\r")
+            r2 = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r2.answers[0].skipped is False
+        assert r2.answers[0].selected == ["a"]
+        assert r2.answers[1].skipped is False
+        assert r2.answers[1].selected == []
+
+    def test_multiquestion_ctrlc_aborts(self):
+        """多问题模式 Ctrl-C 中止：answers 为空、aborted=True。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            inp.send_text("\x03")
+            r = ask_ui(
+                [AskQuestion(title="Q1", options=[AskOption(label="A", value="a")])],
+                input=inp, output=DummyOutput(),
+            )
+        assert r.aborted is True
+        assert r.answers == []
+
+    def test_single_question_via_questions_list(self):
+        """questions 传单个问题时 answers 长度为 1。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            inp.send_text("\x0e\r")
+            r = ask_ui(
+                [
+                    AskQuestion(
+                        title="Q", description="描述",
+                        options=[AskOption(label="A", value="a"),
+                                 AskOption(label="B", value="b")],
+                    ),
+                ],
+                input=inp, output=DummyOutput(),
+            )
+        assert r.aborted is False
+        assert len(r.answers) == 1
+        assert r.answers[0].selected == ["b"]
+        assert r.answers[0].cursor_index == 1
+
+    def test_left_right_move_cursor_in_custom_input(self):
+        """自定义输入框激活时左右键留给输入框移动光标（不做问题切换）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="其他", value="other",
+                          description="输入", is_custom=True),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ]
+        with create_pipe_input() as inp:
+            # Q1：Down 到自定义，输入 abc，Right，输入 d（应插入到 abc 后，
+            # 而非切到 Q2）；Enter 选 Q1；Q2 Enter → 预览；确认
+            inp.send_text("\x0eabc\x1b[Cd\r\r\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert r.answers[0].selected == ["other"]
+        assert r.answers[0].input == "abcd"
+        assert r.answers[1].selected == ["b"]
+
+
+class TestAskUiMultiQuestionLayout:
+    """多问题布局构造：标题行 / 预览页。"""
+
+    @staticmethod
+    def _layout_text(layout) -> str:
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        parts: list[str] = []
+
+        def walk(node):
+            if isinstance(node, Window):
+                c = node.content
+                if isinstance(c, FormattedTextControl):
+                    frags = c.text if hasattr(c, "text") else c()
+                    if isinstance(frags, list):
+                        parts.append("".join(t for _, t in frags))
+                    else:
+                        parts.append(str(frags))
+            elif hasattr(node, "children"):
+                for ch in node.children:
+                    walk(ch)
+
+        walk(layout)
+        return "\n".join(parts)
+
+    def test_tabs_show_all_titles_and_first_active(self):
+        """标题行横向排列所有问题短标题，末尾「提交」；当前问题用标题色。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout, _STYLE_TITLE
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        layout = _build_ask_layout(state, None)
+        text = self._layout_text(layout)
+        assert "🔳 Q1" in text
+        assert "🔳 Q2" in text
+        assert "提交" in text
+        # 当前问题（Q1）标题用 ask-title 样式，Q2 普通样式
+        tabs = layout.children[0]
+        ctrl = tabs.content
+        frags = ctrl.text
+        style_of_q1 = next(s for s, t in frags if "Q1" in t)
+        style_of_q2 = next(s for s, t in frags if "Q2" in t)
+        assert style_of_q1 == _STYLE_TITLE
+        assert style_of_q2 == ""
+
+    def test_tab_checkbox_toggles_when_answered(self):
+        """已按 Enter 选定的问题，标题行复选框变勾选。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        state._answered[0] = True
+        state.q_index = 1
+        layout = _build_ask_layout(state, None)
+        text = self._layout_text(layout)
+        assert "✅ Q1" in text  # 已答 → 勾选
+        assert "🔳 Q2" in text  # 未答 → 未勾选
+
+    def test_preview_layout_shows_answers_and_unanswered(self):
+        """预览页：已答显示答案，未答显示「未回答」（亮黄样式）。"""
+        from mycode.ask_ui import _AskState, _build_preview_layout, _STYLE_UNANSWERED
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a"),
+                                             AskOption(label="B", value="b")]),
+            AskQuestion(title="Q2", options=[AskOption(label="C", value="c")]),
+        ])
+        state._answered[0] = True
+        state._sels[0] = 1
+        state.q_index = -1  # 预览页
+        layout = _build_preview_layout(state)
+        text = self._layout_text(layout)
+        assert "Q1：b" in text
+        assert "Q2：未回答" in text
+
+        # 未回答文本用亮黄样式
+        found = False
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        def walk(node):
+            nonlocal found
+            if isinstance(node, Window):
+                c = node.content
+                if isinstance(c, FormattedTextControl):
+                    frags = c.text
+                    if isinstance(frags, list):
+                        for s, t in frags:
+                            if t == "未回答" and s == _STYLE_UNANSWERED:
+                                found = True
+            elif hasattr(node, "children"):
+                for ch in node.children:
+                    walk(ch)
+        walk(layout)
+        assert found
+
+    def test_preview_confirm_cancel_marks(self):
+        """预览页确认/取消行前缀与单选一致（当前行亮蓝粗体）。"""
+        from mycode.ask_ui import _AskState, _build_preview_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+        ])
+        state.q_index = -1
+        layout = _build_preview_layout(state)
+        text = self._layout_text(layout)
+        assert "确认" in text
+        assert "取消" in text
+        assert "🟢 确认" in text  # 默认当前为确认
+
+        state.preview_sel = 1
+        layout = _build_preview_layout(state)
+        text = self._layout_text(layout)
+        assert "🟢 取消" in text

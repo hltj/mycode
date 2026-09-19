@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mycode.ask_ui import AskResult
+from mycode.ask_ui import AskAnswer, AskResult
 from mycode.session import AbortLoop
 
 # 取真正的子模块对象（包 ``__init__`` 的 ``from ... import ask_user`` 会把
@@ -171,37 +171,39 @@ class TestAskUserResult:
     def test_single_selection_json(self):
         out, stub, _ = self._run(
             options=[{"label": "A"}],
-            result=AskResult(selected=["A"], input=None),
+            result=AskResult(answers=[AskAnswer(selected=["A"], input=None)]),
         )
         assert json.loads(out) == {"selected": ["A"]}
-        # ask_ui 收到正确参数
-        kwargs = stub.call_args.kwargs
-        assert kwargs["title"] == "标题"
-        # question 为 None 时传空串（ask_ui 的 description 是 str，空串跳过描述行）
-        assert kwargs["description"] == ""
-        assert kwargs["multi"] is False
+        # ask_ui 收到正确参数（单个问题数组）
+        args, kwargs = stub.call_args
+        q = args[0][0]  # questions[0]
+        assert q.title == "标题"
+        # question 为 None 时传空串（AskQuestion.description 默认空串）
+        assert q.description == ""
+        assert q.multi is False
         assert kwargs["style"] == "STYLE"
-        assert [o.label for o in kwargs["options"]] == ["A", "其他"]
+        assert [o.label for o in q.options] == ["A", "其他"]
 
     def test_question_passed_as_description(self):
         out, stub, _ = self._run(
             question="完整问题？",
             options=[{"label": "A"}],
-            result=AskResult(selected=["A"], input=None),
+            result=AskResult(answers=[AskAnswer(selected=["A"], input=None)]),
         )
-        assert stub.call_args.kwargs["description"] == "完整问题？"
-        assert stub.call_args.kwargs["title"] == "标题"
+        q = stub.call_args.args[0][0]
+        assert q.description == "完整问题？"
+        assert q.title == "标题"
 
     def test_custom_input_included(self):
         out, _, _ = self._run(
-            result=AskResult(selected=["其他"], input="自定义内容"),
+            result=AskResult(answers=[AskAnswer(selected=["其他"], input="自定义内容")]),
         )
         assert json.loads(out) == {"selected": ["其他"], "input": "自定义内容"}
 
     def test_custom_empty_input_included(self):
         """选中自定义但输入为空串时也带出 input 字段。"""
         out, _, _ = self._run(
-            result=AskResult(selected=["其他"], input=""),
+            result=AskResult(answers=[AskAnswer(selected=["其他"], input="")]),
         )
         assert json.loads(out) == {"selected": ["其他"], "input": ""}
 
@@ -209,14 +211,14 @@ class TestAskUserResult:
         out, stub, _ = self._run(
             multi=True,
             options=[{"label": "X"}, {"label": "Y"}],
-            result=AskResult(selected=["Y", "X"], input=None),
+            result=AskResult(answers=[AskAnswer(selected=["Y", "X"], input=None)]),
         )
         assert json.loads(out) == {"selected": ["Y", "X"]}
-        assert stub.call_args.kwargs["multi"] is True
+        assert stub.call_args.args[0][0].multi is True
 
     def test_no_input_field_when_custom_not_selected(self):
         out, _, _ = self._run(
-            result=AskResult(selected=["A"], input=None),
+            result=AskResult(answers=[AskAnswer(selected=["A"], input=None)]),
         )
         assert "input" not in json.loads(out)
 
@@ -227,7 +229,7 @@ class TestAskUserResult:
 
 class TestAskUserAbort:
     def test_aborted_raises_abort_loop(self):
-        stub = MagicMock(return_value=AskResult(selected=[], input=None, aborted=True))
+        stub = MagicMock(return_value=AskResult(aborted=True))
         with patch.object(ask_user_mod, "ask_ui_impl", stub), \
              pytest.raises(AbortLoop) as exc_info:
             ask_user_mod.ask_user(title="标题")
@@ -286,7 +288,7 @@ class TestAgentLoopAskUserAbort:
         ))
 
         # ask_user 内部 ask_ui 返回 aborted
-        stub = MagicMock(return_value=AskResult(selected=[], input=None, aborted=True))
+        stub = MagicMock(return_value=AskResult(aborted=True))
         with patch.object(cli, "client", fake_client), \
              patch.object(cli.ToolsRegistry, "get_handler",
                           return_value=ask_user_mod.ask_user), \

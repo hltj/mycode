@@ -190,24 +190,30 @@ def confirm_tool(
 
     while True:
         result = _ask_ui_mod.ask_ui(
-            options=options,
-            custom_buffer=ask_buffer,
-            cursor_index=cursor_index,
-            checked=checked,
+            [
+                _ask_ui_mod.AskQuestion(
+                    title="",
+                    options=options,
+                    custom_buffer=ask_buffer,
+                    cursor_index=cursor_index,
+                    checked=checked,
+                ),
+            ],
             style=style,
             input=input,
             output=output,
         )
-        # 维持 ask 状态：把提交时的焦点 / 勾选记下，下次调用回传
-        cursor_index = result.cursor_index
-        checked = set(result.checked)
-
         # 用户以 Ctrl-C 中止：取消
         if result.aborted:
             return (ConfirmAction.CANCEL, None)
 
-        selected = list(result.selected)
-        custom_input = result.input
+        # 维持 ask 状态：把提交时的焦点 / 勾选记下，下次调用回传
+        a0 = result.answers[0]
+        cursor_index = a0.cursor_index
+        checked = set(a0.checked)
+
+        selected = list(a0.selected)
+        custom_input = a0.input
 
         # 自定义输入（拒绝）分支：无理由 vs 有理由
         if ConfirmAction.REJECT.value in selected:

@@ -7,19 +7,18 @@
 - 普通选项（label / 可选 value / 可选 description）
 - 末尾「自定义输入」选项（与选项值一起返回）
 - 单选 / 多选支持
+- **多问题模式**：一次询问多个问题；每个问题独立作答，顶部横向排列
+  各问题短标题（含复选框 + 末尾「提交」），左右键切换、Enter 选定，
+  最后一题回车进入提交预览页（确认 / 取消）。
 
 返回值::
 
     ``AskResult`` 数据类，字段：
 
-    - ``selected``：选中项 ``value`` 列表（无 ``value`` 时回退 ``label``）；
-      单选长度 1，多选按 options 顺序列出所有勾选项。
-    - ``input``：仅当选中了自定义选项时为输入框当前文本（可能为空串），
-      其余情况为 ``None``。
-    - ``cursor_index``：提交时焦点所在选项索引（供下次调用维持焦点）。
-    - ``checked``：多选模式下提交时的勾选集合（供下次调用维持勾选）。
-    - ``aborted``：True 表示用户以 Ctrl-C 中止了交互；此时 ``selected``
-      为空列表、``input`` 为 ``None``。
+    - ``answers``：长度与问题数一致的答案数组（每个元素是一个
+      ``AskAnswer``），单问题即长度 1；顺序与问题数组一致。
+    - ``aborted``：True 表示用户以 Ctrl-C 中止，或多问题预览页选了「取消」；
+      此时 ``answers`` 为空列表。
 
 调用约定：``options`` 列表中**最后一个**元素建议为 ``is_custom=True``，
 ask_ui 自动为其渲染输入框；占位文字取该选项的 ``description``。
@@ -30,6 +29,7 @@ ask_ui 自动为其渲染输入框；占位文字取该选项的 ``description``
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from itertools import chain
 from typing import Optional, cast
 
 from prompt_toolkit.application import Application
@@ -49,7 +49,11 @@ from mycode import renderer as _renderer_mod
 # 选项 / 标题的样式类名（在渲染器 prompt style 中注册）
 _STYLE_TITLE = "class:ask-title"
 _STYLE_DESCRIPTION = "class:ask-description"
+# 问题描述：粗体，与选项描述的暗灰区分
+_STYLE_QUESTION = "class:ask-question"
 _STYLE_ACTIVE = "class:ask-active"
+# 提交预览页「未回答」亮黄
+_STYLE_UNANSWERED = "class:ask-unanswered"
 # 与 cli.py 中 PromptSession 的 placeholder 共用样式类
 _STYLE_PLACEHOLDER = "class:placeholder"
 
@@ -79,52 +83,171 @@ class AskOption:
 
 
 @dataclass
-class AskResult:
-    """ask_ui 交互结果。
+class AskAnswer:
+    """一道问题的答案。
 
     Attributes:
-        selected: 选中项 value 列表（顺序与 options 一致）。
+        selected: 选中项 value 列表（顺序与 options 一致）；
+            单选长度 1，多选按 options 顺序列出勾选项。
         input: 自定义输入字符串（仅当选中 ``is_custom`` 选项时有意义）。
-        cursor_index: 提交时焦点所在选项索引（用于下次调用维持焦点位置）。
-        checked: 多选模式下提交时的勾选集合（用于下次调用维持勾选）。
-        aborted: True 表示用户以 Ctrl-C 终止交互。
+        cursor_index: 提交时焦点所在选项索引（用于多次调用间维持焦点位置）。
+        checked: 多选模式下提交时的勾选集合（用于多次调用间维持勾选）。
+        skipped: True 表示该问题**未作答**（用户未按 Enter 选定就在
+            提交预览页确认提交）。与此相对，多选下用户主动勾选 0 项时
+            ``selected`` 为空列表但 ``skipped`` 为 False。单问题模式
+            Ctrl-C 中止时 ``aborted`` 为 True 且整体 ``answers`` 为空，
+            不涉及单题 skipped。
     """
 
     selected: list[str] = field(default_factory=list)
     input: Optional[str] = None
     cursor_index: int = 0
     checked: set[int] = field(default_factory=set)
+    skipped: bool = False
+
+
+@dataclass
+class AskResult:
+    """ask_ui 整体交互结果。
+
+    Attributes:
+        answers: 每道问题的答案数组（顺序与问题数组一致）；单问题即
+            长度 1 的数组。每道问题的答案对应一个 ``AskAnswer``。
+        aborted: True 表示用户整体中止（Ctrl-C 或预览页选「取消」）；
+            此时 ``answers`` 为空列表，调用方应以 ``aborted`` 为准
+            判断是否取消。
+    """
+
+    answers: list[AskAnswer] = field(default_factory=list)
     aborted: bool = False
 
 
+@dataclass
+class AskQuestion:
+    """每个问题的数据。
+
+    Attributes:
+        title: 问题短标题（多问题标题行的横向展示字段）。多问题模式下
+            各问题应提供短标题用于标题行展示；仅单问题（长度为 1 的
+            数组，或 confirm / 目录信任等无标题场景）可空串。
+        description: 可选，完整问题描述（展示在当前问题正下方）。
+        options: 选项列表，规则与 ``ask_ui`` 的 ``options`` 一致
+            （建议末尾 ``is_custom=True`` 渲染输入框）。
+        multi: 该问题是否多选（默认 False 单选）。
+        custom_buffer: 可选，复用该问题自定义输入框的 Buffer。
+        cursor_index: 初始焦点选项索引（多次调用间维持焦点）。
+        checked: 多选模式初始勾选集合。
+    """
+
+    title: str = ""
+    description: str = ""
+    options: list[AskOption] | None = None
+    multi: bool = False
+    custom_buffer: Buffer | None = None
+    cursor_index: int = 0
+    checked: set[int] | None = None
+
+
 class _AskState:
-    """ask_ui 内部状态。"""
+    """ask_ui 内部状态。
+
+    ``questions`` 为问题数组。
+    运行时状态（焦点 / 勾选 / 自定义 buffer / 是否已回答）按问题分别保存，
+    ``sel`` / ``checked`` / ``custom_idx`` / ``title`` / ``description`` /
+    ``options`` / ``multi`` 为「当前问题」的便捷视图。
+
+    ``q_index``：当前问题索引；多问题模式下 ``-1`` 表示提交预览页。
+    ``preview_sel``：预览页选中项（0 确认 / 1 取消）。
+    """
 
     def __init__(
         self,
-        title: str = "",
-        description: str = "",
-        options: list[AskOption] | None = None,
-        multi: bool = False,
-        custom_buffer: Buffer | None = None,
-        cursor_index: int = 0,
-        checked: set[int] | None = None,
+        questions: list[AskQuestion],
     ) -> None:
-        self.title = title
-        self.description = description
-        self.options = list(options or [])
-        self.multi = multi
-        # 焦点 / 勾选可由调用方注入（用于多次调用间维持状态）
-        self.sel: int = cursor_index if options is not None and 0 <= cursor_index < len(self.options) else 0
-        self.checked: set[int] = set(checked) if checked is not None else set()
+        if not questions:
+            # 空数组视为单问题（无选项无标题），避免各属性索引越界
+            questions = [AskQuestion(title="", description="", options=[])]
+        self.questions: list[AskQuestion] = list(questions)
+        self.q_index: int = 0
+        self.preview_sel: int = 0
         self.finished: bool = False
-        self.custom_buffer = custom_buffer
-        # 末尾自定义选项索引（-1 表示无）
-        self.custom_idx: int = next(
-            (i for i, o in enumerate(self.options) if o.is_custom),
-            -1,
-        )
+        # 每个问题的运行时状态，保持与 questions 同序
+        opts_list = [q.options or [] for q in self.questions]
+        self._sels: list[int] = [
+            q.cursor_index if 0 <= q.cursor_index < len(opts) else 0
+            for q, opts in zip(self.questions, opts_list)
+        ]
+        self._checkeds: list[set[int]] = [
+            set(q.checked or []) for q in self.questions
+        ]
+        self._custom_buffers: list[Buffer | None] = [
+            q.custom_buffer for q in self.questions
+        ]
+        self._custom_idxs: list[int] = [
+            next((i for i, o in enumerate(opts) if o.is_custom), -1)
+            for opts in opts_list
+        ]
+        self._answered: list[bool] = [False] * len(self.questions)
 
+    # ---- 模式判断 ----
+    @property
+    def multi_question(self) -> bool:
+        """是否多问题模式（问题数 > 1）。"""
+        return len(self.questions) > 1
+
+    @property
+    def preview(self) -> bool:
+        """当前是否位于提交预览页（仅多问题模式）。"""
+        return self.multi_question and self.q_index < 0
+
+    # ---- 当前问题便捷视图 ----
+    @property
+    def idx(self) -> int:
+        """当前问题索引（预览页时回退到最后一个问题）。"""
+        return max(self.q_index, 0)
+
+    @property
+    def title(self) -> str:
+        return self.questions[self.idx].title
+
+    @property
+    def description(self) -> str:
+        return self.questions[self.idx].description
+
+    @property
+    def options(self) -> list[AskOption]:
+        return list(self.questions[self.idx].options or [])
+
+    @property
+    def multi(self) -> bool:
+        return self.questions[self.idx].multi
+
+    @property
+    def sel(self) -> int:
+        return self._sels[self.idx]
+
+    @sel.setter
+    def sel(self, value: int) -> None:
+        self._sels[self.idx] = value
+
+    @property
+    def checked(self) -> set[int]:
+        return self._checkeds[self.idx]
+
+    @property
+    def custom_idx(self) -> int:
+        return self._custom_idxs[self.idx]
+
+    @property
+    def custom_buffer(self) -> Buffer | None:
+        return self._custom_buffers[self.idx]
+
+    @property
+    def answered(self) -> bool:
+        """当前问题是否已被 Enter 选定答案。"""
+        return self._answered[self.idx]
+
+    # ---- 自定义输入框激活态 ----
     @property
     def custom_active(self) -> bool:
         """自定义输入框是否激活。
@@ -207,7 +330,8 @@ def _description_fragments(text: str) -> tuple[list, str]:
     汉字断行。rich 按空白把文本划分为若干块，折行只发生在块间空白处，
     无法在汉字间折行；因此描述窗口必须设置 ``wrap_lines=True``。
 
-    - classic 风格：纯文本 + 暗灰样式，按原文本换行（多行描述）。
+    - classic 风格：纯文本 + ``_STYLE_QUESTION`` 样式（粗体），
+      按原文本换行（多行描述）。
     - default 风格：直接交给 rich Markdown ``soft_wrap`` 渲染成富文本
       （加粗 / 内联代码 / 列表 / 代码块等），剥离块级元素行尾 pad 空格
       后解析为 fragments。按标准 markdown 语义：
@@ -217,14 +341,16 @@ def _description_fragments(text: str) -> tuple[list, str]:
         - 空行分隔、列表、代码块等结构与普通 markdown 相同。
        ask_ui 不做任何文本改写，换行语义完全由入参的 markdown 决定。
 
-    两种风格都返回 ``_STYLE_DESCRIPTION`` 作为窗口样式：未着色的纯文本
-    部分继承暗灰描述色，富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。
+    两种风格都返回 ``_STYLE_QUESTION`` 作为窗口样式：未着色的纯文本
+    部分继承粗体，富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。
+    问题描述与选项描述不同：选项描述沿用 ``_STYLE_DESCRIPTION``
+    （暗灰），此处为问题描述。
 
     返回 ``(fragments, style)``。markdown 渲染异常时回退纯文本，
     保证界面不因描述格式崩溃。
     """
     if _renderer_mod.RENDER_STYLE == "classic":
-        return [(_STYLE_DESCRIPTION, text)], _STYLE_DESCRIPTION
+        return [(_STYLE_QUESTION, text)], _STYLE_QUESTION
     try:
         ansi = _renderer_mod._markdown_ansi(text, soft_wrap=True)
         # ANSI 解析产出的 fragments 实际均为 2 元组 (style, text)，收窄类型
@@ -234,9 +360,9 @@ def _description_fragments(text: str) -> tuple[list, str]:
         if frags and frags[-1][1] == "\n":
             frags = frags[:-1]
         frags = _strip_trailing_pad(frags)
-        return frags, _STYLE_DESCRIPTION
+        return frags, _STYLE_QUESTION
     except Exception:
-        return [(_STYLE_DESCRIPTION, text)], _STYLE_DESCRIPTION
+        return [(_STYLE_QUESTION, text)], _STYLE_QUESTION
 
 
 def _placeholder_processors(buf: Buffer, placeholder: str | None):
@@ -343,18 +469,129 @@ def _build_option_window(
     return VSplit([label_win, input_win])
 
 
+def _ask_checkbox(checked: bool) -> str:
+    """复选框符号，与多选选项的复选框风格一致。
+
+    default：``✅``/``🔳``；classic：``[x]``/``[ ]``。
+    """
+    if _renderer_mod.RENDER_STYLE == "classic":
+        return "[x] " if checked else "[ ] "
+    return "✅ " if checked else "🔳 "
+
+
+def _build_question_tabs(state: _AskState):
+    """构造多问题顶部标题行（横向排列，末尾「提交」）。
+
+    - 每个问题前都带一个复选框（``_ask_checkbox``，与多选复选框风格一致）；
+      复选框默认未勾选，问题已按 Enter 选定答案后置为勾选。
+    - 当前问题的标题用标题色（``_STYLE_TITLE``），其余问题为普通文本颜色。
+    - 末尾「提交」用当前标题色展示（横向导航的终点）。
+    """
+    items = [
+        (
+            _STYLE_TITLE if (i == state.idx and not state.preview) else "",
+            f"{_ask_checkbox(state._answered[i])}{(q.title or '_')}",
+        )
+        for i, q in enumerate(state.questions)
+    ]
+    # 每项之间插一分隔 fragment
+    frags: StyleAndTextTuples = list(chain(*[
+        [("", "  "), item] if i else [item]
+        for i, item in enumerate(items)
+    ]))
+    # 末尾「提交」：位于提交预览页时用标题色（当前导航焦点），否则普通色
+    frags.append((_STYLE_TITLE if state.preview else "", "   提交"))
+    return Window(content=FormattedTextControl(frags), height=1, dont_extend_width=True)
+
+
+def _answer_summary(state: _AskState, i: int) -> str:
+    """第 i 个问题已选答案的摘要文本（供预览页展示）。"""
+    q = state.questions[i]
+    opts = q.options or []
+    custom_idx = state._custom_idxs[i]
+    checked = state._checkeds[i]
+    if q.multi:
+        sel_idxs = sorted(checked)
+    elif 0 <= state._sels[i] < len(opts):
+        sel_idxs = [state._sels[i]]
+    else:
+        sel_idxs = []
+    parts = [opts[x].effective_value() for x in sel_idxs if 0 <= x < len(opts)]
+    inp: str | None = None
+    if custom_idx >= 0 and custom_idx in checked:
+        cb = state._custom_buffers[i]
+        inp = cb.text if cb is not None else ""
+    if parts:
+        text = "、".join(parts)
+        if inp:
+            text = f"{text}（{inp}）"
+        return text
+    if inp is not None:
+        return inp
+    return "未回答"
+
+
+def _build_preview_layout(state: _AskState) -> HSplit:
+    """构造提交预览页：标题行 + 问题答案清单 + 确认/取消单选。
+
+    - 顶部仍显示多问题标题行（每个问题名为普通文本，末尾「提交」标题色）。
+    - 逐行列出「问题名：答案」；未作答的显示亮黄「未回答」。
+    - 末尾空行后是「确认 / 取消」单选（无标题与描述）。
+    """
+    question_rows = [
+        Window(
+            content=FormattedTextControl([
+                ("", f"{(q.title or '_')}："),
+                (
+                    "" if state._answered[i] else _STYLE_UNANSWERED,
+                    _answer_summary(state, i) if state._answered[i] else "未回答",
+                ),
+            ]),
+            height=1,
+            dont_extend_width=True,
+        )
+        for i, q in enumerate(state.questions)
+    ]
+    # 确认/取消单选行（前缀用单选风格的 _mark_str）
+    confirm_rows = [
+        Window(
+            content=FormattedTextControl(
+                [( _STYLE_ACTIVE if i == state.preview_sel else "",
+                   f"{_mark_str(False, i == state.preview_sel, False)}{label}")],
+                focusable=i == state.preview_sel,
+                show_cursor=False,
+            ),
+            height=1,
+            dont_extend_width=True,
+        )
+        for i, label in enumerate(["确认", "取消"])
+    ]
+    rows = [
+        _build_question_tabs(state),
+        Window(content=FormattedTextControl(""), height=1),
+        *question_rows,
+        Window(content=FormattedTextControl(""), height=1),
+        *confirm_rows,
+    ]
+    return HSplit(rows)
+
+
 def _build_ask_layout(
     state: _AskState,
     custom_buffer: Buffer | None,
 ) -> HSplit:
     """构建询问界面整体布局：标题 → 描述 → 各选项行。
 
-    标题与描述都非空才展示对应行。
+    - 多问题模式：标题行是横向排列的短标题 + 末尾「提交」。
+    - 单问题模式：标题行是单问题标题（与历史行为一致）。
+    标题与描述都非空才展示对应行；标题行或描述存在时增加分隔空行。
     """
     rows: list = []
 
-    # 标题（非空时展示）
-    if state.title:
+    # 标题行（多问题为横向 tabs；单问题为原标题）
+    if state.multi_question:
+        rows.append(_build_question_tabs(state))
+    elif state.title:
         rows.append(Window(
             content=FormattedTextControl([(_STYLE_TITLE, state.title)]),
             height=1,
@@ -385,16 +622,17 @@ def _build_ask_layout(
         ))
 
     # 标题 / 描述与选项之间加一个空行（header 区存在时才加）
-    if state.title or state.description:
+    if state.multi_question or state.title or state.description:
         rows.append(Window(
             content=FormattedTextControl(""),
             height=1,
         ))
 
     # 选项
-    for idx, opt in enumerate(state.options):
-        active = idx == state.sel
-        rows.append(_build_option_window(state, idx, opt, active, custom_buffer))
+    rows.extend(
+        _build_option_window(state, idx, opt, idx == state.sel, custom_buffer)
+        for idx, opt in enumerate(state.options)
+    )
 
     return HSplit(rows)
 
@@ -404,15 +642,15 @@ def _option_row_offset(state: _AskState) -> int:
 
     该索引用作焦点定位的下标：``_focused_window`` 以 ``offset + sel``
     取当前选中选项在根 HSplit 中的 child。描述即使多行也只是单个 child，
-    故该值不随描述行数变化。
+    故该值不随描述行数变化。多问题模式标题行为横向 tabs，同样占一个 child。
     """
     offset = 0
-    if state.title:
+    if state.multi_question or state.title:
         offset += 1
     if state.description:
         offset += 1
     # 有标题或描述时，header 区后有分隔空行
-    if state.title or state.description:
+    if state.multi_question or state.title or state.description:
         offset += 1
     return offset
 
@@ -441,6 +679,32 @@ def _focused_window(
     return cast(Window, row)
 
 
+def _build_layout(state: _AskState) -> HSplit:
+    """按当前状态构造整体布局：预览页或当前问题布局。"""
+    if state.preview:
+        return _build_preview_layout(state)
+    return _build_ask_layout(state, state.custom_buffer)
+
+
+def _focus_from_layout(
+    app, state: _AskState,
+) -> Window | None:
+    """从当前 app 布局中取出应聚焦的 Window。
+
+    必须在 ``app.layout.container`` 已更新后调用（focus 要求元素属于
+    当前 layout）。预览页聚焦确认/取消行；问题页聚焦当前选中选项行。
+    """
+    container = app.layout.container
+    if state.preview:
+        rows = cast(HSplit, container).children
+        # children[-2] 确认（preview_sel=0）、children[-1] 取消（preview_sel=1）
+        return cast(Window, rows[-2 + state.preview_sel])
+    if state.options:
+        rows = cast(HSplit, container).children
+        return _focused_window(state, rows, state.custom_buffer)
+    return None
+
+
 def _run_ask_ui(
     state: _AskState,
     input=None,
@@ -449,83 +713,228 @@ def _run_ask_ui(
 ) -> AskResult:
     """运行 ask_ui 交互界面，返回结果。
 
-    当 ``state.custom_buffer`` 由外部传入时复用该 buffer（其文本与光标位置
-    在调用间保持）。默认（``None``）时为本次调用新建 buffer。
+    - 单问题：与历史行为一致（标题/描述 + 选项行，Enter 提交）。
+    - 多问题：标题行横向排列短标题 + 末尾「提交」；每个问题独立作答，
+      Enter 选定答案并切到下一问题；最后一个问题 Enter 后进入提交预览页。
+      预览页列出各问题答案（未回答显示亮黄），「确认」可整体返回，
+      按「取消」即整体取消回答。左右键在问题间切换，预览页左切到
+      最后一个问题、右切到第一个问题。
+
+    ``state`` 的重建使用各问题的 custom_buffer（默认新建，文本与光标位置
+    在问题间保持）。
 
     ``style`` 由调用方传入，否则 prompt_toolkit 用默认样式，
     class:placeholder / class:mycode-input 等样式表项不会生效。
     """
-    if state.custom_idx >= 0:
-        custom_buffer: Buffer | None = state.custom_buffer
-        if custom_buffer is None:
-            custom_buffer = Buffer()
-            state.custom_buffer = custom_buffer
-    else:
-        custom_buffer = None
-
     result = AskResult()
     kb = KeyBindings()
+
+    # 各问题的自定义输入框：外部传入的复用，否则按需新建。
+    # 逐个问题对应处理：无自定义选项的问题（custom_idx 为 -1）保持 None，
+    # 其余为已有 buffer 或新建 Buffer，整体仍与 questions 一一对应。
+    state._custom_buffers[:] = [
+        buf if (idx < 0 or buf is not None) else Buffer()
+        for buf, idx in zip(state._custom_buffers, state._custom_idxs)
+    ]
+
+    def _current_custom() -> Buffer | None:
+        """当前问题布局对应的输入框（无自定义选项时 None）。"""
+        if state.preview or state.custom_idx < 0:
+            return None
+        return state.custom_buffer
 
     def _rebuild(app) -> None:
         """重建布局并更新焦点。
 
-        - 选中自定义选项：焦点落到输入框。
-        - 其他选项：焦点落到当前选中的普通选项行（show_cursor=False，
-          不闪现光标），避免 prompt_toolkit 默认把焦点落到标题等首行。
+        多问题模式：当前问题布局或提交预览页；焦点落到当前选中行的
+        可聚焦 Window（自定义激活则输入框）。预览页焦点落到确认/取消行。
         """
-        app.layout.container = _build_ask_layout(state, custom_buffer)
-        if not state.options:
+        app.layout.container = _build_layout(state)
+        focus = _focus_from_layout(app, state)
+        if focus is None:
             return
-        # 按索引直接取当前选中行并聚焦（自定义激活则聚焦输入框，
-        # 否则聚焦 label 行 / 普通选项行）
-        rows = cast(HSplit, app.layout.container).children
-        win = _focused_window(state, rows, custom_buffer)
-        app.layout.focus(win)
+        app.layout.focus(focus)
 
-    def _move(event, delta: int) -> None:
-        if state.finished or not state.options:
+    def _move_option(event, delta: int) -> None:
+        """在问题选项内移动焦点（环形）。"""
+        if state.finished:
             return
-        n = len(state.options)
+        opts = state.options
+        if not opts or state.preview:
+            return
+        n = len(opts)
         state.sel = (state.sel + delta) % n
         _rebuild(event.app)
 
     def _finish(event) -> None:
-        """按当前焦点 / 勾选集合收集结果并退出。
+        """提交预览页确认 / 单问题提交：收集所有答案并退出。
 
-        多选：selected 只含勾选项（无勾选时为空列表）；
-        单选：selected 为当前焦点项。
+        - 预览页停在「取消」时：整体取消回答（等同 Ctrl-C 中止，
+          ``aborted=True``），不收集答案。
+        - 其余情况：每道问题的答案收集成 ``AskAnswer`` 存入
+          ``result.answers``（顺序与问题数组一致）。
         """
+        if state.preview and state.preview_sel == 1:
+            state.finished = True
+            result.aborted = True
+            event.app.exit()
+            return
         state.finished = True
-        if state.multi:
-            sel_idxs = sorted(state.checked)
-        else:
-            sel_idxs = [state.sel]
-        for idx in sel_idxs:
-            result.selected.append(state.options[idx].effective_value())
-        if state.custom_idx in sel_idxs and custom_buffer is not None:
-            result.input = custom_buffer.text
-        else:
-            result.input = None
-        # 记录提交时的焦点 / 勾选，供外部维持状态
-        result.cursor_index = state.sel
-        result.checked = set(state.checked)
+        result.answers = [_collect_answer(i) for i in range(len(state.questions))]
         event.app.exit()
+
+    def _collect_answer(i: int) -> AskAnswer:
+        """按第 i 个问题的当前状态实时收集答案。
+
+        - 未被 Enter 选定（未作答）：返回 ``skipped=True`` 的空答案
+          （``selected`` 为空列表、``input`` 为 None），提交预览页据此
+          显示「未回答」，并与「多选主动勾选 0 项」区分。
+        - 已选定：按当时的焦点 / 勾选 / 自定义输入文本收集（再次编辑时
+          以最新状态为准，不做缓存）。
+        """
+        q = state.questions[i]
+        opts = q.options or []
+        custom_idx = state._custom_idxs[i]
+        checked = state._checkeds[i]
+        sel_p = state._sels[i]
+        if not state._answered[i]:
+            return AskAnswer(
+                selected=[], cursor_index=sel_p,
+                checked=set(checked), input=None, skipped=True,
+            )
+        if q.multi:
+            sel_idxs = sorted(c for c in checked if c < len(opts))
+        else:
+            sel_idxs = [sel_p] if 0 <= sel_p < len(opts) else []
+        ar = AskAnswer(
+            selected=[opts[x].effective_value() for x in sel_idxs],
+            cursor_index=sel_p,
+            checked=set(checked),
+        )
+        if custom_idx in sel_idxs:
+            cb = state._custom_buffers[i]
+            ar.input = cb.text if cb is not None else ""
+        else:
+            ar.input = None
+        return ar
+
+    def _answer_current(event) -> None:
+        """选定当前问题的答案，按情形收尾或切到下一题。
+
+        - 选定答案：标记为已回答（标题行复选框转勾选）。
+        - 多问题模式：切到下一个问题；已经是最后一个问题时进入
+          提交预览页。
+        - 单问题模式：直接提交退出。
+        """
+        if state.finished:
+            return
+        if state.preview:
+            _finish(event)
+            return
+        q = state.questions[state.idx]
+        if not (q.options or []):
+            return
+        state._answered[state.idx] = True
+        if state.multi_question:
+            if state.idx >= len(state.questions) - 1:
+                state.q_index = -1
+                state.preview_sel = 0
+            else:
+                state.q_index = state.idx + 1
+        else:
+            _finish(event)
+            return
+        _rebuild(event.app)
+
+    def _jump_to_preview(event) -> None:
+        """跳到提交预览页（末尾「提交」）。"""
+        if state.finished or not state.multi_question:
+            return
+        state.q_index = -1
+        state.preview_sel = 0
+        _rebuild(event.app)
+
+    def _nav_question(event, delta: int) -> None:
+        """左右切换问题 / 预览页。
+
+        - 处于问题：左移上一个问题、右移下一个问题（环形）。
+        - 处于预览页：右移回到第一个问题，左移回到最后一个问题。
+        """
+        if state.finished or not state.multi_question:
+            return
+        if state.preview:
+            state.q_index = 0 if delta > 0 else len(state.questions) - 1
+            _rebuild(event.app)
+            return
+        n = len(state.questions)
+        state.q_index = (state.idx + delta) % n
+        _rebuild(event.app)
 
     @kb.add("down")
     @kb.add("c-n")
     def _down(event):
-        _move(event, +1)
+        if state.preview:
+            state.preview_sel = 1
+            _rebuild(event.app)
+            return
+        _move_option(event, +1)
 
     @kb.add("up")
     @kb.add("c-p")
     def _up(event):
-        _move(event, -1)
+        if state.preview:
+            state.preview_sel = 0
+            _rebuild(event.app)
+            return
+        _move_option(event, -1)
+
+    def _can_switch_question() -> bool:
+        """左右键是否用于切换问题。
+
+        自定义输入框激活且焦点在其上时：左右键留给输入框移动光标，
+        不用于切换问题。预览页左右键始终用于导航。
+        """
+        if state.finished:
+            return False
+        if state.preview:
+            return True
+        if state.custom_idx < 0 or not state.custom_active:
+            return True
+        return not _current_custom_focused()
+
+    def _current_custom_focused() -> bool:
+        """当前焦点是否落在当前问题的自定义输入框上。"""
+        if state.custom_idx < 0 or not state.custom_active:
+            return False
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().layout.current_buffer is _current_custom()
+        except Exception:
+            return False
+
+    # 左右切换问题：自定义输入框激活且焦点在其中时不拦截（左右键留给
+    # 输入框移动光标）。filter 求值时才有事件上下文，用 Condition 闭包。
+    @kb.add("left", filter=Condition(_can_switch_question))
+    @kb.add("c-b", filter=Condition(_can_switch_question))
+    def _left(event):
+        _nav_question(event, -1)
+
+    @kb.add("right", filter=Condition(_can_switch_question))
+    @kb.add("c-f", filter=Condition(_can_switch_question))
+    def _right(event):
+        _nav_question(event, +1)
+
+    @kb.add("tab")
+    def _tab(event):
+        """Tab：多问题模式跳到提交预览页（普通 tab 忽略）。"""
+        if state.preview:
+            event.app.invalidate()
+            return
+        _jump_to_preview(event)
 
     @kb.add("enter")
     def _enter(event):
-        if state.finished:
-            return
-        _finish(event)
+        _answer_current(event)
 
     @kb.add(" ")
     def _space(event):
@@ -535,13 +944,17 @@ def _run_ask_ui(
           激活意味着已选中，单选下激活即焦点在自定义行。
         - 多选 + 未激活：切换勾选（选中自定义行时同时激活其输入框）。
         - 单选 + 未激活（普通选项行）：无操作。
+        - 预览页：空格做任何单选行的选择/切换（等价 Enter）。
         """
         if state.finished:
             return
+        if state.preview:
+            _finish(event)
+            return
         is_custom_row = state.sel == state.custom_idx
         # 自定义输入框已激活：空格作为普通字符输入
-        if state.custom_active and is_custom_row and custom_buffer is not None:
-            custom_buffer.insert_text(" ")
+        if state.custom_active and is_custom_row and _current_custom() is not None:
+            _current_custom().insert_text(" ")
             event.app.invalidate()
             return
         if not state.multi:
@@ -567,16 +980,18 @@ def _run_ask_ui(
         if state.finished:
             return
         on_custom_input = (
-            state.sel == state.custom_idx
+            not state.preview
+            and state.sel == state.custom_idx
             and state.custom_active
-            and custom_buffer is not None
+            and _current_custom() is not None
         )
         if on_custom_input:
-            if state.multi and custom_buffer.cursor_position == 0:
+            cb = _current_custom()
+            if state.multi and cb.cursor_position == 0:
                 state.checked.discard(state.custom_idx)
                 _rebuild(event.app)
                 return
-            custom_buffer.delete_before_cursor()
+            cb.delete_before_cursor()
             event.app.invalidate()
             return
         # 其余情况：丢弃（避免进入默认缓冲区造成污染）
@@ -594,19 +1009,22 @@ def _run_ask_ui(
         """仅当自定义输入框激活时接受字符输入，其余情况丢弃。
 
         多选未激活的自定义行不接受字符（空格需先选中激活）；普通选项
-        上的输入同样丢弃，避免进入默认缓冲区造成污染。
+        上的输入同样丢弃，避免进入默认缓冲区造成污染。预览页丢弃字符。
         """
         if state.finished:
             return
-        if state.custom_active and custom_buffer is not None:
-            event.app.current_buffer.insert_text(event.data or "")
+        if state.preview:
+            event.app.invalidate()
+            return
+        cb = _current_custom()
+        if state.custom_active and cb is not None:
+            cb.insert_text(event.data or "")
         else:
             # 丢弃：避免键入字符进入默认缓冲区造成污染
             event.app.invalidate()
 
-    layout = _build_ask_layout(state, custom_buffer)
     app: Application = Application(
-        layout=Layout(layout),
+        layout=Layout(_build_layout(state)),
         key_bindings=kb,
         full_screen=False,
         erase_when_done=True,
@@ -615,10 +1033,10 @@ def _run_ask_ui(
         output=output,
     )
     # 初始焦点：聚焦当前选中行（自定义已激活则输入框，否则 label/普通行），
-    # 不会落到标题等首行。无选项时无焦点。
-    if state.options:
-        rows = cast(HSplit, app.layout.container).children
-        app.layout.focus(_focused_window(state, rows, custom_buffer))
+    # 不会落到标题等首行。无选项时无焦点；预览页聚焦确认/取消行。
+    focus = _focus_from_layout(app, state)
+    if focus is not None:
+        app.layout.focus(focus)
 
     try:
         app.run()
@@ -629,14 +1047,8 @@ def _run_ask_ui(
 
 
 def ask_ui(
-    title: str = "",
-    options: list[AskOption] | None = None,
+    questions: list[AskQuestion],
     *,
-    description: str = "",
-    multi: bool = False,
-    custom_buffer: Buffer | None = None,
-    cursor_index: int = 0,
-    checked: set[int] | None = None,
     style=None,
     input=None,
     output=None,
@@ -644,17 +1056,9 @@ def ask_ui(
     """运行一次询问界面，返回 ``AskResult``。
 
     Args:
-        title: 标题（可空；空时跳过对应行）。
-        options: 选项列表。建议最后一个选项 ``is_custom=True``；
-            ask_ui 为其自动渲染输入框（占位文字 = ``description``）。
-        description: 描述文本（可空），位于标题下方。
-        multi: False 单选（默认）；True 多选（空格切换、Enter 提交全部）。
-        custom_buffer: 可选，自定义输入框的 Buffer 实例；传入时复用（保留
-            文本与光标位置），未传时新建。
-        cursor_index: 初始焦点选项索引（默认 0）；调用间可注入以维持
-            上次离开时的焦点位置。
-        checked: 多选模式下的初始勾选集合（默认空）；调用间可注入以维持
-            上次离开时的勾选状态。
+        questions: 问题数组。单问题传长度为 1 的数组；每个问题分别指定
+            ``AskQuestion``（含标题 / 描述 / 选项 / 是否多选 / 自定义
+            输入框 buffer / 初始焦点 / 初始勾选）。
         style: 可选，prompt_toolkit ``Style`` 实例，由调用方传入，让
             ``class:placeholder`` 与 ``class:mycode-input`` 等样式类生效。
         input: 可选，注入的 prompt_toolkit input（测试用）。
@@ -663,32 +1067,26 @@ def ask_ui(
     Returns:
         ``AskResult`` 数据类，字段：
 
-            - ``selected``：提交的选项 value 列表。
-            - ``input``：仅当选中自定义选项为输入框文本（可为空串），
-              否则为 ``None``。
-            - ``cursor_index``：提交时焦点所在选项索引。
-            - ``checked``：提交时的勾选集合。
-            - ``aborted``：True 表示用户以 Ctrl-C 中止；此时其余字段
-              不反映提交状态（``selected`` 为空列表、``input`` 为
-              ``None``）。调用方应以 ``aborted`` 为准判断是否取消。
+            - ``answers``：每道问题的答案（按问题顺序），每个都是
+               ``AskAnswer``（含 ``selected`` / ``input`` / ``cursor_index`` /
+               ``checked`` / ``skipped``）；单问题即长度 1 的数组。
+               未作答的问题（用户未按 ``Enter`` 选定就在提交预览页
+               确认提交）对应答案 ``skipped=True``、``selected`` 为空列表。
+            - ``aborted``：True 表示用户以 Ctrl-C 中止，或多问题预览页
+              选了「取消」；此时 ``answers`` 为空列表。调用方应以
+              ``aborted`` 为准判断是否取消。
 
-        其中 ``cursor_index`` / ``checked`` 反映提交时的焦点与勾选状态，
-        可在下次调用时回传给 ``ask_ui`` 维持位置。
+        其中每道问题答案的 ``cursor_index`` / ``checked`` 反映提交时的
+        焦点与勾选状态，可在下次调用时回传给对应的 ``AskQuestion`` 维持位置。
     """
-    state = _AskState(
-        title=title,
-        description=description,
-        options=options,
-        multi=multi,
-        custom_buffer=custom_buffer,
-        cursor_index=cursor_index,
-        checked=checked,
-    )
+    state = _AskState(questions=questions)
     return _run_ask_ui(state, input=input, output=output, style=style)
 
 
 __all__ = [
+    "AskAnswer",
     "AskOption",
+    "AskQuestion",
     "AskResult",
     "ask_ui",
 ]

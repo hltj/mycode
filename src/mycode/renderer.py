@@ -1066,12 +1066,14 @@ class _DefaultRenderer(_Renderer):
             'mycode-input': 'bg:#333333',
             # 占位文字：暗灰斜体，与输入文字（继承背景色）区分
             'placeholder': 'italic fg:#666666',
-            # ask_ui 样式：标题青粗体，描述暗灰，当前选中行亮蓝粗体；
-            # placeholder 共用 PromptSession 的 ``class:placeholder``，
-            # 不在此处登记。
+            # ask_ui 样式：标题青粗体，问题描述粗体、选项描述暗灰，
+            # 当前选中行亮蓝粗体；placeholder 共用 PromptSession 的
+            # ``class:placeholder``，不在此处登记。
             'ask-title': 'bold #00c099',
+            'ask-question': 'bold',
             'ask-description': 'fg:#6F6F6F',
             'ask-active': 'bold #009fff',
+            'ask-unanswered': 'bold #ffff00',
         })
 
     def apply_input_style(self, session: PromptSession) -> None:
@@ -1147,12 +1149,14 @@ class _ClassicRenderer(_Renderer):
             # 两风格共用样式类，差异仅在 default 加灰色背景。
             'placeholder': 'italic fg:#666666',
             'mycode-input': '',
-            # ask_ui 样式：标题青粗体，描述暗灰，当前选中行亮蓝粗体；
-            # placeholder 共用 PromptSession 的 ``class:placeholder``，
-            # 不在此处登记。
+            # ask_ui 样式：标题青粗体，问题描述粗体、选项描述暗灰，
+            # 当前选中行亮蓝粗体；placeholder 共用 PromptSession 的
+            # ``class:placeholder``，不在此处登记。
             'ask-title': 'bold #00c099',
+            'ask-question': 'bold',
             'ask-description': 'fg:#6F6F6F',
             'ask-active': 'bold #009fff',
+            'ask-unanswered': 'bold #ffff00',
         })
 
 

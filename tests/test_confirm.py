@@ -19,7 +19,7 @@ import pytest
 
 import mycode.confirm as confirm_mod
 import mycode.ask_ui as ask_ui_mod
-from mycode.ask_ui import AskOption, AskResult
+from mycode.ask_ui import AskAnswer, AskOption, AskResult
 from mycode.mode import ToolCategory
 
 
@@ -31,10 +31,10 @@ class TestConfirmToolMapping:
     def test_approve(self, monkeypatch):
         """选中「同意」→ ``APPROVE``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                                 input=None,
-                            ))
+                            )]))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.APPROVE
@@ -43,10 +43,10 @@ class TestConfirmToolMapping:
     def test_reject_with_reason(self, monkeypatch):
         """选中「拒绝」+ 输入理由 → ``REJECT``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="不想执行",
-                            ))
+                            )]))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT
@@ -55,10 +55,10 @@ class TestConfirmToolMapping:
     def test_reject_with_whitespace_reason_is_no_reason(self, monkeypatch):
         """选中「拒绝」+ 仅空白 → 视作无理由 → ``REJECT_NO_REASON``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="   ",
-                            ))
+                            )]))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT_NO_REASON
@@ -67,10 +67,10 @@ class TestConfirmToolMapping:
     def test_reject_without_reason(self, monkeypatch):
         """选中「拒绝」+ 输入框为空 → ``REJECT_NO_REASON``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.REJECT.value],
                                 input="",
-                            ))
+                            )]))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.REJECT_NO_REASON
@@ -79,9 +79,7 @@ class TestConfirmToolMapping:
     def test_abort_returns_cancel(self, monkeypatch):
         """abort（selected 空）→ ``CANCEL``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
-                                selected=[], input=None, aborted=True,
-                            ))
+                            lambda *a, **kw: AskResult(aborted=True))
         action, extra = confirm_mod.confirm_tool(
             "bash", ToolCategory.UNKNOWN, "echo hi")
         assert action == confirm_mod.ConfirmAction.CANCEL
@@ -90,10 +88,10 @@ class TestConfirmToolMapping:
     def test_edit_flow(self, monkeypatch):
         """选中「编辑」→ 调编辑器 + 返回 ``EDIT``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                                 input=None,
-                            ))
+                            )]))
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
                             lambda edit_buffer, input=None, output=None, style=None:
                                 confirm_mod._EditOutcome(action="finish", text="echo edited"))
@@ -105,10 +103,10 @@ class TestConfirmToolMapping:
     def test_edit_aborted_returns_cancel(self, monkeypatch):
         """编辑器返回 ``abort``（Ctrl-C）→ ``CANCEL``。"""
         monkeypatch.setattr(ask_ui_mod, "ask_ui",
-                            lambda *a, **kw: AskResult(
+                            lambda *a, **kw: AskResult(answers=[AskAnswer(
                                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                                 input=None,
-                            ))
+                            )]))
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
                             lambda edit_buffer, input=None, output=None, style=None:
                                 confirm_mod._EditOutcome(action="abort"))
@@ -125,14 +123,14 @@ class TestConfirmToolMapping:
             ask_calls["count"] += 1
             # 第一次返回 EDIT，第二次返回 APPROVE
             if ask_calls["count"] == 1:
-                return AskResult(
+                return AskResult(answers=[AskAnswer(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
-                )
-            return AskResult(
+                )])
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
-            )
+            )])
 
         edit_calls = {"count": 0}
 
@@ -157,14 +155,14 @@ class TestConfirmToolMapping:
         def _ask_ui_stub(*a, **kw):
             ask_calls["count"] += 1
             if ask_calls["count"] <= 2:
-                return AskResult(
+                return AskResult(answers=[AskAnswer(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
-                )
-            return AskResult(
+                )])
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            )
+            )])
 
         edit_calls = {"count": 0}
 
@@ -192,23 +190,23 @@ class TestConfirmToolMapping:
         上，而非重置到「同意」（选项 0）。
         """
         ask_calls = {"count": 0}
-        captured_kwargs: list = []
+        captured_qs: list = []
 
         def _ask_ui_stub(*a, **kw):
             ask_calls["count"] += 1
-            captured_kwargs.append(dict(kw))
+            captured_qs.append(a[0][0])  # AskQuestion
             if ask_calls["count"] == 1:
-                return AskResult(
+                return AskResult(answers=[AskAnswer(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
                     cursor_index=1,  # 焦点在「编辑」上
-                )
+                )])
             # 第二次：直接 approve 退出循环
-            return AskResult(
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
                 cursor_index=0,
-            )
+            )])
 
         # 编辑视图：直接 ESC 返回
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
@@ -222,7 +220,7 @@ class TestConfirmToolMapping:
         assert ask_calls["count"] == 2
         # 关键：第二次调用 ask_ui 时传入的 cursor_index 是上次的 1（编辑位置）
         # 而非默认的 0（同意位置）
-        assert captured_kwargs[1]["cursor_index"] == 1
+        assert captured_qs[1].cursor_index == 1
 
     def test_reject_buffer_preserved_when_esc_to_edit(self, monkeypatch):
         """ESC 从编辑返回时拒绝理由 buffer 仍持有用户输入。
@@ -238,23 +236,23 @@ class TestConfirmToolMapping:
 
         def _ask_ui_stub(*a, **kw):
             ask_calls["count"] += 1
-            buf = kw.get("custom_buffer")
+            buf = a[0][0].custom_buffer
             seen_buffers.append(buf)
             if ask_calls["count"] == 1:
                 # 模拟用户在自定义选项输入文本
                 buf.text = PRELOADED_REASON
                 buf.cursor_position = len(buf.text)
-                return AskResult(
+                return AskResult(answers=[AskAnswer(
                     selected=[confirm_mod.ConfirmAction.EDIT.value],
                     input=None,
                     cursor_index=1,
-                )
+                )])
             # 第二次：直接 approve 退出循环（验证 buffer 仍含先前输入）
-            return AskResult(
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
                 cursor_index=0,
-            )
+            )])
 
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
         monkeypatch.setattr(confirm_mod, "_run_edit_view",
@@ -277,10 +275,10 @@ class TestConfirmToolMapping:
         def _ask_ui_stub(*a, **kw):
             ask_calls["count"] += 1
             # 两次 ask 都返回 EDIT（让 confirm_tool 反复进入编辑视图）
-            return AskResult(
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            )
+            )])
 
         # 第一次进入：追加 " -x" 后 ESC 返回
         # 第二次进入：buffer 仍含 " -x"，再追加 "Y"，提交
@@ -320,13 +318,13 @@ class TestConfirmToolMapping:
         ask_calls = {"count": 0}
 
         def _ask_ui_stub(*a, **kw):
-            captured_buffers.append(kw.get("custom_buffer"))
+            captured_buffers.append(a[0][0].custom_buffer)
             ask_calls["count"] += 1
             # 两次都返回 EDIT；confirm_tool 会反复进入 _run_edit_view
-            return AskResult(
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.EDIT.value],
                 input=None,
-            )
+            )])
 
         # 第一次编辑：ESC 返回（→ 重新询问）
         # 第二次编辑：直接提交，避免无谓循环
@@ -358,19 +356,19 @@ class TestConfirmToolMapping:
 
         def _ask_ui_stub(*a, **kw):
             ask_calls["count"] += 1
-            buf: Buffer = kw.get("custom_buffer")
+            buf: Buffer = a[0][0].custom_buffer
             if ask_calls["count"] == 1:
                 # 模拟用户在自定义选项输入文字
                 buf.text = "想改理由"
                 buf.cursor_position = len(buf.text)
-                return AskResult(
+                return AskResult(answers=[AskAnswer(
                     selected=[confirm_mod.ConfirmAction.REJECT.value],
                     input="想改理由",
-                )
-            return AskResult(
+                )])
+            return AskResult(answers=[AskAnswer(
                 selected=[confirm_mod.ConfirmAction.APPROVE.value],
                 input=None,
-            )
+            )])
 
         monkeypatch.setattr(ask_ui_mod, "ask_ui", _ask_ui_stub)
         action, extra = confirm_mod.confirm_tool(

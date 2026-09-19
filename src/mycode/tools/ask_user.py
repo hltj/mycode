@@ -12,7 +12,7 @@
 import json
 from typing import Annotated
 
-from mycode.ask_ui import AskOption, ask_ui as ask_ui_impl
+from mycode.ask_ui import AskOption, AskQuestion, ask_ui as ask_ui_impl
 from mycode.renderer import _get_renderer
 from mycode.session import AbortLoop
 from mycode.tools_registry import ToolsRegistry
@@ -110,20 +110,25 @@ def ask_user(
     # 等样式类生效）
     style = _get_renderer().create_prompt_style()
     result = ask_ui_impl(
-        title=title,
-        description=question or "",
-        options=ask_options,
-        multi=multi,
+        [
+            AskQuestion(
+                title=title or "",
+                description=question or "",
+                options=ask_options,
+                multi=multi,
+            ),
+        ],
         style=style,
     )
     if result.aborted:
         # 用户以 Ctrl-C 中止交互：agent_loop 捕获 AbortLoop 后分发工具
         # 结果事件（含本段文本）并退出 agent 循环
         raise AbortLoop("Error: 用户中止回答")
-    payload: dict = {"selected": list(result.selected)}
+    a0 = result.answers[0]
+    payload: dict = {"selected": list(a0.selected)}
     # 选中自定义选项（即使输入为空串）时带出 input 字段
-    if result.input is not None:
-        payload["input"] = result.input
+    if a0.input is not None:
+        payload["input"] = a0.input
     return json.dumps(payload, ensure_ascii=False)
 
 
