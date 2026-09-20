@@ -406,10 +406,10 @@ class TestAgentLoopModePolicy:
 class TestAgentLoopMissingRequiredParam:
     """必填参数缺失：返回友好错误文本（而非 TypeError traceback）。"""
 
-    def test_ask_user_missing_title(self):
+    def test_ask_user_missing_questions(self):
         MODE_STATE.set(Mode.AUTO)
         content, _ = _run_call("ask_user", {}, handler=lambda **_: "boom")
-        assert content == "Error: 缺少必填参数：title"
+        assert content == "Error: 缺少必填参数：questions"
         MODE_STATE.set(Mode.AUTO)
 
     def test_missing_param_listed_in_required_order(self):
