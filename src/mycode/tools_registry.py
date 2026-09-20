@@ -4,13 +4,14 @@
 """
 from __future__ import annotations
 
+import dataclasses
 import inspect
 import types
 import typing
 from typing import (
     NoReturn,
-    Any, Callable, Union,
-    get_args, get_origin, overload
+    Any, Callable, Union, cast,
+    get_args, get_origin, get_type_hints, overload
 )
 
 from openai.types.chat import ChatCompletionFunctionToolParam
@@ -35,6 +36,21 @@ _LIST_ORIGINS: tuple = (list, typing.List)
 _DICT_ORIGINS: tuple = (dict, typing.Dict)
 
 
+def _literal_schema(values: tuple[Any, ...]) -> dict[str, Any]:
+    """Literal[v1, v2, ...] → {type, enum}。
+
+    - 所有枚举值同类型：取该类型的 JSON 类型 + enum；
+    - 含 None 枚举：只取非 None 值，type 用非 None 值类型，
+      None 单独以 null 记入 enum（与 OpenAI 工具 schema 兼容）。
+    """
+    non_none = [v for v in values if v is not None]
+    if not non_none:
+        return {"type": "null"}
+    # 枚举值类型须一致（Literal 保证），取第一个值的类型
+    json_type = _type_to_json_schema_type(type(non_none[0]))
+    return {"type": json_type, "enum": list(values)}
+
+
 def _origin_to_json_schema(origin: Any) -> str:
     """从泛型 origin 推导 JSON Schema 顶层 type"""
     if origin in _LIST_ORIGINS:
@@ -44,15 +60,176 @@ def _origin_to_json_schema(origin: Any) -> str:
     return _type_to_json_schema_type(origin)
 
 
+# ---------------------------------------------------------------------------
+# 自定义类型的对象 schema（dataclass / TypedDict / NamedTuple）
+# ---------------------------------------------------------------------------
+
+def _parse_type_with_meta(annotation: Any) -> dict[str, Any]:
+    """解析一个类型标注（可含 Annotated 元信息），返回 JSON Schema 片段。
+
+    ``Annotated[T, '描述']``：透传 description。
+    """
+    if get_origin(annotation) is typing.Annotated:
+        args = get_args(annotation)
+        if args:
+            desc_parts = [a for a in args[1:] if isinstance(a, str)]
+            schema = _build_json_schema(args[0])
+            if desc_parts:
+                schema["description"] = " ".join(desc_parts)
+            return schema
+    return _build_json_schema(annotation)
+
+
+def _resolve_field_annotations(
+    cls: type,
+    raw: dict[str, Any],
+) -> dict[str, Any]:
+    """把类的字段原始标注解析为可构建 schema 的实用类型。
+
+    - 字符串标注（``from __future__ import annotations``）经
+      ``get_type_hints`` 求值成实际类型；
+    - ``Annotated[T, '描述']`` 原样保留（描述透传给 schema）。
+    """
+    hints = get_type_hints(cls)
+    return {
+        name: (hints.get(name, ann) if isinstance(ann, str) else ann)
+        for name, ann in raw.items()
+    }
+
+
+def _typed_dict_annotations(td: Any) -> dict[str, Any]:
+    """合并 TypedDict 继承链上的字段标注（保留声明顺序与 Annotated）。
+
+    ``__annotations__`` 只含当前类直接声明的字段，基类字段需要沿
+    MRO 反向合并（基类在前，子类覆盖同名）。
+    """
+    merged: dict[str, Any] = {}
+    for base in reversed(td.__mro__):
+        if _is_typed_dict(base):
+            merged.update(getattr(base, "__annotations__", {}))
+    return merged
+
+
+def _choices_schema(py_type: Any) -> dict[str, Any]:
+    """把自定义类型（dataclass / TypedDict / NamedTuple）展开为对象 schema。
+
+    - dataclass：字段 = dataclass.fields，无默认值 / 无 default_factory 为
+      必填；字段类型经 ``get_type_hints`` 展开（``from __future__ import
+      annotations`` 下注解是字符串，需要展开成实际类型再递归），
+      ``Annotated`` 描述保留。
+    - TypedDict：见 ``_typed_dict_schema``。
+    - NamedTuple：字段 = ``_fields``，默认值取 ``_field_defaults``；
+      无默认值为必填。
+    """
+    if _is_typed_dict(py_type):
+        return _typed_dict_schema(py_type)
+
+    if dataclasses.is_dataclass(py_type):
+        # is_dataclass 会把类型收窄成 DataclassInstance 联合，需要还原为 type
+        dc_cls: type = cast(type, py_type)
+        dc_fields = dataclasses.fields(dc_cls)
+        raw = {f.name: f.type for f in dc_fields}
+        resolved = _resolve_field_annotations(dc_cls, raw)
+        required_list = [
+            f.name for f in dc_fields
+            if f.default is dataclasses.MISSING
+            and f.default_factory is dataclasses.MISSING
+        ]
+        return {
+            "type": "object",
+            "properties": {
+                f.name: _parse_type_with_meta(resolved[f.name])
+                for f in dc_fields
+            },
+            "required": required_list,
+        }
+
+    if isinstance(py_type, type) and issubclass(py_type, tuple) and hasattr(py_type, "_fields"):
+        nt_fields: list[str] = list(py_type._fields)
+        raw = {
+            name: getattr(py_type, "__annotations__", {}).get(name, Any)
+            for name in nt_fields
+        }
+        resolved = _resolve_field_annotations(py_type, raw)
+        defaults = getattr(py_type, "_field_defaults", {})
+        required_list = [name for name in nt_fields if name not in defaults]
+        return {
+            "type": "object",
+            "properties": {
+                name: _parse_type_with_meta(resolved[name])
+                for name in nt_fields
+            },
+            "required": required_list,
+        }
+
+    raise ValueError(f"Unsupported type: {py_type}")
+
+
+def _typed_dict_schema(td: Any) -> dict[str, Any]:
+    """TypedDict → {type: object, properties, required}。
+
+    - required 取 ``__required_keys__``（继承的子类会正确合并），
+      按字段声明顺序排列；
+    - 字段标注用 ``_typed_dict_annotations`` 合并继承链并保留 Annotated。
+    """
+    merged = _typed_dict_annotations(td)
+    resolved = _resolve_field_annotations(td, merged)
+    required_keys = getattr(td, "__required_keys__", None)
+    required_list = [
+        name for name in merged
+        if required_keys is None or name in required_keys
+    ]
+    return {
+        "type": "object",
+        "properties": {
+            name: _parse_type_with_meta(resolved[name])
+            for name in merged
+        },
+        "required": required_list,
+    }
+
+
+def _is_typed_dict(py_type: Any) -> bool:
+    return (
+        isinstance(py_type, type)
+        and issubclass(py_type, dict)
+        and hasattr(py_type, "__required_keys__")
+    )
+
+
+def _object_schema(py_type: Any) -> dict[str, Any] | None:
+    """若 ``py_type`` 是可展开为对象 schema 的自定义类型则返回 schema，否则 None。"""
+    try:
+        # TypedDict / dataclass / NamedTuple 统一交给 _choices_schema 展开
+        if _is_typed_dict(py_type):
+            return _choices_schema(py_type)
+        # dataclass（装饰的类或实例）
+        if dataclasses.is_dataclass(py_type):
+            return _choices_schema(py_type)
+        # NamedTuple（tuple 子类带 _fields）
+        if isinstance(py_type, type) and issubclass(py_type, tuple) and hasattr(py_type, "_fields"):
+            return _choices_schema(py_type)
+    except (AttributeError, TypeError):
+        pass
+    return None
+
+
 def _build_json_schema(py_type: Any) -> dict[str, Any]:
     """
     递归构建任意类型对应的 JSON Schema 片段。
     - 标量：{"type": "integer"} 等
     - list[T]：{"type": "array", "items": <T 的 schema>}
     - dict[K, V]：{"type": "object", "additionalProperties": <V 的 schema>}
+    - 自定义类型（dataclass / TypedDict / NamedTuple）：展开为带
+      properties / required 的对象 schema（嵌套的通用 list[dict]
+      仍保持裸 object，不强制约束内部字段）
     - Union/Optional 出现在任意层级都会被递归解包
     """
     origin = get_origin(py_type)
+
+    # Literal['a', 'b'] → {type: ..., enum: ['a', 'b']}
+    if origin is typing.Literal:
+        return _literal_schema(get_args(py_type))
 
     # 若出现 Union / Optional（含 | None），先解出非 None 部分再递归构建
     if origin in (Union, types.UnionType):
@@ -60,6 +237,11 @@ def _build_json_schema(py_type: Any) -> dict[str, Any]:
         non_none = [a for a in args if a is not type(None)]
         if len(non_none) == 1:
             return _build_json_schema(non_none[0])
+
+    # 自定义类型（非泛型 origin）→ 对象 schema
+    obj_schema = _object_schema(py_type)
+    if obj_schema is not None:
+        return obj_schema
 
     if origin is None:
         # 标量类型
