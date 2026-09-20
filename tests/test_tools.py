@@ -660,6 +660,18 @@ def test_todo_write_invalid_status():
     assert "Error" in out
 
 
+def test_todo_write_non_list_input():
+    """非 list 入参（None / 字符串等）返回友好错误而非抛异常。"""
+    from mycode.tools.todo_write import todo_write, reset_todos
+    reset_todos()
+    out = todo_write(None)
+    assert "Error" in out
+    assert "items 必须是 list" in out
+    out2 = todo_write("oops")
+    assert "Error" in out2
+    assert "items 必须是 list" in out2
+
+
 def test_todo_write_up_to_max_in_progress():
     """默认最多允许 3 项进行中；4 项及以上报错。"""
     from mycode.tools.todo_write import todo_write, reset_todos, get_todos
@@ -760,6 +772,35 @@ def test_todo_write_description_shows_exact_max(monkeypatch):
             t for t in ToolsRegistry._tools if t["function"]["name"] != "todo_write"
         ]
         importlib.reload(tw)
+
+
+def test_todo_write_schema_expanded():
+    """todo_write 的 items 参数用 list[TodoItem]，schema 精确展开 item 结构。
+
+    - items 是 array，items 元素是 object；
+    - item 的 properties 含 title / status；
+    - status 用 Literal 约束为 enum，pending/in_progress/completed；
+    - title / status 均为必填（required）；
+    - 字段描述随 Annotated 透传（工具语义在 schema 层表达）。
+    """
+    _ensure_registered()
+    tool_def = ToolsRegistry.get_tool_def("todo_write")
+    assert tool_def is not None
+    params = tool_def["function"]["parameters"]
+    assert "items" in params["required"]
+
+    items = params["properties"]["items"]
+    assert items["type"] == "array"
+    item_schema = items["items"]
+    assert item_schema["type"] == "object"
+    assert item_schema["required"] == ["title", "status"]
+
+    props = item_schema["properties"]
+    assert props["title"]["type"] == "string"
+    assert props["title"]["description"] == "待办标题，非空字符串"
+    assert props["status"]["type"] == "string"
+    assert props["status"]["enum"] == ["pending", "in_progress", "completed"]
+    assert props["status"]["description"] == "状态：待处理 / 进行中 / 已完成"
 
 
 def test_todo_write_empty():
