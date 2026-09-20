@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Annotated, Iterable
+from typing import Annotated, Iterable, Literal, TypedDict, get_args
 
 from mycode.tools_registry import ToolsRegistry
 
@@ -19,7 +19,16 @@ _stale_rounds: int = 0
 # ``MYCODE_TODO_MAX_IN_PROGRESS`` 覆盖，默认 3。
 _MAX_IN_PROGRESS: int = int(os.getenv("MYCODE_TODO_MAX_IN_PROGRESS", "3"))
 
-VALID_STATUS = ("pending", "in_progress", "completed")
+Status = Literal["pending", "in_progress", "completed"]
+# status 的合法取值（从 Literal 推导，单一来源）
+VALID_STATUS = get_args(Status)
+
+
+class TodoItem(TypedDict):
+    """单个待办项。"""
+
+    title: Annotated[str, "待办标题，非空字符串"]
+    status: Annotated[Status, "状态：待处理 / 进行中 / 已完成"]
 
 
 def reset_todos() -> None:
@@ -98,31 +107,54 @@ def rebuild_from_history(entries: Iterable) -> None:
             continue
 
 
+def _parse_todo_item(item: object, index: int) -> dict:
+    """校验并规范化单个待办项（纯函数）。
+
+    Args:
+        item: 待办项原始数据（模型传来的 dict）。
+        index: 在 items 中的下标（用于错误定位）。
+
+    Returns:
+        {"title": str, "status": str}。
+
+    Raises:
+        _TodoItemError: 校验失败，message 即错误文本。
+    """
+    if not isinstance(item, dict):
+        raise _TodoItemError(f"Error: 第 {index} 项不是 dict")
+    title = item.get("title")
+    status = item.get("status")
+    if not isinstance(title, str) or not title:
+        raise _TodoItemError(f"Error: 第 {index} 项 title 必须是非空字符串")
+    if status not in VALID_STATUS:
+        raise _TodoItemError(
+            f"Error: 第 {index} 项 status 必须是 {VALID_STATUS} 之一，实际为 {status!r}")
+    return {"title": title, "status": status}
+
+
+class _TodoItemError(ValueError):
+    """待办项校验失败；message 即返回给模型的错误文本。"""
+
+
 @ToolsRegistry.tool(
     description=(
-        "整体替换内存中的待办列表。items 是 dict 数组，每个 dict 含"
-        " title (str) 与 status (str，取值 pending/in_progress/completed"
-        f" 之一，分别对应待处理/进行中/已完成；进行中的项最多同时 {_MAX_IN_PROGRESS} 个。"
+        "整体替换内存中的待办列表"
+        f"（进行中的项最多同时 {_MAX_IN_PROGRESS} 个）。"
         "状态仅保存在内存，不持久化到磁盘，会话恢复时由历史工具调用重建。"
     )
 )
 def todo_write(
-    items: Annotated[list[dict], "待办项列表，每项含 title 和 status"],
+    items: Annotated[list[TodoItem], "待办项列表"],
 ) -> str:
+    """整体替换内存待办列表，返回结果文本。"""
+    # 运行时防御：复杂参数虽在 schema 层有约束，但模型可能传非 list / 非 dict /
+    # 非法 status，逐项校验并规范化。
     if not isinstance(items, list):
         return f"Error: items 必须是 list，实际为 {type(items).__name__}"
-
-    new_state: list[dict] = []
-    for i, item in enumerate(items):
-        if not isinstance(item, dict):
-            return f"Error: 第 {i} 项不是 dict"
-        title = item.get("title")
-        status = item.get("status")
-        if not isinstance(title, str) or not title:
-            return f"Error: 第 {i} 项 title 必须是非空字符串"
-        if status not in VALID_STATUS:
-            return f"Error: 第 {i} 项 status 必须是 {VALID_STATUS} 之一，实际为 {status!r}"
-        new_state.append({"title": title, "status": status})
+    try:
+        new_state = [_parse_todo_item(it, i) for i, it in enumerate(items)]
+    except _TodoItemError as e:
+        return str(e)
 
     # 校验：状态为进行中的项数不超过上限
     # （上限由环境变量 MYCODE_TODO_MAX_IN_PROGRESS 配置，默认 3）
@@ -136,9 +168,7 @@ def todo_write(
     reset_stale_rounds()
 
     n = len(new_state)
-    if n == 0:
-        return "TODO 列表已清空"
-    return f"TODO 列表已更新（{n} 项）"
+    return f"TODO 列表已更新（{n} 项）" if n else "TODO 列表已清空"
 
 
 __all__ = [
@@ -152,4 +182,6 @@ __all__ = [
     "get_unfinished_todos",
     "should_remind_stale_todo",
     "format_stale_reminder",
+    "TodoItem",
+    "Status",
 ]
