@@ -9,7 +9,9 @@
 - 单选 / 多选支持
 - **多问题模式**：一次询问多个问题；每个问题独立作答，顶部横向排列
   各问题短标题（含复选框 + 末尾「提交」），左右键切换、Enter 选定，
-  最后一题回车进入提交预览页（确认 / 取消）。
+  最后一题回车进入提交预览页（确认 / 取消）。提交纳入标题行导航
+  循环：最后一个问题向右 / 第一个问题向左均切到提交预览页，
+  tab 与向右一样逐步前进且不受自定义输入框焦点限制。
 
 返回值::
 
@@ -717,8 +719,9 @@ def _run_ask_ui(
     - 多问题：标题行横向排列短标题 + 末尾「提交」；每个问题独立作答，
       Enter 选定答案并切到下一问题；最后一个问题 Enter 后进入提交预览页。
       预览页列出各问题答案（未回答显示亮黄），「确认」可整体返回，
-      按「取消」即整体取消回答。左右键在问题间切换，预览页左切到
-      最后一个问题、右切到第一个问题。
+      按「取消」即整体取消回答。提交纳入标题行循环导航：最后一个问题
+      向右 / 第一个问题向左均切到提交预览页，预览页左切最后一个问题、
+      右切第一个问题；tab 与向右一致（不受自定义输入框焦点限制）。
 
     ``state`` 的重建使用各问题的 custom_buffer（默认新建，文本与光标位置
     在问题间保持）。
@@ -846,19 +849,16 @@ def _run_ask_ui(
             return
         _rebuild(event.app)
 
-    def _jump_to_preview(event) -> None:
-        """跳到提交预览页（末尾「提交」）。"""
-        if state.finished or not state.multi_question:
-            return
-        state.q_index = -1
-        state.preview_sel = 0
-        _rebuild(event.app)
+    def _nav_horizontal(event, delta: int) -> None:
+        """按横向标题行循环切换：问题 ↔ 提交预览页。
 
-    def _nav_question(event, delta: int) -> None:
-        """左右切换问题 / 预览页。
-
-        - 处于问题：左移上一个问题、右移下一个问题（环形）。
-        - 处于预览页：右移回到第一个问题，左移回到最后一个问题。
+        标题行可视为 ``[Q1] [Q2] ... [Qn] [提交]`` 的环：
+        - 处于问题：``delta=+1`` 右移到下一个问题（最后一个问题右移到
+          提交预览页），``delta=-1`` 左移到上一个问题（第一个问题左移到
+          提交预览页）。
+        - 处于提交预览页：``delta=+1`` 回到第一个问题，``delta=-1``
+          回到最后一个问题。
+        tab 与向右（``delta=+1``）一致，仅不受自定义输入框焦点限制。
         """
         if state.finished or not state.multi_question:
             return
@@ -867,7 +867,18 @@ def _run_ask_ui(
             _rebuild(event.app)
             return
         n = len(state.questions)
-        state.q_index = (state.idx + delta) % n
+        if delta > 0:
+            if state.idx >= n - 1:
+                state.q_index = -1
+                state.preview_sel = 0
+            else:
+                state.q_index = state.idx + 1
+        else:
+            if state.idx <= 0:
+                state.q_index = -1
+                state.preview_sel = 0
+            else:
+                state.q_index = state.idx - 1
         _rebuild(event.app)
 
     @kb.add("down")
@@ -917,20 +928,17 @@ def _run_ask_ui(
     @kb.add("left", filter=Condition(_can_switch_question))
     @kb.add("c-b", filter=Condition(_can_switch_question))
     def _left(event):
-        _nav_question(event, -1)
+        _nav_horizontal(event, -1)
 
     @kb.add("right", filter=Condition(_can_switch_question))
     @kb.add("c-f", filter=Condition(_can_switch_question))
     def _right(event):
-        _nav_question(event, +1)
+        _nav_horizontal(event, +1)
 
     @kb.add("tab")
     def _tab(event):
-        """Tab：多问题模式跳到提交预览页（普通 tab 忽略）。"""
-        if state.preview:
-            event.app.invalidate()
-            return
-        _jump_to_preview(event)
+        """Tab：与向右一致地推进到下一个问题/提交预览页，不受输入框限制。"""
+        _nav_horizontal(event, +1)
 
     @kb.add("enter")
     def _enter(event):
