@@ -1561,15 +1561,60 @@ class TestAskUiMultiQuestionInteract:
             r = ask_ui(self._questions(), input=inp, output=DummyOutput())
         assert [a.selected for a in r.answers] == [["b"], ["d"], ["e"]]
 
-    def test_left_cycle_from_first(self):
-        """第一个问题按 Left 循环到最后一个问题。"""
+    def test_left_from_first_goes_to_preview(self):
+        """第一个问题向左切到提交预览页（提交纳入左右循环）。"""
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
         with create_pipe_input() as inp:
-            # Left：Q1 → Q3；Down 选 F；Enter → 预览；Enter 确认（Q1/Q2 未答）
-            inp.send_text("\x1b[D\x0e\r\r")
+            # Left：Q1 → 提交预览页；Enter 确认（三题均未答）
+            inp.send_text("\x1b[D\r")
             r = ask_ui(self._questions(), input=inp, output=DummyOutput())
-        assert [a.selected for a in r.answers] == [[], [], ["f"]]
+        assert r.aborted is False
+        assert [a.skipped for a in r.answers] == [True, True, True]
+
+    def test_last_right_goes_to_preview(self):
+        """最后一个问题向右切到提交预览页（提交纳入左右循环）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Right ×3：Q1→Q2→Q3→提交预览页；Enter 确认（三题均未答）
+            inp.send_text("\x1b[C\x1b[C\x1b[C\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.skipped for a in r.answers] == [True, True, True]
+
+    def test_tab_advances_like_right(self):
+        """Tab 与向右类似：逐题前进、末题进入提交，而非直接切到提交预览页。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 Tab → Q2，Down 选 D，Enter → Q3；Enter 选 E → 预览；确认
+            inp.send_text("\t\x0e\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [[], ["d"], ["e"]]
+
+    def test_tab_from_last_goes_to_preview(self):
+        """最后一个问题按 Tab 进入提交预览页（与 Right 一致）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Tab ×3：Q1→Q2→Q3→提交预览页；Enter 确认（三题均未答）
+            inp.send_text("\t\t\t\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.skipped for a in r.answers] == [True, True, True]
+
+    def test_tab_in_preview_returns_to_first(self):
+        """提交预览页按 Tab 回到第一个问题（与 Right 一致）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Tab ×3 到提交预览页，再 Tab 回到第一个问题；逐题 Enter → 预览；确认
+            inp.send_text("\t\t\t\t\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
 
     def test_unanswered_shown_in_preview_and_returns_empty(self):
         """未回答的问题在预览展示「未回答」，确认后该问题答案空。"""
@@ -1656,9 +1701,9 @@ class TestAskUiMultiQuestionAnswers:
                 AskOption(label="Y", value="y"),
             ]),
         ]
-        # 场景 A：两题都未 Enter，Tab 直达预览并确认
+        # 场景 A：两题都未 Enter，从第一题 Left 直达预览并确认
         with create_pipe_input() as inp:
-            inp.send_text("\t\r")
+            inp.send_text("\x1b[D\r")
             r = ask_ui(qs, input=inp, output=DummyOutput())
         assert [a.skipped for a in r.answers] == [True, True]
 
@@ -1725,6 +1770,29 @@ class TestAskUiMultiQuestionAnswers:
         assert r.aborted is False
         assert r.answers[0].selected == ["other"]
         assert r.answers[0].input == "abcd"
+        assert r.answers[1].selected == ["b"]
+
+    def test_tab_switches_even_in_custom_input(self):
+        """Tab 不受自定义输入框焦点限制：激活时仍像 Right 一样切换问题。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="其他", value="other",
+                          description="输入", is_custom=True),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ]
+        with create_pipe_input() as inp:
+            # Q1：Down 到自定义，输入 abc；Tab（焦点在输入框上也切到 Q2）；
+            # Q2 无自定义，输入 d 被丢弃；Left 回 Q1；Enter 提交自定义；
+            # Q2 Enter → 预览；Enter 确认
+            inp.send_text("\x0eabc\t\x1b[D\r\r\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert r.answers[0].selected == ["other"]
+        assert r.answers[0].input == "abc"  # Tab 切换不插入外部字符
         assert r.answers[1].selected == ["b"]
 
 
