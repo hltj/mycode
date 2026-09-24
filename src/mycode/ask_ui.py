@@ -507,20 +507,25 @@ def _build_question_tabs(state: _AskState):
 
 
 def _answer_summary(state: _AskState, i: int) -> str:
-    """第 i 个问题已选答案的摘要文本（供预览页展示）。"""
+    """第 i 个问题已选答案的摘要文本（供预览页展示）。
+
+    选中自定义选项且输入了文本时，以 ``（文本）`` 追加标注；未输入
+    文本则不展示括号。
+    """
     q = state.questions[i]
     opts = q.options or []
     custom_idx = state._custom_idxs[i]
-    checked = state._checkeds[i]
     if q.multi:
-        sel_idxs = sorted(checked)
-    elif 0 <= state._sels[i] < len(opts):
-        sel_idxs = [state._sels[i]]
+        sel_idxs = sorted(state._checkeds[i])
+        custom_selected = custom_idx >= 0 and custom_idx in state._checkeds[i]
     else:
-        sel_idxs = []
+        sel_idxs = (
+            [state._sels[i]] if 0 <= state._sels[i] < len(opts) else []
+        )
+        custom_selected = custom_idx >= 0 and custom_idx == state._sels[i]
     parts = [opts[x].effective_value() for x in sel_idxs if 0 <= x < len(opts)]
     inp: str | None = None
-    if custom_idx >= 0 and custom_idx in checked:
+    if custom_selected:
         cb = state._custom_buffers[i]
         inp = cb.text if cb is not None else ""
     if parts:

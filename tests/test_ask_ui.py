@@ -1911,3 +1911,59 @@ class TestAskUiMultiQuestionLayout:
         layout = _build_preview_layout(state)
         text = self._layout_text(layout)
         assert "🟢 取消" in text
+
+    @staticmethod
+    def _preview_custom_state(
+        multi: bool, custom_text: str,
+    ) -> "_AskState":
+        from prompt_toolkit.buffer import Buffer
+        from mycode.ask_ui import _AskState
+        state = _AskState([
+            AskQuestion(
+                title="Q1", multi=multi,
+                custom_buffer=Buffer() if custom_text is not None else None,
+                options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="其它", value="other", is_custom=True),
+                ],
+            ),
+        ])
+        state._answered[0] = True
+        if multi:
+            state._checkeds[0] = {0, 1} if custom_text is not None else {0}
+        else:
+            state._sels[0] = 1 if custom_text is not None else 0
+        if custom_text:
+            state._custom_buffers[0].text = custom_text
+        state.q_index = -1
+        return state
+
+    def test_preview_single_custom_shows_input_in_parens(self):
+        """单选选自定义选项且输入了文本：答案后括号标注输入。"""
+        from mycode.ask_ui import _build_preview_layout
+        state = self._preview_custom_state(multi=False, custom_text="手写答案")
+        text = self._layout_text(_build_preview_layout(state))
+        assert "Q1：other（手写答案）" in text
+
+    def test_preview_single_custom_without_input_no_parens(self):
+        """单选选自定义选项但未输入文本：不加括号。"""
+        from mycode.ask_ui import _build_preview_layout
+        state = self._preview_custom_state(multi=False, custom_text="")
+        text = self._layout_text(_build_preview_layout(state))
+        assert "Q1：other" in text
+        assert "（" not in text
+
+    def test_preview_multi_custom_shows_input_in_parens(self):
+        """多选勾自定义选项且输入了文本：答案后括号标注输入。"""
+        from mycode.ask_ui import _build_preview_layout
+        state = self._preview_custom_state(multi=True, custom_text="补充说明")
+        text = self._layout_text(_build_preview_layout(state))
+        assert "Q1：a、other（补充说明）" in text
+
+    def test_preview_multi_custom_without_input_no_parens(self):
+        """多选勾自定义选项但未输入文本：不加括号。"""
+        from mycode.ask_ui import _build_preview_layout
+        state = self._preview_custom_state(multi=True, custom_text="")
+        text = self._layout_text(_build_preview_layout(state))
+        assert "Q1：a、other" in text
+        assert "（" not in text
