@@ -1070,7 +1070,7 @@ class _DefaultRenderer(_Renderer):
             # 当前选中行亮蓝粗体；placeholder 共用 PromptSession 的
             # ``class:placeholder``，不在此处登记。
             'ask-title': 'bold #00c099',
-            'ask-question': 'bold',
+            'ask-question': 'bold ansigray',
             'ask-description': 'fg:#6F6F6F',
             'ask-active': 'bold #009fff',
             'ask-unanswered': 'bold #ffff00',
@@ -1153,7 +1153,7 @@ class _ClassicRenderer(_Renderer):
             # 当前选中行亮蓝粗体；placeholder 共用 PromptSession 的
             # ``class:placeholder``，不在此处登记。
             'ask-title': 'bold #00c099',
-            'ask-question': 'bold',
+            'ask-question': 'bold ansigray',
             'ask-description': 'fg:#6F6F6F',
             'ask-active': 'bold #009fff',
             'ask-unanswered': 'bold #ffff00',

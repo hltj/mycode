@@ -101,12 +101,12 @@ class AskAnswer:              # 单道问题的答案
 样式经 `Application.style` 透传，需由调用方传入。`ask-title` / `ask-question` / `ask-description` / `ask-active` / `ask-unanswered` 在 renderer 两风格样式表中登记：
 
 - `ask-title`（标题）：`bold #00c099`。
-- `ask-question`（问题描述）：粗体（`bold`）。
+- `ask-question`（问题描述）：`bold ansigray`。
 - `ask-description`（选项描述）：`fg:#6F6F6F`（暗灰）。
 - `ask-active`（当前选中行）：`bold #009fff`。
 - `ask-unanswered`（预览未回答）：`bold #ffff00`（亮黄，同默认渲染的提醒色）。
 
-问题描述窗口（default markdown / classic 纯文本）整体挂 `ask-question`：未着色的纯文本部分继承粗体，markdown 富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。选项描述（普通选项行尾、自定义选项占位）沿用 `ask-description` 暗灰，与问题描述区分。
+问题描述窗口（default markdown / classic 纯文本）整体挂 `ask-question`：未着色的纯文本部分继承粗体灰，markdown 富文本样式（加粗 / 内联代码 / 代码块等）叠加生效。选项描述（普通选项行尾、自定义选项占位）沿用 `ask-description` 暗灰，与问题描述区分。
 
 - **占位文本**：用 `AfterInput + ConditionalProcessor`（与 `PromptSession.placeholder` 同款机制）渲染 `opt.description`（前导一个空格给光标留可视距离）；样式类 `class:placeholder` 与 cli 输入框共用，`italic fg:#666666` 暗灰斜体。
 - **自定义输入框背景**：挂 `class:mycode-input`，default 风格下 `bg:#333333`（与 cli 提示词输入区一致），classic 风格为空（保持原风格）。

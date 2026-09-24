@@ -51,7 +51,7 @@ from mycode import renderer as _renderer_mod
 # 选项 / 标题的样式类名（在渲染器 prompt style 中注册）
 _STYLE_TITLE = "class:ask-title"
 _STYLE_DESCRIPTION = "class:ask-description"
-# 问题描述：粗体，与选项描述的暗灰区分
+# 问题描述：粗体灰，与选项描述的暗灰区分
 _STYLE_QUESTION = "class:ask-question"
 _STYLE_ACTIVE = "class:ask-active"
 # 提交预览页「未回答」亮黄

@@ -1608,6 +1608,18 @@ class TestRenderStyle:
     def test_prompt_fragments_default(self):
         assert renderer._prompt_fragments() == [('class:mycode-prompt', '│ ')]
 
+    # ---- ask_ui 样式表 ----
+
+    @pytest.mark.parametrize("style", ["default", "classic"])
+    def test_ask_question_style(self, monkeypatch, style):
+        """问题描述样式 ``ask-question`` 两风格均为 ``bold ansigray``。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", style)
+        attrs = (renderer._get_renderer()
+                 .create_prompt_style()
+                 .get_attrs_for_style_str("class:ask-question"))
+        assert attrs.bold is True
+        assert attrs.color == "ansigray"
+
 
 class TestRenderResumeHint:
     """退出时的「继续本次会话」恢复命令渲染。
