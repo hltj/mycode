@@ -437,16 +437,16 @@ class TestAskUiLayout:
     def test_blank_line_between_header_and_options(self):
         """标题/描述与选项之间有一个空行（header 区存在时）。"""
         from mycode.ask_ui import _AskState, _build_ask_layout
-        # 标题 + 描述：header 区（2 行）+ 空行 + 选项
+        # 标题 + 描述：标题 + 空行 + 描述 + 空行 + 选项
         state = _AskState([AskQuestion(title="T", description="D", options=[
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        assert len(layout.children) == 4  # 标题 + 描述 + 空行 + 选项
-        # 空行是第三个元素（内容为空文本）
-        blank = layout.children[2]
-        text = self._layout_text(blank)
-        assert text == ""
+        assert len(layout.children) == 5
+        # 标题与描述之间的空行是第二个元素（内容为空文本）
+        assert self._layout_text(layout.children[1]) == ""
+        # 描述与选项之间的空行是第四个元素
+        assert self._layout_text(layout.children[3]) == ""
 
     def test_blank_line_only_title(self):
         """只有标题没有描述时，标题与选项之间也有空行。"""
@@ -607,8 +607,8 @@ class TestAskUiDescriptionMultiLine:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        # children：0 标题 / 1 描述 / 2 空行 / 3 选项
-        return layout.children[1].preferred_height(80, 24).preferred
+        # children：0 标题 / 1 标题与描述间空行 / 2 描述
+        return layout.children[2].preferred_height(80, 24).preferred
 
     def test_multiline_collapses_without_hard_break(self, monkeypatch):
         """default：裸换行按标准 markdown 折叠进同一段落（换行变空格）。"""
@@ -698,7 +698,8 @@ class TestAskUiDescriptionMultiLine:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        desc_win = layout.children[1]
+        # children：0 标题 / 1 标题与描述间空行 / 2 描述
+        desc_win = layout.children[2]
         assert desc_win.wrap_lines() is True
 
     def test_long_line_wraps_at_any_char(self, monkeypatch):
@@ -756,7 +757,8 @@ class TestAskUiDescriptionMultiLine:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        desc_win = layout.children[1]
+        # children：0 标题 / 1 空行 / 2 描述
+        desc_win = layout.children[2]
         # 两个短项都应是 1 行（加上列表前空行 = 3 行）
         assert desc_win.preferred_height(79, 24).preferred == 3
 

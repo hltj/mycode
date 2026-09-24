@@ -586,19 +586,27 @@ def _build_ask_layout(
 
     - 多问题模式：标题行是横向排列的短标题 + 末尾「提交」。
     - 单问题模式：标题行是单问题标题（与历史行为一致）。
-    标题与描述都非空才展示对应行；标题行或描述存在时增加分隔空行。
+    标题与描述都非空才展示对应行；二者都在时中间加空行；标题行或
+    描述存在时选项前增加分隔空行。
     """
     rows: list = []
 
     # 标题行（多问题为横向 tabs；单问题为原标题）
-    if state.multi_question:
-        rows.append(_build_question_tabs(state))
-    elif state.title:
-        rows.append(Window(
-            content=FormattedTextControl([(_STYLE_TITLE, state.title)]),
-            height=1,
-            dont_extend_width=True,
-        ))
+    if state.multi_question or state.title:
+        if state.multi_question:
+            rows.append(_build_question_tabs(state))
+        else:
+            rows.append(Window(
+                content=FormattedTextControl([(_STYLE_TITLE, state.title)]),
+                height=1,
+                dont_extend_width=True,
+            ))
+        # 标题与描述都存在时，二者之间加一个空行
+        if state.description:
+            rows.append(Window(
+                content=FormattedTextControl(""),
+                height=1,
+            ))
 
     # 描述（非空时展示）
     # - 问题描述支持多行与 markdown：default 风格经 rich Markdown 渲染成
@@ -644,11 +652,15 @@ def _option_row_offset(state: _AskState) -> int:
 
     该索引用作焦点定位的下标：``_focused_window`` 以 ``offset + sel``
     取当前选中选项在根 HSplit 中的 child。描述即使多行也只是单个 child，
-    故该值不随描述行数变化。多问题模式标题行为横向 tabs，同样占一个 child。
+    故该值不随描述行数变化。多问题模式标题行为横向 tabs，同样占一个 child；
+    标题与描述都在时二者之间的空行也占一个 child。
     """
     offset = 0
     if state.multi_question or state.title:
         offset += 1
+        # 标题与描述都存在时，二者之间有空行
+        if state.description:
+            offset += 1
     if state.description:
         offset += 1
     # 有标题或描述时，header 区后有分隔空行
