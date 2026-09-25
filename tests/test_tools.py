@@ -274,13 +274,6 @@ def test_glob_basic(workdir: Path):
     assert "deep.txt" in out
 
 
-def test_glob_recursive(workdir: Path):
-    from mycode.tools import glob
-    out = glob(".", "**/*.txt")
-    assert "hello.txt" in out
-    assert "deep.txt" in out
-
-
 def test_glob_no_match(workdir: Path):
     from mycode.tools import glob
     out = glob(".", "*.xyz")
@@ -291,6 +284,23 @@ def test_glob_limit(workdir: Path):
     from mycode.tools import glob
     out = glob(".", "*", limit=1)
     assert "已截断" in out
+
+
+def test_glob_pattern_with_dirseparator_rejected(workdir: Path):
+    """含 '/' 的 glob 模式匹配不到任何文件，应明确报错而非静默空结果。"""
+    from mycode.tools import glob
+    for pattern in ("foo/bar/*.py", "a/b.py"):
+        out = glob(".", pattern)
+        assert out.startswith("Error:")
+        assert "不支持" in out
+        assert "dir_path" in out  # 提示正确用法
+
+
+def test_glob_basename_only(workdir: Path):
+    """glob 只按文件名匹配，目录通过 dir_path 限定。"""
+    from mycode.tools import glob
+    out = glob("nested", "*.txt")
+    assert "deep.txt" in out
 
 
 # --- grep ---
