@@ -223,6 +223,85 @@ class TestAskUiMulti:
         assert "  [x] A" in text
         assert "  [ ] C" in text
 
+    def test_single_mark_prefix_classic_multi_question(self, monkeypatch):
+        """classic 多问题单选：选中标记 `*`（非 [x]），未选无标记。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="C", value="c")]),
+        ])
+        # 未 Enter：当前行 `>   `（无选中标记），无 [x]
+        layout = _build_ask_layout(state, custom_buffer=None)
+        text = TestAskUiLayout._layout_text(layout)
+        assert ">   A" in text
+        assert "    B" in text
+        assert "[x]" not in text
+        # Enter 选定 A 后光标移到 B：A 为 `  * `，B 为 `>   `
+        state._answered[0] = True
+        state._chosens[0] = 0
+        state._sels[0] = 1
+        layout = _build_ask_layout(state, custom_buffer=None)
+        text = TestAskUiLayout._layout_text(layout)
+        assert "  * A" in text
+        assert ">   B" in text
+        # 光标与选定同项时 `> * `（> 与 * 与标签各隔一空格）
+        state._sels[0] = 0
+        text = TestAskUiLayout._layout_text(_build_ask_layout(state, None))
+        assert "> * A" in text
+        assert "    B" in text
+
+    def test_single_mark_prefix_classic_multi_question_aligned(self, monkeypatch):
+        """classic 多问题单选前缀统一 4 列：未选未光标行补足空格对齐。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+                AskOption(label="C", value="c"),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="D", value="d")]),
+        ])
+        state._answered[0] = True
+        state._chosens[0] = 2  # 选定 C
+        state._sels[0] = 1     # 光标在 B
+        layout = _build_ask_layout(state, custom_buffer=None)
+        text = TestAskUiLayout._layout_text(layout)
+        lines = [ln for ln in text.split("\n") if ln.strip()][1:]  # 跳过标题行
+        # 前缀均为 4 列：`    A` / `>   B` / `  * C`，标签起点对齐
+        assert "    A" in lines[0]
+        assert ">   B" in lines[1]
+        assert "  * C" in lines[2]
+
+    def test_single_star_plain_text_no_style(self, monkeypatch):
+        """classic 多问题单选的 `*` 是纯文本，不挂特殊样式（与 [x] 一致）。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="C", value="c")]),
+        ])
+        state._answered[0] = True
+        state._chosens[0] = 0
+        state._sels[0] = 1  # 光标移开，`*` 行非当前行
+        layout = _build_ask_layout(state, custom_buffer=None)
+        text = TestAskUiLayout._layout_text(layout)
+        # `*` 行渲染为 `  * A`（前缀纯文本）；非当前行样式为空即可
+        assert "  * A" in text
+        # ask-chosen 样式类已不存在
+        import mycode.ask_ui as ask_ui_mod
+        assert not hasattr(ask_ui_mod, "_STYLE_CHOSEN")
+
 
 class TestAskUiMultiCustom:
     """多选模式下的自定义输入框：空格激活、空格输入、Backspace 失活。"""
@@ -1868,6 +1947,7 @@ class TestAskUiMultiQuestionLayout:
         ])
         state._answered[0] = True
         state._sels[0] = 1
+        state._chosens[0] = 1  # 多问题单选：Enter 选定 B
         state.q_index = -1  # 预览页
         layout = _build_preview_layout(state)
         text = self._layout_text(layout)
@@ -1911,6 +1991,27 @@ class TestAskUiMultiQuestionLayout:
         layout = _build_preview_layout(state)
         text = self._layout_text(layout)
         assert "🟢 取消" in text
+
+    def test_preview_confirm_cancel_marks_classic(self, monkeypatch):
+        """classic 预览页确认/取消行不加 `*`：`> 确认` / `  取消`。"""
+        from mycode import renderer
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        from mycode.ask_ui import _AskState, _build_preview_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+        ])
+        state.q_index = -1
+        layout = _build_preview_layout(state)
+        text = self._layout_text(layout)
+        assert "> 确认" in text
+        assert "  取消" in text
+        assert "*" not in text
+
+        state.preview_sel = 1
+        layout = _build_preview_layout(state)
+        text = self._layout_text(layout)
+        assert "> 取消" in text
+        assert "  确认" in text
 
     @staticmethod
     def _preview_custom_state(
@@ -1967,3 +2068,111 @@ class TestAskUiMultiQuestionLayout:
         text = self._layout_text(_build_preview_layout(state))
         assert "Q1：a、other" in text
         assert "（" not in text
+
+
+class TestAskUiMultiQuestionSingleChoice:
+    """多问题模式的单选：选中标记与答案记录跟光标分离。
+
+    - 未按 Enter 选定前：当前行只有光标指示（❯），不显示选中标记（🟢）。
+    - 按 Enter 后：选定项标 🟢；再移动光标只改光标（❯）不改答案。
+    """
+
+    @staticmethod
+    def _layout_text(layout) -> str:
+        return TestAskUiMultiQuestionLayout._layout_text(layout)
+
+    def test_no_selected_mark_before_enter(self):
+        """未按 Enter 前：当前行只有 ❯ 光标指示，不显示 🟢 选中标记。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="C", value="c")]),
+        ])
+        layout = _build_ask_layout(state, None)
+        text = self._layout_text(layout)
+        # 光标在 A（❯）但无选中标记（🟢）；B 仍是 ⚪
+        assert "❯ ⚪ A" in text
+        assert "  ⚪ B" in text
+        assert "🟢" not in text
+
+    def test_enter_sets_selected_mark_and_moves_cursor_keeps_answer(self):
+        """Enter 选定后标 🟢；移动光标只改光标指示，不改记录的答案。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="B", value="b"),
+                AskOption(label="C", value="c"),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="D", value="d")]),
+        ])
+        # 未答：无 🟢
+        assert "🟢" not in self._layout_text(_build_ask_layout(state, None))
+        # Q1 Enter 选定 A（光标在 0）
+        state._answered[0] = True
+        state._chosens[0] = 0
+        text = self._layout_text(_build_ask_layout(state, None))
+        assert "❯ 🟢 A" in text  # 光标与选定同项：❯ 🟢
+        assert "  ⚪ B" in text
+        # 光标移到 B：B 只有 ❯ 光标指示，A 保留 🟢
+        state._sels[0] = 1
+        text = self._layout_text(_build_ask_layout(state, None))
+        assert "❯ ⚪ B" in text
+        assert "  🟢 A" in text
+
+    def test_answer_keeps_chosen_after_cursor_moves(self):
+        """Enter 选定后移动光标再离开，提交的仍是 Enter 时选定的选项。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1：Down 到 B，Enter 选定 B → Q2；Enter 选 C → 预览；确认
+            inp.send_text("\x0e\r\r\r")
+            r = ask_ui([
+                AskQuestion(title="Q1", options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ]),
+                AskQuestion(title="Q2", options=[
+                    AskOption(label="C", value="c"),
+                    AskOption(label="D", value="d"),
+                ]),
+            ], input=inp, output=DummyOutput())
+        assert [a.selected for a in r.answers] == [["b"], ["c"]]
+
+    def test_answer_follows_latest_enter(self):
+        """离开再回来改选并重新 Enter：以最后一次 Enter 为准。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 Enter 选 A → Q2；Left 回 Q1，Down 到 B，Enter 选 B → Q2；
+            # Enter 选 C → 预览；确认
+            inp.send_text("\r\x1b[D\x0e\r\r\r")
+            r = ask_ui([
+                AskQuestion(title="Q1", options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ]),
+                AskQuestion(title="Q2", options=[
+                    AskOption(label="C", value="c"),
+                    AskOption(label="D", value="d"),
+                ]),
+            ], input=inp, output=DummyOutput())
+        assert [a.selected for a in r.answers] == [["b"], ["c"]]
+
+    def test_single_question_keeps_current_behavior(self):
+        """单问题模式：光标行即选中行，Enter 直接提交。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            inp.send_text("\r")
+            r = ask_ui([
+                AskQuestion(title="Q", options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ]),
+            ], input=inp, output=DummyOutput())
+        assert r.answers[0].selected == ["a"]
+        assert r.answers[0].cursor_index == 0

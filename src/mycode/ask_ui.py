@@ -190,6 +190,9 @@ class _AskState:
             for opts in opts_list
         ]
         self._answered: list[bool] = [False] * len(self.questions)
+        # 多问题单选：Enter 选定的选项索引（-1 未选定）。与光标 _sels
+        # 分离——选定后移动光标只改光标，不改已记录的答案。
+        self._chosens: list[int] = [-1] * len(self.questions)
 
     # ---- 模式判断 ----
     @property
@@ -390,27 +393,49 @@ def _placeholder_processors(buf: Buffer, placeholder: str | None):
     ]
 
 
-def _mark_str(multi: bool, active: bool, checked: bool) -> str:
+def _mark_str(
+    multi: bool,
+    active: bool,
+    checked: bool,
+    *,
+    multi_question: bool = False,
+) -> str:
     """计算选项前缀。
 
-    传统风格（classic）：单选当前行 ``> ``、其余 ``  ``；多选在左侧
-    加 ``> `` 指示当前行、勾选态用 ``[x] ``/``[ ] ``。
+    传统风格（classic）：
+        - 单选当前行 ``> ``、其余 ``  ``；多选在左侧加 ``> `` 指示
+          当前行、勾选态用 ``[x] ``/``[ ] ``。
+        - 多问题单选：光标位与选中标记 ``*`` 各占 1 列，中间隔一空格
+          ——``> * ``（光标+选中）/``  * ``（选中）/``>   ``（光标）/
+          ``    ``（均无，统一 4 列对齐标签）。
 
     默认风格：用符号前缀（统一 5 列宽度以对齐标签）——
-        - 单选：当前行 ``❯ 🟢 ``，其余 ``  ⚪ ``。
+        - 单选：``❯ ``（光标）+ ``🟢 ``（选中）/``⚪ ``（未选），
+          多问题时选中与光标分离（如 ``  🟢 `` 光标移开仍保留选中）。
         - 多选：左侧 ``❯ ``（当前行）/``  ``，勾选态 ``✅ ``/``🔳 ``。
+
+    ``active`` 表示光标所在行；单问题模式光标行即选中行，多问题
+    单选的选中标记由调用方以 Enter 选定项（chosen）传入 ``checked``，
+    与光标分离。
     """
     if _renderer_mod.RENDER_STYLE == "classic":
         if multi:
             mark = "> " if active else "  "
             box = "[x] " if checked else "[ ] "
             return mark + box
-        return "> " if active else "  "
+        if not multi_question:
+            return "> " if active else "  "
+        # 多问题单选：光标位 + 选中位（*）+ 标签，各隔一空格，共 4 列
+        return ("> " if active else "  ") + ("* " if checked else "  ")
     # 默认风格：符号前缀
     if multi:
         row = "❯ " if active else "  "
         box = "✅ " if checked else "🔳 "
         return row + box
+    if multi_question:
+        if active:
+            return "❯ 🟢 " if checked else "❯ ⚪ "
+        return "  🟢 " if checked else "  ⚪ "
     return "❯ 🟢 " if active else "  ⚪ "
 
 
@@ -421,9 +446,20 @@ def _build_option_window(
     active: bool,
     custom_buffer: Buffer | None,
 ):
-    """构造单个选项行（普通 / 自定义两种形态）。"""
-    checked = idx in state.checked
-    mark = _mark_str(state.multi, active, checked)
+    """构造单个选项行（普通 / 自定义两种形态）。
+
+    单选的选中标记（默认风格 🟢 / classic ``*``）：单问题模式光标行
+    即选中行；多问题模式用 Enter 选定项（``_chosens``），与光标分离。
+    """
+    if state.multi:
+        checked = idx in state.checked
+    elif state.multi_question:
+        checked = state._chosens[state.idx] == idx
+    else:
+        checked = active
+    mark = _mark_str(
+        state.multi, active, checked, multi_question=state.multi_question,
+    )
     style = _STYLE_ACTIVE if active else ""
 
     label_text = f"{mark}{opt.label}"
@@ -519,10 +555,10 @@ def _answer_summary(state: _AskState, i: int) -> str:
         sel_idxs = sorted(state._checkeds[i])
         custom_selected = custom_idx >= 0 and custom_idx in state._checkeds[i]
     else:
-        sel_idxs = (
-            [state._sels[i]] if 0 <= state._sels[i] < len(opts) else []
-        )
-        custom_selected = custom_idx >= 0 and custom_idx == state._sels[i]
+        # 单选：多问题模式用 Enter 选定项，单问题光标行即选中行
+        chosen = state._chosens[i] if state.multi_question else state._sels[i]
+        sel_idxs = [chosen] if 0 <= chosen < len(opts) else []
+        custom_selected = custom_idx >= 0 and custom_idx == chosen
     parts = [opts[x].effective_value() for x in sel_idxs if 0 <= x < len(opts)]
     inp: str | None = None
     if custom_selected:
@@ -825,7 +861,9 @@ def _run_ask_ui(
         if q.multi:
             sel_idxs = sorted(c for c in checked if c < len(opts))
         else:
-            sel_idxs = [sel_p] if 0 <= sel_p < len(opts) else []
+            # 单选：多问题模式用 Enter 选定项，单问题光标行即选中行
+            chosen = state._chosens[i] if state.multi_question else sel_p
+            sel_idxs = [chosen] if 0 <= chosen < len(opts) else []
         ar = AskAnswer(
             selected=[opts[x].effective_value() for x in sel_idxs],
             cursor_index=sel_p,
@@ -855,6 +893,9 @@ def _run_ask_ui(
         if not (q.options or []):
             return
         state._answered[state.idx] = True
+        # 多问题单选：记录 Enter 选定项（与光标分离）
+        if state.multi_question and not state.multi:
+            state._chosens[state.idx] = state.sel
         if state.multi_question:
             if state.idx >= len(state.questions) - 1:
                 state.q_index = -1
