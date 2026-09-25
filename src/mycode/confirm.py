@@ -22,13 +22,17 @@ from typing import NamedTuple, Optional
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout, VSplit, Window
+from prompt_toolkit.layout import Layout, Window, HSplit
+from prompt_toolkit.layout.containers import Container
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.processors import BeforeInput
 
 from mycode import ask_ui as _ask_ui_mod
+from mycode import renderer as _renderer_mod
 from mycode.ask_ui import AskOption
-from mycode.mode import ToolCategory, is_bash_tool
-from mycode.renderer import _get_renderer
+from mycode.mode import MODE_STATE, ToolCategory, is_bash_tool
+from mycode.renderer import _MODE_PROMPT_STYLES, _get_renderer
 
 
 class ConfirmAction(str, Enum):
@@ -69,6 +73,15 @@ def _run_edit_view(
             - ``action="finish"`` + ``text``：Alt+Enter 提交编辑。
             - ``action="back"``：按 ESC，请求回到确认菜单。
             - ``action="abort"``：Ctrl-C 中止整个确认流程。
+
+    布局（提示符颜色取当前 ``MODE_STATE`` 的模式样式类，与提示词输入区
+    一致；提示符经 ``BeforeInput`` processor 只加在输入首行行首，后续行
+    顶格不缩进，同 cli 提示词输入框的 ``prompt_continuation=''``）：
+        - classic：``HSplit(提示符 + 多行输入框)``，提示符 “编辑 >> ”；
+        - default：与提示词输入框同形——上下各 1 行 ``mycode-input`` 背景
+          留白，标题行 “编辑待执行命令：” 位于输入框上方、灰底块之外
+          （根容器不带背景样式，避免 parent_style 下发给标题行），提示符
+          为纯竖线 “│ ”（不带模式标记 ?/!）。
     """
     kb = KeyBindings()
     outcome = _EditOutcome(action="abort")
@@ -95,22 +108,66 @@ def _run_edit_view(
     def _on_char(event):
         event.app.current_buffer.insert_text(event.data or "")
 
+    # 编辑提示符：用当前模式的样式类（颜色与提示词输入区提示符一致）。
+    # - classic：文本 “编辑 >> ”；
+    # - default：竖线 “│ ”——复用 prompt_prefix 的首字符（竖线），不带
+    #   模式标记（? / !），即与提示词输入框同形。
+    # 提示符经 BeforeInput processor 只加在 buffer **第一行**行首，后续行
+    # 顶格不缩进（同 cli 提示词输入框的 prompt_continuation=''）。
+    mode = MODE_STATE.get()
+    prompt_style = f"class:{_MODE_PROMPT_STYLES[mode]}"
+    if _renderer_mod.RENDER_STYLE == "classic":
+        prompt_text = "编辑 >> "
+    else:
+        prompt_text = _get_renderer().prompt_prefix(mode)[0] + " "
+
+    input_win = Window(
+        content=BufferControl(
+            buffer=edit_buffer,
+            input_processors=[
+                BeforeInput([(prompt_style, prompt_text)]),
+            ],
+        ),
+        # wrap_lines=False：长行水平滚动而非折行，避免折行导致高度变化
+        wrap_lines=False,
+        height=lambda: max(1, min(10, edit_buffer.document.line_count)),
+    )
+
     # style="class:mycode-input"：与 cli 提示词输入区共用样式类，
     # default 风格下有灰色背景（与 ask_ui 自定义输入框保持视觉一致），
     # classic 风格为空（保持原风格）。
-    layout = VSplit([
-        Window(
-            content=FormattedTextControl("编辑 >> "),
-            height=1,
-            dont_extend_width=True,
-        ),
-        Window(
-            content=BufferControl(buffer=edit_buffer),
-            height=lambda: max(1, min(10, edit_buffer.document.line_count)),
-        ),
-    ], style="class:mycode-input")
+    if _renderer_mod.RENDER_STYLE == "classic":
+        # classic：提示符 + 输入框一体（提示符内嵌于输入框首行）
+        layout_container: Container = HSplit(
+            [input_win], style="class:mycode-input",
+        )
+    else:
+        # default：与提示词输入框同形——上下各 1 行 mycode-input 背景留白
+        # （同 renderer.apply_input_style 的输入区留白），提示符为纯竖线
+        # （模式颜色）。标题 “编辑待执行命令：” 是输入框的标题行，位于
+        # 留白行上方、**灰底块之外**——根容器不挂 mycode-input（否则
+        # parent_style 会把灰底下发给标题行），只给块内子元素上背景。
+        def _blank() -> Window:
+            return Window(
+                content=FormattedTextControl(""),
+                height=Dimension.exact(1),
+                style="class:mycode-input",
+                dont_extend_height=True,
+            )
+
+        layout_container = HSplit([
+            Window(
+                content=FormattedTextControl("编辑待执行命令："),
+                height=1,
+                dont_extend_width=True,
+            ),
+            _blank(),
+            HSplit([input_win], style="class:mycode-input"),
+            _blank(),
+        ])
+    layout = Layout(layout_container)
     app: Application = Application(
-        layout=Layout(layout),
+        layout=layout,
         key_bindings=kb,
         full_screen=False,
         erase_when_done=True,

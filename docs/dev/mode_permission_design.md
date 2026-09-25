@@ -161,6 +161,19 @@ action, extra = confirm_tool(func_name, category, command)
 2. 解析 `ask_ui` 返回值，映射到 `ConfirmAction`。
 3. 编辑动作（仅 bash 工具）触发独立的多行编辑视图 `_run_edit_view`（`Buffer(multiline=True)`，`Alt+Enter` 提交、`ESC` 返回确认菜单、`Ctrl-C` 取消），与确认菜单彼此独立 `app.run()`；`confirm_tool` 在收到 `"back"` 时循环重跑 `ask_ui`。
 
+#### 编辑视图布局
+
+提示符颜色均取当前模式样式类（`renderer._MODE_PROMPT_STYLES`，同提示词输入区）。提示符经 `BeforeInput` processor 只加在输入**首行**行首，后续行顶格不缩进（同提示词输入框的 `prompt_continuation=''`）；输入窗口 `wrap_lines=False`（长行水平滚动，不折行）：
+
+| 风格 | 布局 | 提示符 |
+|------|------|--------|
+| classic | `HSplit(输入框)`，挂 `mycode-input` | “编辑 >> ”（模式色） |
+| default | 标题行 + 上留白行 + 输入行 + 下留白行 | 纯竖线 “│ ”（模式色，**不带**模式标记 `?`/`!`，与提示词输入框同形） |
+
+- default 上下留白为 1 行固定高度 `class:mycode-input` 背景空行，与提示词输入区留白（`renderer.apply_input_style`）一致；输入行同挂 `mycode-input` 背景；
+- default 根容器**不挂**背景样式——否则 `parent_style` 会把灰底下发给标题行；标题行 “编辑待执行命令：” 位于留白行上方、灰底块之外（无背景）；
+- 竖线取 `prompt_prefix(mode)` 首字符（即 `│`），复用提示符前缀定义。
+
 **`ask_ui` 返回 `AskResult` 且 `aborted=True` 时**（Ctrl-C 中止）直接返回 `CANCEL`；选中拒绝时根据输入是否为空区分 `REJECT` / `REJECT_NO_REASON`。
 
 ### 动作映射

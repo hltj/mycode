@@ -15,12 +15,56 @@ ask_ui 自身的 UI 行为详见 ``tests/test_ask_ui.py``。
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
 import mycode.confirm as confirm_mod
 import mycode.ask_ui as ask_ui_mod
 from mycode.ask_ui import AskAnswer, AskOption, AskResult
-from mycode.mode import ToolCategory
+from mycode.mode import MODE_STATE, Mode, ToolCategory
+
+
+def _edit_view_container(buf_text: str = "echo hi", style: str = "default"):
+    """运行 _run_edit_view（FakeApp 截获布局根容器），返回根容器。
+
+    以 Ctrl-C 立即退出；渲染风格经 renderer.RENDER_STYLE 指定。
+    """
+    from prompt_toolkit.buffer import Buffer
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+    from unittest.mock import patch
+    from prompt_toolkit.application import Application
+    import mycode.renderer as renderer_mod
+
+    seen: dict = {}
+
+    class _FakeApp(Application):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            seen["container"] = self.layout.container
+
+        def run(self):
+            return None
+
+    buf = Buffer(multiline=True)
+    buf.text = buf_text
+    saved = renderer_mod.RENDER_STYLE
+    renderer_mod.RENDER_STYLE = style
+    try:
+        with create_pipe_input() as inp:
+            inp.send_text("\x03")  # Ctrl-C 立即退出
+            with patch("mycode.confirm.Application", _FakeApp):
+                confirm_mod._run_edit_view(buf, input=inp, output=DummyOutput())
+    finally:
+        renderer_mod.RENDER_STYLE = saved
+    return seen["container"]
+
+
+def _ftc_text(window) -> tuple[list, str]:
+    """取 Window 上 FormattedTextControl 的 (fragments, 纯文本)。"""
+    frags = window.content.text
+    return frags, "".join(t for _, t in frags) if isinstance(frags, list) else str(frags)
 
 
 # ===================================================================
@@ -604,103 +648,244 @@ class TestRunEditView:
 # ===================================================================
 
 class TestEditViewLayout:
-    """编辑视图布局：提示符 + 多行输入框（与 cli 输入区共用背景）。"""
+    """编辑视图布局（classic / default 两风格分别验证）。
 
-    def test_layout_root_is_vsplit(self):
-        """编辑视图根容器是 VSplit（提示 + 输入框）。"""
-        from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.layout.containers import VSplit
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        from unittest.mock import patch
-        from prompt_toolkit.application import Application
+    提示符经 ``BeforeInput`` processor 只加在输入首行行首（用当前模式
+    样式类着色），后续行顶格不缩进（同 cli 提示词输入框的
+    ``prompt_continuation=''``）：
 
-        seen_layout = {}
+    - classic：根为 HSplit，仅含输入框窗口（挂 mycode-input），提示符
+      “编辑 >> ” 内嵌于输入首行；
+    - default：根为 HSplit = 标题行 “编辑待执行命令：”（灰底块外）+
+      上留白行 + 输入行（挂 mycode-input）+ 下留白行；提示符为纯竖线
+      “│ ”（不带模式标记 ? / !）。
+    """
 
-        class _FakeApp(Application):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                seen_layout["container"] = self.layout.container
+    @pytest.fixture(autouse=True)
+    def reset_mode(self):
+        MODE_STATE.set(Mode.AUTO)
+        yield
+        MODE_STATE.set(Mode.AUTO)
 
-            def run(self):
-                return None
+    # ---- 公共：提示符 processor ----
 
-        buf = Buffer(multiline=True)
-        with create_pipe_input() as inp:
-            inp.send_text("\x03")
-            with patch("mycode.confirm.Application", _FakeApp):
-                confirm_mod._run_edit_view(buf, input=inp, output=DummyOutput())
-        # 根容器是 VSplit（编辑 >> 提示 + 输入框）
-        assert isinstance(seen_layout["container"], VSplit)
-
-    def test_edit_prompt_and_input_side_by_side(self):
-        """「编辑 >> 」提示与输入框同行并列（VSplit 两个子元素）。"""
-        from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.layout.containers import VSplit, Window
+    def _prompt_proc(self, container):
+        """取输入窗口 BufferControl 的 BeforeInput processor。"""
+        from prompt_toolkit.layout.containers import HSplit
         from prompt_toolkit.layout.controls import BufferControl
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
+        from prompt_toolkit.layout.processors import BeforeInput
+
+        def _walk(node):
+            if isinstance(node, HSplit):
+                for ch in node.children:
+                    yield from _walk(ch)
+            else:
+                yield node
+
+        for win in _walk(container):
+            ctrl = getattr(win, "content", None)
+            if isinstance(ctrl, BufferControl):
+                for proc in ctrl.input_processors:
+                    if isinstance(proc, BeforeInput):
+                        return proc
+        raise AssertionError("未找到 BeforeInput processor")
+
+    def _prompt_frags(self, container):
+        """BeforeInput 的 (fragments, 纯文本)。"""
+        proc = self._prompt_proc(container)
+        frags = proc.text
+        return frags, "".join(t for _, t in frags)
+
+    def test_prompt_only_on_first_line(self, monkeypatch):
+        """提示符是 BeforeInput processor（只作用于首行），后续行不缩进。"""
+        from prompt_toolkit.layout.processors import BeforeInput
+        for style in ("classic", "default"):
+            assert isinstance(self._prompt_proc(_edit_view_container(style=style)),
+                              BeforeInput)
+
+    # ---- classic ----
+
+    def test_classic_root_is_hsplit_single_input(self):
+        """classic：根 HSplit 单输入窗口（挂 mycode-input），无标题/留白。"""
+        from prompt_toolkit.layout.containers import HSplit
+        container = _edit_view_container(style="classic")
+        assert isinstance(container, HSplit)
+        assert len(container.children) == 1
+        assert container.style == "class:mycode-input"
+
+    def test_classic_prompt_text_and_mode_style(self):
+        """classic：提示符 “编辑 >> ” 文本不变，样式类随模式。"""
+        cases = [
+            (Mode.AUTO, "class:mycode-prompt"),
+            (Mode.ASK, "class:mycode-prompt-ask"),
+            (Mode.YOLO, "class:mycode-prompt-yolo"),
+        ]
+        for mode, style_cls in cases:
+            MODE_STATE.set(mode)
+            container = _edit_view_container(style="classic")
+            frags, text = self._prompt_frags(container)
+            assert text == "编辑 >> "
+            assert (style_cls, "编辑 >> ") in frags
+
+    # ---- default ----
+
+    def test_default_root_is_hsplit_with_title_and_blanks(self):
+        """default：根 HSplit = 标题行 + 上空行 + 输入行 + 下空行。"""
+        from prompt_toolkit.layout.containers import HSplit, Window
+        container = _edit_view_container(style="default")
+        assert isinstance(container, HSplit)
+        children = container.children
+        assert len(children) == 4
+        title_win, top_blank, input_row, bottom_blank = children
+        # 标题行在最上方（灰底块之外）：“编辑待执行命令：”、无背景样式；
+        # 根容器也不挂 mycode-input（否则 parent_style 会给标题行下发灰底）
+        assert isinstance(title_win, Window)
+        assert _ftc_text(title_win)[1] == "编辑待执行命令："
+        assert title_win.style in (None, "")
+        assert container.style in (None, "")
+        # 上下空行：1 行高、mycode-input 背景
+        for blank in (top_blank, bottom_blank):
+            assert isinstance(blank, Window)
+            assert blank.height.min == 1 and blank.height.max == 1
+            assert blank.style == "class:mycode-input"
+        # 输入行挂输入区背景
+        assert input_row.style == "class:mycode-input"
+
+    def test_default_prompt_bar_without_mode_mark(self):
+        """default：提示符为纯竖线 “│ ”（不带 ?/!），样式类随模式。"""
+        cases = [
+            (Mode.AUTO, "class:mycode-prompt"),
+            (Mode.ASK, "class:mycode-prompt-ask"),
+            (Mode.YOLO, "class:mycode-prompt-yolo"),
+        ]
+        for mode, style_cls in cases:
+            MODE_STATE.set(mode)
+            container = _edit_view_container(style="default")
+            frags, text = self._prompt_frags(container)
+            assert text == "│ "
+            assert (style_cls, "│ ") in frags
+
+    def test_default_bar_reuses_prompt_prefix(self):
+        """default：竖线复用 renderer 的 prompt_prefix（去掉模式标记）。"""
+        from mycode.renderer import _get_renderer
+        MODE_STATE.set(Mode.ASK)
+        container = _edit_view_container(style="default")
+        # prompt_prefix("ask") = "│?"，编辑提示符去掉标记只剩 "│"
+        assert self._prompt_frags(container)[1].rstrip() \
+            == _get_renderer().prompt_prefix(Mode.ASK)[:1]
+
+    def test_default_input_window_is_buffer_control(self):
+        """default：输入行是 BufferControl（多行编辑 buffer）。"""
+        from prompt_toolkit.layout.containers import HSplit
+        from prompt_toolkit.layout.controls import BufferControl
+        container = _edit_view_container(style="default")
+        assert isinstance(container.children[2].children[0].content, BufferControl)
+
+    def test_default_blanks_share_mycode_input_style(self):
+        """default：留白行与输入行挂 class:mycode-input，根容器不带。"""
+        container = _edit_view_container(style="default")
+        # 根容器不挂背景样式（标题行在块外，不能继承灰底）
+        assert container.style in (None, "")
+        assert container.children[1].style == "class:mycode-input"
+        assert container.children[2].style == "class:mycode-input"
+        assert container.children[-1].style == "class:mycode-input"
+
+    def test_render_continuation_lines_not_indented(self):
+        """渲染级验证：多行命令仅首行带提示符，后续行顶格不缩进。"""
+        import asyncio
+        import re
+        import threading
+        from collections import namedtuple
         from unittest.mock import patch
-        from prompt_toolkit.application import Application
-
-        seen_layout = {}
-
-        class _FakeApp(Application):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                seen_layout["container"] = self.layout.container
-
-            def run(self):
-                return None
-
-        buf = Buffer(multiline=True)
-        with create_pipe_input() as inp:
-            inp.send_text("\x03")
-            with patch("mycode.confirm.Application", _FakeApp):
-                confirm_mod._run_edit_view(buf, input=inp, output=DummyOutput())
-        container = seen_layout["container"]
-        assert isinstance(container, VSplit)
-        # 两个子元素：提示（Window）+ 输入框（Window）
-        assert len(container.children) == 2
-        prompt_win, input_win = container.children
-        assert isinstance(prompt_win, Window)
-        assert isinstance(input_win, Window)
-        assert isinstance(input_win.content, BufferControl)
-
-    def test_edit_prompt_adjacent_to_input(self):
-        """「编辑 >> 」提示紧挨输入框：提示文本含尾随空格。"""
+        import mycode.renderer as renderer_mod
+        from mycode.confirm import _run_edit_view
         from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.layout.containers import VSplit, Window
-        from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
         from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        from unittest.mock import patch
-        from prompt_toolkit.application import Application
+        from prompt_toolkit.output.vt100 import Vt100_Output
+        from prompt_toolkit.renderer import Renderer
 
-        seen_layout = {}
+        cmd = "cat <<'EOF'\nhello\nEOF"
 
-        class _FakeApp(Application):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                seen_layout["container"] = self.layout.container
+        def _render(style_name: str) -> list[str]:
+            """在专用线程的新事件循环内渲染一帧，返回非空纯文本行。
 
-            def run(self):
-                return None
+            线程隔离是必须的：其他用例真实跑过 ``app.run()`` 后主线程的
+            事件循环会被关闭，主线程 ``run_until_complete`` 会抛
+            ``RuntimeError``；新线程里 ``new_event_loop`` 不受影响。
+            """
+            result: dict = {}
 
-        buf = Buffer(multiline=True)
-        buf.text = "echo hi"
-        with create_pipe_input() as inp:
-            inp.send_text("\x03")
-            with patch("mycode.confirm.Application", _FakeApp):
-                confirm_mod._run_edit_view(buf, input=inp, output=DummyOutput())
-        container = seen_layout["container"]
-        prompt_win = container.children[0]
-        control = prompt_win.content
-        assert isinstance(control, FormattedTextControl)
-        frags = control.text if hasattr(control, "text") else control()
-        text = "".join(t for _, t in frags) if isinstance(frags, list) else str(frags)
-        # 「编辑 >> 」含一个尾随空格，贴合输入框
-        assert text == "编辑 >> "
+            def _work():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    saved = renderer_mod.RENDER_STYLE
+                    renderer_mod.RENDER_STYLE = style_name
+                    Size = namedtuple("Size", "rows columns")
+                    buf = io.StringIO()
+                    out = Vt100_Output(
+                        stdout=buf,
+                        get_size=lambda: Size(24, 80),
+                        term="xterm-256color",
+                    )
+                    seen: dict = {}
+
+                    class _F(confirm_mod.Application):
+                        def __init__(self, *a, **kw):
+                            super().__init__(*a, **kw)
+                            seen["app"] = self
+
+                        def run(self):
+                            return None
+
+                    b = Buffer(multiline=True, history=None)
+                    b.text = cmd
+                    with create_pipe_input() as inp:
+                        inp.send_text("\x03")
+                        with patch("mycode.confirm.Application", _F):
+                            _run_edit_view(b, input=inp, output=out)
+                    app = seen["app"]
+                    style = renderer_mod._get_renderer().create_prompt_style()
+                    renderer = Renderer(style=style, output=out)
+
+                    async def _go():
+                        from prompt_toolkit.application.current import set_app
+                        with set_app(app):
+                            renderer.render(app, app.layout, is_done=False)
+
+                    loop.run_until_complete(_go())
+                    result["lines"] = [
+                        plain.rstrip()
+                        for plain in (
+                            re.sub(
+                                r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07",
+                                "", line,
+                            )
+                            for line in buf.getvalue().split("\r\n")
+                        )
+                        if plain.strip()
+                    ]
+                finally:
+                    renderer_mod.RENDER_STYLE = saved
+                    loop.close()
+                    asyncio.set_event_loop(None)
+
+            t = threading.Thread(target=_work)
+            t.start()
+            t.join()
+            assert "lines" in result, "渲染线程异常退出"
+            return result["lines"]
+
+        # default：标题行 + 首行竖线 + 后续行顶格
+        default_lines = _render("default")
+        assert default_lines[0] == "编辑待执行命令："
+        assert default_lines[1] == "│ cat <<'EOF'"
+        assert default_lines[2:] == ["hello", "EOF"]
+
+        # classic：首行提示符 + 后续行顶格
+        classic_lines = _render("classic")
+        assert classic_lines[0] == "编辑 >> cat <<'EOF'"
+        assert classic_lines[1:] == ["hello", "EOF"]
 
 
 # ===================================================================
@@ -719,36 +904,22 @@ class TestFormatHelpers:
 
 
 class TestEditViewStyle:
-    """编辑视图根容器挂上 class:mycode-input（与 cli 输入区共用背景）。"""
+    """编辑视图输入区样式（与 cli 输入区共用 class:mycode-input 背景）。
 
-    def test_root_layout_has_mycode_input_style(self):
-        """直接构造编辑视图布局，根 VSplit 挂上 class:mycode-input。"""
-        from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.layout.containers import VSplit
-        from prompt_toolkit.application import Application
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        from unittest.mock import patch
+    - classic：根 VSplit 挂 class:mycode-input（样式表里该类为空）；
+    - default：根 HSplit 不带背景样式（标题行在灰底块外），背景挂到
+      留白行与 VSplit 输入行。
+    """
 
-        seen_root = {}
+    def test_classic_root_has_mycode_input_style(self):
+        """classic：根 VSplit 挂上 class:mycode-input。"""
+        container = _edit_view_container(style="classic")
+        assert container.style == "class:mycode-input"
 
-        class _FakeApp(Application):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                seen_root["style"] = self.layout.container.style
-
-            def run(self):
-                return None
-
-        buf = Buffer(multiline=True)
-        buf.text = "echo hi"
-
-        with create_pipe_input() as inp:
-            inp.send_text("\x03")  # Ctrl-C 立即退出
-            with patch("mycode.confirm.Application", _FakeApp):
-                confirm_mod._run_edit_view(buf, input=inp, output=DummyOutput())
-        # 关键：编辑视图根容器挂上 class:mycode-input
-        assert seen_root["style"] == "class:mycode-input"
+    def test_default_background_not_on_root(self):
+        """default：根容器不挂背景样式（标题行在灰底块外）。"""
+        container = _edit_view_container(style="default")
+        assert container.style in (None, "")
 
     def test_edit_view_receives_style(self):
         """_run_edit_view 将 style 透传给 Application。"""
