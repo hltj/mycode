@@ -9,10 +9,13 @@ from typing import Any, Callable, cast
 from dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
-# 加载 .env 环境变量（须在导入本地模块前，本地模块顶部常量会读取环境变量，
-# 例如 renderer 的语法高亮主题 MYCODE_SYNTAX_THEME）
+# 加载 .env 环境变量（须在导入 config 及其他本地模块前：它们顶部会读配置，
+# 例如 renderer 的语法高亮主题 syntax_theme）。配置项除环境变量外还可来自
+# {MYCODE_HOME_DIR}/config.toml，见 mycode.config。
 # ---------------------------------------------------------------------------
 load_dotenv()
+
+from mycode import config
 
 from openai import OpenAI, RateLimitError
 from openai.types.chat import (
@@ -43,58 +46,36 @@ HISTORY_FILE = APP_HOME_DIR / 'history.txt'
 
 # 系统提示词
 _BASE_SYSTEM_PROMPT = f"你是编程智能体 mycode。当前在 {os.getcwd()}。使用工具完成任务。直接做勿解释。"
-_ADDITIONAL = os.getenv('MYCODE_ADDITIONAL_SYSTEM_PROMPT')
+_ADDITIONAL = config.get("additional_system_prompt")
 SYSTEM_PROMPT = _BASE_SYSTEM_PROMPT + (("\n" + _ADDITIONAL) if _ADDITIONAL else "")
 
 # ---------------------------------------------------------------------------
 # 429 限流自动重试
 # ---------------------------------------------------------------------------
-# 环境变量 MYCODE_E429_WAIT_SECONDS：逗号分隔的正整数秒数列表（如 "1,2,5,10"）。
+# 配置项 e429_wait_seconds（环境变量 MYCODE_E429_WAIT_SECONDS 或
+# config.toml 的 ``e429_wait_seconds``）：正整数秒数列表（如 [1,2,5,10]）。
 # 默认（未设置 / 为空）不开启自动重试：429 直接向上抛出；
 # 解析不到合法整数列表、或连续 429 次数超出列表长度时同样向上抛出。
-
-
-def _parse_e429_wait_seconds(raw: str | None) -> list[int] | None:
-    """解析 MYCODE_E429_WAIT_SECONDS 为正整数秒列表。
-
-    - 空 / 未设置：返回 ``None``，表示不启用（429 向上抛出）；
-    - 任一项非法（非正整数数字 / 空段）：返回 ``None``，表示不启用；
-    - 全部合法：返回解析后的 int 列表。
-    """
-    if raw is None or raw.strip() == "":
-        return None
-    values: list[int] = []
-    for part in raw.split(','):
-        part = part.strip()
-        if not part:
-            return None
-        try:
-            v = int(part)
-        except ValueError:
-            return None
-        if v <= 0:
-            return None
-        values.append(v)
-    return values
+# 解析逻辑见 mycode.config.get_int_list。
 
 
 # 模块级解析一次：429 连续发生第 n 次时取列表第 n 个值（索引 n-1）。
 # 为 ``None`` 时表示不开启自动重试。
-_e429_wait_list: list[int] | None = _parse_e429_wait_seconds(os.getenv('MYCODE_E429_WAIT_SECONDS'))
+_e429_wait_list: list[int] | None = config.get_int_list("e429_wait_seconds")
 
 # ---------------------------------------------------------------------------
 # 导入工具
 # ---------------------------------------------------------------------------
 from mycode.tools_registry import ToolsRegistry
 
-_api_key = os.getenv('MYCODE_API_KEY')
+_api_key = config.get("api_key")
 # 阅后即焚：从环境变量中移除 MYCODE_API_KEY，防止子进程（如 bash 工具）泄露
 if 'MYCODE_API_KEY' in os.environ:
     del os.environ['MYCODE_API_KEY']
 
 client = OpenAI(
     api_key=_api_key,
-    base_url=os.getenv('MYCODE_BASE_URL'),
+    base_url=config.get("base_url"),
 )
 
 # ===================================================================
@@ -346,7 +327,7 @@ def agent_loop(
         reset_stale_rounds as reset_todo_stale,
     )
     tools = ToolsRegistry.get_tools()
-    # 连续 429 计数：成功产生模型事件后重置，决定取 MYCODE_E429_WAIT_SECONDS 第几个值
+    # 连续 429 计数：成功产生模型事件后重置，决定取 e429_wait_seconds 第几个值
     consecutive_429 = 0
     while True:
         # ---- 陈旧待办提醒 ----
@@ -385,7 +366,7 @@ def agent_loop(
             bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
             return
         except RateLimitError:
-            # 429 限流：按连续发生次数取 MYCODE_E429_WAIT_SECONDS 中的秒数，
+            # 429 限流：按连续发生次数取 e429_wait_seconds 中的秒数，
             # 倒计时等待后静默重试，不跳出 agent 循环。
             consecutive_429 += 1
             wait_list = _e429_wait_list
@@ -823,7 +804,7 @@ def main():
     # 目录信任确认
     _check_dir_trust()
 
-    model = os.getenv('MYCODE_MODEL_NAME') or ''
+    model = config.get("model_name") or ''
 
     # 消息列表初始化系统提示词
     hist_messages: list[ChatCompletionMessageParam] = [

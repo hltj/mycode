@@ -1,0 +1,46 @@
+# mycode 配置示例：复制到 {MYCODE_HOME_DIR}/config.toml（默认 ~/.mycode/config.toml）
+# 并按需修改。除 MYCODE_HOME_DIR 外，所有配置项均可写在此文件；
+# 同名环境变量（MYCODE_ 前缀）优先级更高。
+# 数组类配置写 TOML 数组；环境变量中对应为逗号分隔字符串。
+
+# OpenAI 兼容 API 的密钥（必填；也可只用环境变量 MYCODE_API_KEY）
+api_key = "your_api_key_here"
+
+# OpenAI 兼容 API 的 Base URL（默认 OpenAI 官方）
+base_url = "https://api.openai.com/v1"
+
+# 默认模型名（必填）
+model_name = "gpt-4o"
+
+# 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加
+additional_system_prompt = ""
+
+# bash 工具的超时（秒），默认 60
+bash_timeout = 60
+
+# 危险命令正则列表（re.search 命中即拒）
+bash_dangerous = [
+    "sudo",
+    "rm -rf",
+    "(^|[\\s/])\\.git(?![\\w.])",
+    "(^|[\\s/])\\.env(?![\\w.])",
+    "(^|[\\s/])\\.env\\.production(?![\\w.])",
+]
+
+# 注意命令正则列表（命中时视模式需确认）
+bash_caution = ["rm", "\\.env", "password"]
+
+# 受保护路径正则列表；路径命中任一条则 ls/glob/grep/read/write/edit/patch 拒绝访问
+protected_path_pattern = ["(^|/)\\.git(/|$)", "(^|/)\\.env(\\.production)?$"]
+
+# 429 限流自动重试的等待档位（秒）；不配置则不开启
+e429_wait_seconds = [1, 2, 5, 10]
+
+# 语法高亮主题（default 风格）：nord（默认）/ gruvbox-dark / zenburn / one-dark 等
+syntax_theme = "nord"
+
+# todo_write 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒），默认 5
+todo_stale_threshold = 5
+
+# todo_write 同时处于进行中的待办项数上限，默认 3
+todo_max_in_progress = 3

@@ -30,6 +30,7 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "pyyaml>=6.0",
     "rich>=13.0",
+    "tomli>=2.0; python_version < '3.11'",
 ]
 
 [project.scripts]
@@ -73,3 +74,9 @@ exclude = ["tests/", "build/", "dist/"]
 strict = false
 warn_unused_ignores = true
 warn_redundant_casts = true
+# mypy 以 python_version=3.10 跑在 3.11+ 环境时找不到 tomllib 的桩
+# （运行时 3.10 用 tomli，3.11+ 用 tomllib），忽略此导入错误
+# 不过滤的话两种环境必有一边报 unused-ignore，故按模块关闭
+[[tool.mypy.overrides]]
+module = "mycode.config"
+disable_error_code = ["import-not-found", "unused-ignore"]

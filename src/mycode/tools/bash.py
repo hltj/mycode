@@ -5,15 +5,13 @@ import os
 import re
 import subprocess
 from typing import Annotated
+from mycode import config
 from mycode.tools_registry import ToolsRegistry
 
 
 def _load_dangerous_patterns() -> list[str]:
     """读取并切分危险命令正则列表。"""
-    raw = os.getenv('MYCODE_BASH_DANGEROUS', '')
-    if not raw:
-        return []
-    return [p.strip() for p in raw.split(',') if p.strip()]
+    return config.get_list("bash_dangerous") or []
 
 
 @ToolsRegistry.tool(description="运行 bash 命令")
@@ -22,7 +20,7 @@ def bash(command: Annotated[str, "要执行的 bash 命令"]) -> str:
         if re.search(pat, command):
             # 不向模型暴露具体模式
             return 'Error: 拒绝执行危险命令'
-    timeout = int(os.getenv('MYCODE_BASH_TIMEOUT') or 60)
+    timeout = config.get_int("bash_timeout", 60)
     try:
         result = subprocess.run(command, cwd=os.getcwd(), shell=True, capture_output=True, text=True, timeout=timeout)
         return result.stdout + result.stderr

@@ -19,6 +19,7 @@ cli.py 的测试：智能体自循环与 CLI 交互逻辑。
 
 from __future__ import annotations
 
+import os
 import sys
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -1880,27 +1881,24 @@ class TestRetryCommand:
         from mycode.cli import MycCommandCompleter
         assert "/retry" in MycCommandCompleter.COMMANDS
 class TestE429WaitSecondsParse:
-    """MYCODE_E429_WAIT_SECONDS 解析：合法才启用，非法返回 None（不开启）。"""
+    """e429_wait_seconds 解析行为：详见 tests/test_config.py 的 TestGetIntList。
 
-    def test_default_not_enabled(self):
-        """默认（未设置 / 为空）：不开启，解析返回 None。"""
-        assert cli._parse_e429_wait_seconds(None) is None
-        assert cli._parse_e429_wait_seconds("") is None
-        assert cli._parse_e429_wait_seconds("   ") is None
+    此处仅验证 cli 模块级已按配置初始化（默认不开启）。"""
 
-    def test_parse_valid_list(self):
-        assert cli._parse_e429_wait_seconds("1,2,5,10") == [1, 2, 5, 10]
-        assert cli._parse_e429_wait_seconds("3") == [3]
-        assert cli._parse_e429_wait_seconds("1, 2 ,3") == [1, 2, 3]
-
-    def test_invalid_returns_none(self):
-        # 非法项 / 空段 / 非正数 / 小数 → 整个不启用
-        assert cli._parse_e429_wait_seconds("abc,2") is None
-        assert cli._parse_e429_wait_seconds("1,,") is None
-        assert cli._parse_e429_wait_seconds("1,0") is None
-        assert cli._parse_e429_wait_seconds("1,-3") is None
-        assert cli._parse_e429_wait_seconds("1.5,2") is None
-        assert cli._parse_e429_wait_seconds(",1") is None
+    def test_default_not_enabled(self, monkeypatch, tmp_path):
+        # 本地 .env 可能配置了该变量（load_dotenv 会注入），
+        # 用干净环境在子进程重新解析验证默认值
+        import subprocess, sys
+        code = (
+            "import os\n"
+            "for k in list(os.environ):\n"
+            "    if k.startswith('MYCODE_'):\n"
+            "        del os.environ[k]\n"
+            "os.environ['MYCODE_HOME_DIR'] = r'" + str(tmp_path) + "'\n"
+            "import mycode.config as config\n"
+            "assert config.get_int_list('e429_wait_seconds') is None\n"
+        )
+        subprocess.run([sys.executable, '-c', code], check=True, cwd=os.path.dirname(os.path.dirname(__file__)))
 
 
 class TestE429Retry:

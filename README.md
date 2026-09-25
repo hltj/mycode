@@ -33,11 +33,13 @@ myc/
 ├── uv.lock                 # 依赖锁文件（由 uv 自动生成）
 ├── .python-version         # Python 版本（uv 自动读取）
 ├── .env.example            # 环境变量模板
+├── config.toml.example     # config.toml 配置模板
 ├── src/mycode/             # 主包
 │   ├── __init__.py
 │   ├── __main__.py         # 支持 `python -m mycode`
 │   ├── ask_ui.py           # 通用询问界面（单选/多选/自定义输入，供 confirm 等复用）
 │   ├── cli.py              # CLI 入口逻辑
+│   ├── config.py           # 配置读取（环境变量 + config.toml）
 │   ├── confirm.py          # 确认交互（基于 ask_ui：同意/编辑/拒绝）
 │   ├── mode.py             # 模式与权限系统
 │   ├── renderer.py         # 渲染器（default/classic 风格）
@@ -64,6 +66,7 @@ myc/
 │   ├── test_ask_ui.py
 │   ├── test_ask_user.py
 │   ├── test_cli.py
+│   ├── test_config.py
 │   ├── test_confirm.py
 │   ├── test_mode.py
 │   ├── test_renderer.py
@@ -71,11 +74,13 @@ myc/
 │   ├── test_session.py
 │   ├── test_tools.py
 │   ├── test_tools_registry.py
+│   ├── test_tools_registry_ext.py
 │   └── test_truncate.py
 ├── docs/dev/
 │   ├── ask_ui_design.md           # ask_ui 通用询问界面设计
 │   ├── event_design.md            # 事件架构设计
 │   ├── mode_permission_design.md  # 模式与权限系统设计
+│   ├── session_design.md          # 会话系统设计
 │   ├── tools_registry_design.md   # 工具注册系统设计
 │   └── cli_render_design.md       # CLI 渲染设计
 ├── LICENSE
@@ -101,33 +106,49 @@ uv sync
 `uv sync` 会自动创建 `.venv/` 虚拟环境并安装所有依赖（含 dev 依赖）。
 `rich`（默认风格语法高亮）与 `pyyaml` 同为主运行时依赖。
 
-### 配置环境变量
+### 配置
 
-复制模板并填写真实值：
+配置可放在两个地方（优先级：环境变量 > config.toml > 默认值）：
 
-```bash
-cp .env.example .env
-# 编辑 .env 填入 MYCODE_API_KEY 等
-```
+1. `.env`（项目根下，git 已忽略，勿提交敏感信息）：
 
-`.env` 文件位于 git 忽略列表，请勿提交。
+   ```bash
+   cp .env.example .env
+   # 编辑 .env 填入 MYCODE_API_KEY 等
+   ```
 
-`.env.example` 中可配置的关键项：
+2. `~/.mycode/config.toml`（或 `$MYCODE_HOME_DIR/config.toml`），键为小写、
+   不带 `MYCODE_` 前缀，列表类配置写 TOML 数组：
 
-| 变量                      | 说明                                                                    | 默认值                    |
-| ------------------------- | ----------------------------------------------------------------------- | ------------------------- |
-| `MYCODE_API_KEY`                 | OpenAI 兼容 API 的密钥                                                  | （必填）                  |
-| `MYCODE_BASE_URL`                | OpenAI 兼容 API 的 Base URL                                             | OpenAI 官方                |
-| `MYCODE_MODEL_NAME`              | 默认模型名                                                              | （必填）                  |
-| `MYCODE_ADDITIONAL_SYSTEM_PROMPT` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加      | （空）                    |
-| `MYCODE_BASH_TIMEOUT`            | `bash` 工具的超时（秒）                                                 | `60`                      |
-| `MYCODE_BASH_DANGEROUS`          | 逗号分隔的危险命令正则（`re.search` 命中即拒）                             | （空）                    |
-| `MYCODE_BASH_CAUTION`            | 逗号分隔的注意命令正则（命中时视模式需确认）                               | （空）                    |
-| `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
-| `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
-| `MYCODE_TODO_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
-| `MYCODE_TODO_MAX_IN_PROGRESS`  | `todo_write` 同时处于进行中的待办项数上限                           | `3`                       |
-| `MYCODE_E429_WAIT_SECONDS`       | 逗号分隔的正整数秒列表（如 `1,2,5,10`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空）                 |
+   ```toml
+   api_key = "sk-..."
+   base_url = "https://api.openai.com/v1"
+   model_name = "gpt-4o"
+   bash_timeout = 60
+   bash_dangerous = ["sudo", "rm -rf"]
+   e429_wait_seconds = [1, 2, 5, 10]
+   syntax_theme = "nord"
+   ```
+
+可配置的关键项（环境变量名 / config.toml 键）：
+
+| 环境变量 | TOML 键 | 说明 | 默认值 |
+| --- | --- | --- | --- |
+| `MYCODE_API_KEY` | `api_key` | OpenAI 兼容 API 的密钥 | （必填） |
+| `MYCODE_BASE_URL` | `base_url` | OpenAI 兼容 API 的 Base URL | OpenAI 官方 |
+| `MYCODE_MODEL_NAME` | `model_name` | 默认模型名 | （必填） |
+| `MYCODE_ADDITIONAL_SYSTEM_PROMPT` | `additional_system_prompt` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加 | （空） |
+| `MYCODE_BASH_TIMEOUT` | `bash_timeout` | `bash` 工具的超时（秒） | `60` |
+| `MYCODE_BASH_DANGEROUS` | `bash_dangerous` | 危险命令正则列表（`re.search` 命中即拒） | （空） |
+| `MYCODE_BASH_CAUTION` | `bash_caution` | 注意命令正则列表（命中时视模式需确认） | （空） |
+| `MYCODE_HOME_DIR` | —（仅环境变量） | mycode 的应用目录（存放会话、历史与 config.toml） | `~/.mycode` |
+| `MYCODE_PROTECTED_PATH_PATTERN` | `protected_path_pattern` | 受保护路径正则列表；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空） |
+| `MYCODE_TODO_STALE_THRESHOLD` | `todo_stale_threshold` | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒） | `5` |
+| `MYCODE_TODO_MAX_IN_PROGRESS` | `todo_max_in_progress` | `todo_write` 同时处于进行中的待办项数上限 | `3` |
+| `MYCODE_E429_WAIT_SECONDS` | `e429_wait_seconds` | 正整数秒列表（如 `[1,2,5,10]`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空） |
+| `MYCODE_SYNTAX_THEME` | `syntax_theme` | 语法高亮主题（default 风格）：`nord` / `gruvbox-dark` / `zenburn` / `one-dark` 等 | `nord` |
+
+数组类配置在 `.env` 中为逗号分隔字符串，在 config.toml 中应配置为 TOML 数组。
 
 ### 运行
 

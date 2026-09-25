@@ -6,8 +6,8 @@
 见 ``mycode.confirm``。
 
 工具操作类别：
-    - 危险（dangerous）：bash 且命中 MYCODE_BASH_DANGEROUS
-    - 注意（caution）：bash 且命中 MYCODE_BASH_CAUTION
+    - 危险（dangerous）：bash 且命中配置项 bash_dangerous
+    - 注意（caution）：bash 且命中配置项 bash_caution
     - 未知（unknown）：bash 且未命中上述两类
     - 写（write）：write / edit / patch
     - 读（read）：ls / glob / grep / read
@@ -19,6 +19,8 @@ from __future__ import annotations
 import os
 import re
 from enum import Enum
+
+from mycode import config
 
 
 # ===================================================================
@@ -103,20 +105,17 @@ _TOOL_CATEGORIES: dict[str, ToolCategory] = {
 }
 
 
-def _load_patterns(env_name: str) -> list[str]:
+def _load_patterns(key: str) -> list[str]:
     """读取并切分逗号分隔的正则列表。"""
-    raw = os.getenv(env_name, "")
-    if not raw:
-        return []
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    return config.get_list(key) or []
 
 
 def _load_dangerous_patterns() -> list[str]:
-    return _load_patterns("MYCODE_BASH_DANGEROUS")
+    return _load_patterns("bash_dangerous")
 
 
 def _load_caution_patterns() -> list[str]:
-    return _load_patterns("MYCODE_BASH_CAUTION")
+    return _load_patterns("bash_caution")
 
 
 def _classify_bash(command: str) -> ToolCategory:

@@ -28,6 +28,7 @@ from rich.console import Console
 from rich.markdown import CodeBlock, Markdown
 from rich.syntax import Syntax
 
+from mycode import config
 from mycode.session import (
     SessionRecord,
     UserMessage,
@@ -258,8 +259,8 @@ def _tool_call_args(tool_call_id: str) -> dict:
 
 # 默认风格带行号语法高亮渲染：与输入区一致的深灰背景区分代码块区域
 _CODE_BG_RGB = "rgb(30,30,30)"
-# 语法高亮主题，可用环境变量 MYCODE_SYNTAX_THEME 覆盖（如 nord / gruvbox-dark / zenburn）
-_CODE_THEME = os.getenv("MYCODE_SYNTAX_THEME", "nord")
+# 语法高亮主题，可用配置项 syntax_theme 覆盖（如 nord / gruvbox-dark / zenburn）
+_CODE_THEME = config.get("syntax_theme", "nord")
 
 # ANSI 控制码（CSI / OSC）检测：工具输出若自带颜色控制码，不再语法高亮，
 # 否则会对控制码序列再次上色、导致转义码泄漏到终端。

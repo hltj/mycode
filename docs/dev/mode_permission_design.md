@@ -80,8 +80,8 @@ class ToolCategory(str, Enum):
 
 | 类别 | 判定 | 工具 |
 |------|------|------|
-| 危险 | bash 且命中 `MYCODE_BASH_DANGEROUS` 正则 | bash |
-| 注意 | bash 且命中 `MYCODE_BASH_CAUTION` 正则 | bash |
+| 危险 | bash 且命中配置项 `bash_dangerous` 正则 | bash |
+| 注意 | bash 且命中配置项 `bash_caution` 正则 | bash |
 | 未知 | bash 且未命中以上两类 | bash |
 | 写 | 工具名匹配 | write / edit / patch |
 | 读 | 工具名匹配 | ls / glob / grep / read |
@@ -93,7 +93,7 @@ class ToolCategory(str, Enum):
 def classify_tool(func_name: str, args: dict | None) -> ToolCategory:
 ```
 
-- `bash`：取 `args["command"]` 字符串，先匹配 `MYCODE_BASH_DANGEROUS`，命中即危险；再匹配 `MYCODE_BASH_CAUTION`，命中即注意；否则未知。
+- `bash`：取 `args["command"]` 字符串，先匹配 `bash_dangerous`，命中即危险；再匹配 `bash_caution`，命中即注意；否则未知。
 - 写 / 读 / 内部：按工具名集合查表。
 - 其它未知工具名：归为 `UNKNOWN`。
 

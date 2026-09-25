@@ -2,9 +2,9 @@
 路径安全检查模块。
 
 任何接收 ``path`` 参数的工具，都应在处理前调用 :func:`safe_path`
-获得规范化后的路径信息。CWD 之外的路径、或命中
-``MYCODE_PROTECTED_PATH_PATTERN`` 环境变量所声明正则的路径，
-均被视为不安全，调用方应返回 ``"Error: ..."`` 字符串给模型。
+获得规范化后的路径信息。CWD 之外的路径、或命中配置项
+``protected_path_pattern`` 所声明正则的路径，均被视为不安全，
+调用方应返回 ``"Error: ..."`` 字符串给模型。
 
 ``safe_path`` 返回一个 :class:`SafePath`，同时携带三项：
 
@@ -16,9 +16,9 @@
 与渲染层用 ``.abs`` 做实际读写；``glob`` / ``grep`` 把 ``.wksp`` +
 ``.rel`` 交给子进程，让输出路径前缀相对工作区、尽量简短。
 
-环境变量格式：
-    ``MYCODE_PROTECTED_PATH_PATTERN``，逗号分隔的多条正则表达式。
-    任一正则命中绝对路径即视为不安全。
+配置格式：
+    ``protected_path_pattern``，多条正则表达式；TOML 中配置为数组，
+    环境变量中为逗号分隔。任一正则命中绝对路径即视为不安全。
 
 软链接会通过 ``os.path.realpath`` 跟随到真实路径后再做安全判断。
 """
@@ -27,15 +27,12 @@ import os
 import re
 from dataclasses import dataclass
 
-PROTECTED_ENV = "MYCODE_PROTECTED_PATH_PATTERN"
+from mycode import config
 
 
 def _load_patterns() -> list[str]:
     """读取并切分受保护路径正则列表。"""
-    raw = os.getenv(PROTECTED_ENV, "")
-    if not raw:
-        return []
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    return config.get_list("protected_path_pattern") or []
 
 
 @dataclass(frozen=True)

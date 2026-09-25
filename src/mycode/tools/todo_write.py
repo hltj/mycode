@@ -1,9 +1,9 @@
 """todo_write 工具：在内存中维护待办列表，不做持久化。"""
 
 import json
-import os
 from typing import Annotated, Iterable, Literal, TypedDict, get_args
 
+from mycode import config
 from mycode.tools_registry import ToolsRegistry
 
 # 模块级内存状态。测试可通过 ``reset_todos()`` 重置。
@@ -11,13 +11,13 @@ _todo_state: list[dict] = []
 
 # 陈旧度提醒：自上次 todo_write 以来的"assistant 消息数"。
 # 超过阈值且存在未完成待办时，agent_loop 会往 messages 注入提醒。
-# 阈值可通过环境变量 ``MYCODE_TODO_STALE_THRESHOLD`` 覆盖，默认 5。
-_STALE_THRESHOLD: int = int(os.getenv("MYCODE_TODO_STALE_THRESHOLD", "5"))
+# 阈值可通过配置项 ``todo_stale_threshold`` 覆盖，默认 5。
+_STALE_THRESHOLD: int = config.get_int("todo_stale_threshold", 5)
 _stale_rounds: int = 0
 
-# 同时处于进行中的待办上限。可通过环境变量
-# ``MYCODE_TODO_MAX_IN_PROGRESS`` 覆盖，默认 3。
-_MAX_IN_PROGRESS: int = int(os.getenv("MYCODE_TODO_MAX_IN_PROGRESS", "3"))
+# 同时处于进行中的待办上限。可通过配置项
+# ``todo_max_in_progress`` 覆盖，默认 3。
+_MAX_IN_PROGRESS: int = config.get_int("todo_max_in_progress", 3)
 
 Status = Literal["pending", "in_progress", "completed"]
 # status 的合法取值（从 Literal 推导，单一来源）
