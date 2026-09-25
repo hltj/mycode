@@ -60,44 +60,44 @@ def test_bash_execute_pwd():
 
 def test_bash_timeout():
     """测试 bash 超时处理"""
-    saved = os.environ.get('BASH_TIMEOUT')
-    os.environ['BASH_TIMEOUT'] = '1'
+    saved = os.environ.get('MYCODE_BASH_TIMEOUT')
+    os.environ['MYCODE_BASH_TIMEOUT'] = '1'
     result = tools.bash("sleep 10")
     assert "超时" in result
     if saved is not None:
-        os.environ['BASH_TIMEOUT'] = saved
+        os.environ['MYCODE_BASH_TIMEOUT'] = saved
     else:
-        os.environ.pop('BASH_TIMEOUT', None)
+        os.environ.pop('MYCODE_BASH_TIMEOUT', None)
 
 
 def test_bash_dangerous_command_blocked():
-    """测试危险命令被阻止（BASH_DANGEROUS 视为正则）"""
-    saved = os.environ.get('BASH_DANGEROUS')
-    os.environ['BASH_DANGEROUS'] = 'echo_dangerous_test_12345'
+    """测试危险命令被阻止（MYCODE_BASH_DANGEROUS 视为正则）"""
+    saved = os.environ.get('MYCODE_BASH_DANGEROUS')
+    os.environ['MYCODE_BASH_DANGEROUS'] = 'echo_dangerous_test_12345'
     result = tools.bash("echo_dangerous_test_12345")
     assert "拒绝执行危险命令" in result
     if saved is not None:
-        os.environ['BASH_DANGEROUS'] = saved
+        os.environ['MYCODE_BASH_DANGEROUS'] = saved
     else:
-        os.environ.pop('BASH_DANGEROUS', None)
+        os.environ.pop('MYCODE_BASH_DANGEROUS', None)
 
 
 def test_bash_dangerous_multiple_patterns():
     """多条正则逗号分隔：前面的不匹不影响后面的命中"""
-    saved = os.environ.get('BASH_DANGEROUS')
-    os.environ['BASH_DANGEROUS'] = r'no_match_pattern_xyz,echo_dangerous_test_12345'
+    saved = os.environ.get('MYCODE_BASH_DANGEROUS')
+    os.environ['MYCODE_BASH_DANGEROUS'] = r'no_match_pattern_xyz,echo_dangerous_test_12345'
     result = tools.bash("echo_dangerous_test_12345")
     assert "拒绝执行危险命令" in result
     if saved is not None:
-        os.environ['BASH_DANGEROUS'] = saved
+        os.environ['MYCODE_BASH_DANGEROUS'] = saved
     else:
-        os.environ.pop('BASH_DANGEROUS', None)
+        os.environ.pop('MYCODE_BASH_DANGEROUS', None)
 
 
 def test_bash_dangerous_anchored_regex():
     """正则 ^ 锚定生效：含子串但不以它开头的命令不被拒"""
-    saved = os.environ.get('BASH_DANGEROUS')
-    os.environ['BASH_DANGEROUS'] = r'^dangerous_anchor_test'
+    saved = os.environ.get('MYCODE_BASH_DANGEROUS')
+    os.environ['MYCODE_BASH_DANGEROUS'] = r'^dangerous_anchor_test'
     # 含子串但在中间——正则 ^dangerous_anchor_test 不匹
     result = tools.bash("echo dangerous_anchor_test")
     assert "拒绝执行危险命令" not in result
@@ -105,9 +105,9 @@ def test_bash_dangerous_anchored_regex():
     result2 = tools.bash("dangerous_anchor_test xyz")
     assert "拒绝执行危险命令" in result2
     if saved is not None:
-        os.environ['BASH_DANGEROUS'] = saved
+        os.environ['MYCODE_BASH_DANGEROUS'] = saved
     else:
-        os.environ.pop('BASH_DANGEROUS', None)
+        os.environ.pop('MYCODE_BASH_DANGEROUS', None)
 
 
 def test_tools_includes_bash():

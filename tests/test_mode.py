@@ -42,19 +42,19 @@ from mycode.session import (
 
 class TestClassifyTool:
     def test_bash_dangerous(self, monkeypatch):
-        monkeypatch.setenv("BASH_DANGEROUS", "sudo,rm -rf")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "sudo,rm -rf")
         assert classify_tool("bash", {"command": "sudo make"}) == ToolCategory.DANGEROUS
         assert classify_tool("bash", {"command": "rm -rf /"}) == ToolCategory.DANGEROUS
 
     def test_bash_caution(self, monkeypatch):
-        monkeypatch.setenv("BASH_DANGEROUS", "sudo")
-        monkeypatch.setenv("BASH_CAUTION", "rm")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "sudo")
+        monkeypatch.setenv("MYCODE_BASH_CAUTION", "rm")
         # "rm file" 命中注意（不含危险 sudo/rm -rf）
         assert classify_tool("bash", {"command": "rm file.txt"}) == ToolCategory.CAUTION
 
     def test_bash_unknown(self, monkeypatch):
-        monkeypatch.setenv("BASH_DANGEROUS", "")
-        monkeypatch.setenv("BASH_CAUTION", "")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "")
+        monkeypatch.setenv("MYCODE_BASH_CAUTION", "")
         assert classify_tool("bash", {"command": "echo hi"}) == ToolCategory.UNKNOWN
 
     def test_write_tools(self):
@@ -73,8 +73,8 @@ class TestClassifyTool:
 
     def test_bash_missing_command(self):
         monkey = pytest.MonkeyPatch()
-        monkey.setenv("BASH_DANGEROUS", "")
-        monkey.setenv("BASH_CAUTION", "")
+        monkey.setenv("MYCODE_BASH_DANGEROUS", "")
+        monkey.setenv("MYCODE_BASH_CAUTION", "")
         assert classify_tool("bash", {}) == ToolCategory.UNKNOWN
         monkey.undo()
 
@@ -370,7 +370,7 @@ def _run_call(func_name, args, *, mode=Mode.AUTO, handler=None):
 
 class TestAgentLoopModePolicy:
     def test_dangerous_rejected_in_all_modes(self, monkeypatch):
-        monkeypatch.setenv("BASH_DANGEROUS", "sudo")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "sudo")
         for mode in (Mode.ASK, Mode.AUTO, Mode.YOLO):
             content, _ = _run_call("bash", {"command": "sudo make"}, mode=mode,
                                    handler=lambda **_: "ran")
@@ -378,8 +378,8 @@ class TestAgentLoopModePolicy:
 
     def test_auto_caution_requires_no_auto_execution(self, monkeypatch):
         # 自动模式 + 注意（bash rm）→ 需确认；这里模拟用户同意
-        monkeypatch.setenv("BASH_DANGEROUS", "")
-        monkeypatch.setenv("BASH_CAUTION", "^rm ")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "")
+        monkeypatch.setenv("MYCODE_BASH_CAUTION", "^rm ")
         with patch.object(cli, "confirm_tool",
                           return_value=(confirm_mod.ConfirmAction.APPROVE, None)):
             content, _ = _run_call("bash", {"command": "rm file.txt"}, mode=Mode.AUTO,
@@ -387,8 +387,8 @@ class TestAgentLoopModePolicy:
         assert content == "executed"
 
     def test_auto_caution_reject(self, monkeypatch):
-        monkeypatch.setenv("BASH_DANGEROUS", "")
-        monkeypatch.setenv("BASH_CAUTION", "^rm ")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "")
+        monkeypatch.setenv("MYCODE_BASH_CAUTION", "^rm ")
         with patch.object(cli, "confirm_tool",
                           return_value=(confirm_mod.ConfirmAction.REJECT, "不需要")):
             content, _ = _run_call("bash", {"command": "rm file.txt"}, mode=Mode.AUTO,
@@ -521,7 +521,7 @@ class TestAgentLoopEditCommand:
     def test_edit_to_dangerous_still_dispatches_notice(self, monkeypatch):
         """编辑成危险命令：先分发提醒事件，再以危险拒绝（危险判断在提醒之后）。"""
         from mycode.session import NoticeEvent
-        monkeypatch.setenv("BASH_DANGEROUS", "sudo")
+        monkeypatch.setenv("MYCODE_BASH_DANGEROUS", "sudo")
         MODE_STATE.set(Mode.ASK)
         captured: list = []
         messages: list = []

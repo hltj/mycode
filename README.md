@@ -107,7 +107,7 @@ uv sync
 
 ```bash
 cp .env.example .env
-# 编辑 .env 填入 API_KEY 等
+# 编辑 .env 填入 MYCODE_API_KEY 等
 ```
 
 `.env` 文件位于 git 忽略列表，请勿提交。
@@ -116,18 +116,18 @@ cp .env.example .env
 
 | 变量                      | 说明                                                                    | 默认值                    |
 | ------------------------- | ----------------------------------------------------------------------- | ------------------------- |
-| `API_KEY`                 | OpenAI 兼容 API 的密钥                                                  | （必填）                  |
-| `BASE_URL`                | OpenAI 兼容 API 的 Base URL                                             | OpenAI 官方                |
-| `MODEL_NAME`              | 默认模型名                                                              | （必填）                  |
-| `ADDITIONAL_SYSTEM_PROMPT` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加      | （空）                    |
-| `BASH_TIMEOUT`            | `bash` 工具的超时（秒）                                                 | `60`                      |
-| `BASH_DANGEROUS`          | 逗号分隔的危险命令正则（`re.search` 命中即拒）                             | （空）                    |
-| `BASH_CAUTION`            | 逗号分隔的注意命令正则（命中时视模式需确认）                               | （空）                    |
+| `MYCODE_API_KEY`                 | OpenAI 兼容 API 的密钥                                                  | （必填）                  |
+| `MYCODE_BASE_URL`                | OpenAI 兼容 API 的 Base URL                                             | OpenAI 官方                |
+| `MYCODE_MODEL_NAME`              | 默认模型名                                                              | （必填）                  |
+| `MYCODE_ADDITIONAL_SYSTEM_PROMPT` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加      | （空）                    |
+| `MYCODE_BASH_TIMEOUT`            | `bash` 工具的超时（秒）                                                 | `60`                      |
+| `MYCODE_BASH_DANGEROUS`          | 逗号分隔的危险命令正则（`re.search` 命中即拒）                             | （空）                    |
+| `MYCODE_BASH_CAUTION`            | 逗号分隔的注意命令正则（命中时视模式需确认）                               | （空）                    |
 | `MYCODE_HOME_DIR`         | mycode 的应用目录（存放会话与历史）                                     | `~/.mycode`               |
 | `MYCODE_PROTECTED_PATH_PATTERN` | 逗号分隔的受保护路径正则；路径命中任一条则 `ls/glob/grep/read/write/edit/patch` 拒绝访问 | （空）                |
 | `MYCODE_TODO_STALE_THRESHOLD`  | `todo_write` 陈旧度阈值（连续 N 轮未更新且有未完成项则注入提醒）         | `5`                       |
 | `MYCODE_TODO_MAX_IN_PROGRESS`  | `todo_write` 同时处于进行中的待办项数上限                           | `3`                       |
-| `E429_WAIT_SECONDS`       | 逗号分隔的正整数秒列表（如 `1,2,5,10`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空）                 |
+| `MYCODE_E429_WAIT_SECONDS`       | 逗号分隔的正整数秒列表（如 `1,2,5,10`），429 限流自动重试的等待档位；默认不配置则不开启，解析失败或连续 429 次数超出列表长度时同样向上抛出 | （空）                 |
 
 ### 运行
 
@@ -191,7 +191,7 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 
 | 工具          | 用途                                                                 |
 | ------------- | -------------------------------------------------------------------- |
-| `bash`        | 执行 shell 命令；按 `BASH_TIMEOUT` 超时，命中 `BASH_DANGEROUS` 拒绝   |
+| `bash`        | 执行 shell 命令；按 `MYCODE_BASH_TIMEOUT` 超时，命中 `MYCODE_BASH_DANGEROUS` 拒绝   |
 | `ask_user`    | 交互式询问：一次 1-4 个问题，每问题预置选项（单选/多选）+ 自定义输入，支持推荐选项前置 |
 | `ls`          | 类似 `ls -laF`：权限、大小、ISO-8601 日期、类型后缀（`/` `*` `@` `|` `=`） |
 | `glob`        | 按 glob 模式匹配路径（`fd --glob -C <wksp>` 优先，回退 `find -name`） |
@@ -235,8 +235,8 @@ mycode 提供三种工作模式，控制工具调用是否需要人工确认。�
 
 | 类别     | 工具                                                              |
 | -------- | ----------------------------------------------------------------- |
-| 危险     | `bash` 且命中 `BASH_DANGEROUS` 正则（所有模式一律拒绝）          |
-| 注意     | `bash` 且命中 `BASH_CAUTION` 正则                                 |
+| 危险     | `bash` 且命中 `MYCODE_BASH_DANGEROUS` 正则（所有模式一律拒绝）          |
+| 注意     | `bash` 且命中 `MYCODE_BASH_CAUTION` 正则                                 |
 | 未知     | `bash` 且未命中以上两类                                            |
 | 写       | `write` / `edit` / `patch`                                        |
 | 读       | `ls` / `glob` / `grep` / `read`                                   |

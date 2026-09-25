@@ -6,8 +6,8 @@
 见 ``mycode.confirm``。
 
 工具操作类别：
-    - 危险（dangerous）：bash 且命中 BASH_DANGEROUS
-    - 注意（caution）：bash 且命中 BASH_CAUTION
+    - 危险（dangerous）：bash 且命中 MYCODE_BASH_DANGEROUS
+    - 注意（caution）：bash 且命中 MYCODE_BASH_CAUTION
     - 未知（unknown）：bash 且未命中上述两类
     - 写（write）：write / edit / patch
     - 读（read）：ls / glob / grep / read
@@ -112,11 +112,11 @@ def _load_patterns(env_name: str) -> list[str]:
 
 
 def _load_dangerous_patterns() -> list[str]:
-    return _load_patterns("BASH_DANGEROUS")
+    return _load_patterns("MYCODE_BASH_DANGEROUS")
 
 
 def _load_caution_patterns() -> list[str]:
-    return _load_patterns("BASH_CAUTION")
+    return _load_patterns("MYCODE_BASH_CAUTION")
 
 
 def _classify_bash(command: str) -> ToolCategory:
