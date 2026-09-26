@@ -251,6 +251,23 @@ class ModeChangeEvent(MessageProtocol):
     time: str = ""
 
 
+@dataclass
+class ModelChangeEvent(MessageProtocol):
+    """模型切换事件（session 公共字段记录，不注入模型消息）。
+
+    ``model`` 字段写 ``f"{provider}/{model_name}"``。
+    """
+
+    model: str
+    provider: str = ""
+    model_name: str = ""
+    mode: str = Mode.AUTO.value
+    id: str = ""
+    parent_id: Optional[str] = None
+    entry_type: str = "model_change"
+    time: str = ""
+
+
 class AbortLoop(BaseException):
     """内部异常：用户取消 / 无理由拒绝 / ask_user 用户中止时跳出 agent 循环。
 
@@ -301,6 +318,7 @@ AgentMessage = (
     | InterruptEvent
     | ExceptionEvent
     | ModeChangeEvent
+    | ModelChangeEvent
     | NoticeEvent
 )
 
@@ -343,6 +361,11 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
             d["exception"] = exc_data
         case ModeChangeEvent():
             pass  # mode 已由 base dict 记录
+        case ModelChangeEvent() as ev:
+            d["model_change"] = {
+                "provider": ev.provider,
+                "model_name": ev.model_name,
+            }
         case NoticeEvent(notice=notice):
             d["notice"] = notice
         case _ as unreachable:
@@ -356,7 +379,7 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
     反序列化时从事务扩展字段读取，结构见 ``_msg_to_dict``。
     """
     entry_type = data.get("type")
-    if entry_type not in ("message", "tool_call", "tool_result", "interrupt", "session", "exception", "notice", "mode_change"):
+    if entry_type not in ("message", "tool_call", "tool_result", "interrupt", "session", "exception", "notice", "mode_change", "model_change"):
         raise ValueError(f"未知的条目类型: {entry_type}")
     base_kwargs = {
         "id": data["id"],
@@ -400,6 +423,15 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         return ExceptionEvent(exception=cast(ExceptionData, exc_data), **base_kwargs)
     elif entry_type == "mode_change":
         return ModeChangeEvent(**base_kwargs)
+    elif entry_type == "model_change":
+        mc = data.get("model_change")
+        if not isinstance(mc, dict):
+            mc = {}
+        return ModelChangeEvent(
+            provider=str(mc.get("provider", "")),
+            model_name=str(mc.get("model_name", "")),
+            **base_kwargs,
+        )
     elif entry_type == "notice":
         nt = data.get("notice")
         if not isinstance(nt, dict) or not nt.get("tag_name"):

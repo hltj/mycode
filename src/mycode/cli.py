@@ -68,15 +68,43 @@ _e429_wait_list: list[int] | None = config.get_int_list("e429_wait_seconds")
 # ---------------------------------------------------------------------------
 from mycode.tools_registry import ToolsRegistry
 
-_api_key = config.get("api_key")
-# 阅后即焚：从环境变量中移除 MYCODE_API_KEY，防止子进程（如 bash 工具）泄露
-if 'MYCODE_API_KEY' in os.environ:
-    del os.environ['MYCODE_API_KEY']
+# 模型客户端按当前模型提供商/模型懒构建；/model 切换后 get_client(refresh=True)
+client: OpenAI | None = None
 
-client = OpenAI(
-    api_key=_api_key,
-    base_url=config.get("base_url"),
-)
+
+def get_client(refresh: bool = False) -> OpenAI:
+    """按当前模型提供商配置构建 OpenAI 兼容客户端，并写回 ``client``。
+
+    ``refresh=True`` 时关闭旧实例并重建（/model 切换后生效）。
+    """
+    global client
+    if client is not None and not refresh:
+        return client
+
+    from mycode import providers as pv
+
+    current = pv.get_current()
+    api_key = ""
+    base_url = ""
+    if current:
+        provider_id, _ = current
+        p = pv.load_providers().get(provider_id)
+        if p is not None:
+            api_key = p.api_key
+            base_url = p.base_url
+
+    # 阅后即焚：从环境变量中移除 MYCODE_API_KEY，防止子进程（如 bash）
+    # 泄露；环境变量不再作为配置来源，仅为清理残留。
+    if 'MYCODE_API_KEY' in os.environ:
+        del os.environ['MYCODE_API_KEY']
+
+    if client is not None and refresh:
+        try:
+            client.close()
+        except Exception:
+            pass
+    client = OpenAI(api_key=api_key, base_url=base_url or None)
+    return client
 
 # ===================================================================
 # 从 session 导入 ADT 类型
@@ -90,6 +118,7 @@ from mycode.session import (
     InterruptEvent,
     ExceptionEvent,
     ModeChangeEvent,
+    ModelChangeEvent,
     NoticeEvent,
     AgentMessage,
     SessionHistory,
@@ -354,7 +383,7 @@ def agent_loop(
         # 调用模型
         try:
             # noinspection PyTypeChecker
-            response = client.chat.completions.create(
+            response = get_client().chat.completions.create(
                 model=model,
                 messages=messages,
                 tools=tools,
@@ -657,7 +686,7 @@ def _prompt_user_input(session: PromptSession[str]) -> str | None:
 
 
 class MycCommandCompleter(Completer):
-    COMMANDS = ["/q", "/quit", "/ask", "/auto", "/yolo", "/retry"]
+    COMMANDS = ["/q", "/quit", "/ask", "/auto", "/yolo", "/retry", "/provider", "/model"]
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -804,7 +833,21 @@ def main():
     # 目录信任确认
     _check_dir_trust()
 
-    model = config.get("model_name") or ''
+    # 旧顶层 api_key/base_url 一次性迁移为 [providers.user-defined-N]
+    from mycode import providers as _pv
+    if _pv.migrate_legacy() is not None:
+        pass
+
+    # 触发模型库异步更新（不阻塞启动）
+    try:
+        from mycode import models_registry as _mr
+        _timeout = config.get_int("models_fetch_timeout", 30)
+        _mr.start_async_update(timeout=_timeout)
+    except Exception:
+        pass
+
+    current = _pv.get_current()
+    model = current[1] if current else (config.get("model_name") or '')
 
     # 消息列表初始化系统提示词
     hist_messages: list[ChatCompletionMessageParam] = [
@@ -870,6 +913,25 @@ def main():
                 continue
 
             stripped = user_input.strip()
+
+            # ---- 模型提供商配置 / 模型切换命令 ----
+            if stripped == "/provider":
+                from mycode.provider_setup import run_provider_setup
+                run_provider_setup()
+                continue
+            if stripped == "/model":
+                from mycode.model_select import choose_model
+                picked = choose_model()
+                if picked is not None:
+                    provider_id, model_name = picked
+                    # API 调用只用 model_name（不拼接 provider）
+                    model = model_name
+                    bus.dispatch(ModelChangeEvent(
+                        model=f"{provider_id}/{model_name}",
+                        provider=provider_id,
+                        model_name=model_name,
+                    ))
+                continue
 
             # ---- 模式切换命令 ----
             if stripped in {"/ask", "/auto", "/yolo"}:

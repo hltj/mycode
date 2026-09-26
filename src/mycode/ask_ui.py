@@ -765,6 +765,7 @@ def _run_ask_ui(
     input=None,
     output=None,
     style=None,
+    on_navigate=None,
 ) -> AskResult:
     """运行 ask_ui 交互界面，返回结果。
 
@@ -998,6 +999,30 @@ def _run_ask_ui(
         """Tab：与向右一致地推进到下一个问题/提交预览页，不受输入框限制。"""
         _nav_horizontal(event, +1)
 
+    # 外挂横向导航扩展点：仅单问题且调用方提供 on_navigate 时生效。
+    # 方向键触发后先记录当前焦点，再退出本次 ask_ui（由调用方重建相邻
+    # 问题并再次进入）；返回 False 表示不处理（维持默认无行为）。
+    def _maybe_navigate(event, delta: int) -> bool:
+        if on_navigate is None or state.multi_question or state.finished:
+            return False
+        result.answers = [_collect_answer(state.idx)]
+        handled = bool(on_navigate(delta))
+        if handled:
+            event.app.exit()
+        return handled
+
+    @kb.add("left", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
+    def _ext_left(event):
+        _maybe_navigate(event, -1)
+
+    @kb.add("right", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
+    def _ext_right(event):
+        _maybe_navigate(event, +1)
+
+    @kb.add("tab", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
+    def _ext_tab(event):
+        _maybe_navigate(event, +1)
+
     @kb.add("enter")
     def _enter(event):
         _answer_current(event)
@@ -1118,6 +1143,7 @@ def ask_ui(
     style=None,
     input=None,
     output=None,
+    on_navigate=None,
 ) -> AskResult:
     """运行一次询问界面，返回 ``AskResult``。
 
@@ -1129,6 +1155,10 @@ def ask_ui(
             ``class:placeholder`` 与 ``class:mycode-input`` 等样式类生效。
         input: 可选，注入的 prompt_toolkit input（测试用）。
         output: 可选，注入的 prompt_toolkit output（测试用）。
+        on_navigate: 可选，横向导航扩展点（仅单问题模式生效）：
+            ``Callable[[int], bool]``，左右 / tab 键触发，参数为方向
+            (-1/+1)；返回 True 表示已处理（退出当前界面，由调用方
+            重建相邻问题），False 表示不处理（维持默认无行为）。
 
     Returns:
         ``AskResult`` 数据类，字段：
@@ -1146,7 +1176,13 @@ def ask_ui(
         焦点与勾选状态，可在下次调用时回传给对应的 ``AskQuestion`` 维持位置。
     """
     state = _AskState(questions=questions)
-    return _run_ask_ui(state, input=input, output=output, style=style)
+    return _run_ask_ui(
+        state,
+        input=input,
+        output=output,
+        style=style,
+        on_navigate=on_navigate,
+    )
 
 
 __all__ = [

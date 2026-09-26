@@ -38,6 +38,7 @@ from mycode.session import (
     InterruptEvent,
     ExceptionEvent,
     ModeChangeEvent,
+    ModelChangeEvent,
     NoticeEvent,
     AgentMessage,
     ExceptionData,
@@ -764,6 +765,10 @@ class _Renderer:
         # 模式切换：输出一行提示（保持简洁，不打扰流水）
         print(f"\x1B[90m已切换到【{mode}】模式\x1B[0m\n")
 
+    def render_model_change(self, provider: str, model_name: str) -> None:
+        # 模型切换：一行灰色提示
+        print(f"\x1B[90m已切换模型：{provider}/{model_name}\x1B[0m\n")
+
     def render_resume_hint(self, cmd: str) -> None:
         """渲染退出时的「继续本次会话」恢复命令。
 
@@ -1230,6 +1235,8 @@ def _render_common(msg: AgentMessage) -> None:
             renderer.render_notice(notice)
         case ModeChangeEvent(mode=mode):
             renderer.render_mode_change(mode)
+        case ModelChangeEvent(provider=provider, model_name=model_name):
+            renderer.render_model_change(provider, model_name)
         case ExceptionEvent(exception=exc):
             renderer.render_exception(exc)
         case _ as unreachable:
