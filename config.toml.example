@@ -3,14 +3,30 @@
 # 同名环境变量（MYCODE_ 前缀）优先级更高。
 # 数组类配置写 TOML 数组；环境变量中对应为逗号分隔字符串。
 
-# OpenAI 兼容 API 的密钥（必填；也可只用环境变量 MYCODE_API_KEY）
-api_key = "your_api_key_here"
+# ---- 模型提供商与模型（用 /provider 配置、/model 切换，推荐）----
 
-# OpenAI 兼容 API 的 Base URL（默认 OpenAI 官方）
-base_url = "https://api.openai.com/v1"
+# 当前使用的模型（/model 切换时自动更新）
+# model_provider = "deepseek"
+# model_name = "deepseek-chat"
 
-# 默认模型名（必填）
-model_name = "gpt-4o"
+# 已配置的模型提供商（/provider 界面自动写入，也可手工编辑）：
+#
+# [providers.deepseek]
+# name = "DeepSeek"
+# base_url = "https://api.deepseek.com"
+# api_key = "sk-..."
+# models = ["deepseek-chat", "deepseek-reasoner"]
+#
+# 自定义提供商用 user-defined-N 递增命名：
+#
+# [providers.user-defined-1]
+# name = "api.openai.com"
+# base_url = "https://api.openai.com/v1"
+# api_key = "sk-..."
+# models = ["gpt-4o"]
+
+# 模型库（models.dev）异步更新的下载超时（秒），默认 30
+models_fetch_timeout = 30
 
 # 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加
 additional_system_prompt = ""

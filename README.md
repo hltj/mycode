@@ -5,6 +5,8 @@
 ## 功能特性
 
 - **智能对话**：基于 OpenAI 兼容 API 的交互式编程助手
+- **模型提供商与模型切换**：`/provider` 配置多个模型提供商（对接
+  models.dev 模型库，支持自定义），`/model` 一键切换当前模型
 - **工具调用**：支持自定义工具注册系统（`ToolsRegistry`）
 - **命令执行**：内置 `bash` 工具，直接执行 shell 命令
 - **文件检索**：内置 `ls`、`glob`、`grep`，按行号/KiB 截断输出
@@ -21,7 +23,6 @@
 
 近期规划：
 
-- **模型切换**
 - **AGENTS.md 支持**
 - **Skill 支持**
 
@@ -40,6 +41,12 @@ myc/
 │   ├── ask_ui.py           # 通用询问界面（单选/多选/自定义输入，供 confirm 等复用）
 │   ├── cli.py              # CLI 入口逻辑
 │   ├── config.py           # 配置读取（环境变量 + config.toml）
+│   ├── form_ui.py          # 通用表单界面（多字段输入）
+│   ├── filter_ui.py        # 通用筛选选择界面（关键词过滤 + 分页）
+│   ├── models_registry.py  # models.dev 模型库缓存与更新
+│   ├── providers.py        # 模型提供商配置读写（[providers.*]）与旧配置迁移
+│   ├── provider_setup.py   # /provider 模型提供商配置流程
+│   ├── model_select.py     # /model 模型切换流程
 │   ├── confirm.py          # 确认交互（基于 ask_ui：同意/编辑/拒绝）
 │   ├── mode.py             # 模式与权限系统
 │   ├── renderer.py         # 渲染器（default/classic 风格）
@@ -68,7 +75,13 @@ myc/
 │   ├── test_cli.py
 │   ├── test_config.py
 │   ├── test_confirm.py
+│   ├── test_filter_ui.py
+│   ├── test_form_ui.py
 │   ├── test_mode.py
+│   ├── test_model_select.py
+│   ├── test_models_registry.py
+│   ├── test_provider_setup.py
+│   ├── test_providers.py
 │   ├── test_renderer.py
 │   ├── test_safe_path.py
 │   ├── test_session.py
@@ -78,6 +91,10 @@ myc/
 │   └── test_truncate.py
 ├── docs/dev/
 │   ├── ask_ui_design.md           # ask_ui 通用询问界面设计
+│   ├── filter_ui_design.md        # filter_ui 通用筛选选择界面设计
+│   ├── form_ui_design.md          # form_ui 通用表单界面设计
+│   ├── model_switch_design.md     # 模型切换设计
+│   ├── provider_setup_design.md   # 模型提供商配置流程设计
 │   ├── event_design.md            # 事件架构设计
 │   ├── mode_permission_design.md  # 模式与权限系统设计
 │   ├── session_design.md          # 会话系统设计
@@ -93,7 +110,7 @@ myc/
 
 - [uv](https://docs.astral.sh/uv/)（推荐，>= 0.4）
 - Python 3.10+（uv 会根据 `.python-version` 自动管理）
-- OpenAI API 密钥（或兼容的 API 服务）
+- 任一 OpenAI 兼容 API 的模型提供商密钥（首次启动用 `/provider` 配置）
 - 可选外部命令：`fd` 或 `find`（用于 `glob`）、`rg` 或 `grep`（用于 `grep`）、
   `patch`（用于 `patch`）。`mycode` 会按 `fd → find`、`rg → grep` 顺序回退。
 
@@ -108,36 +125,35 @@ uv sync
 
 ### 配置
 
-配置可放在两个地方（优先级：环境变量 > config.toml > 默认值）：
+模型提供商与模型用 `/provider` 命令配置（详见「模型提供商与模型切换」一节），
+写入 `~/.mycode/config.toml` 的 `[providers.*]`。
+
+其余配置可放在两个地方（优先级：环境变量 > config.toml > 默认值）：
 
 1. `.env`（项目根下，git 已忽略，勿提交敏感信息）：
 
    ```bash
    cp .env.example .env
-   # 编辑 .env 填入 MYCODE_API_KEY 等
+   # 编辑 .env 填入 MYCODE_BASH_TIMEOUT 等
    ```
 
 2. `~/.mycode/config.toml`（或 `$MYCODE_HOME_DIR/config.toml`），键为小写、
    不带 `MYCODE_` 前缀，列表类配置写 TOML 数组：
 
    ```toml
-   api_key = "sk-..."
-   base_url = "https://api.openai.com/v1"
-   model_name = "gpt-4o"
    bash_timeout = 60
    bash_dangerous = ["sudo", "rm -rf"]
    e429_wait_seconds = [1, 2, 5, 10]
    syntax_theme = "nord"
+   models_fetch_timeout = 30
    ```
 
 可配置的关键项（环境变量名 / config.toml 键）：
 
 | 环境变量 | TOML 键 | 说明 | 默认值 |
 | --- | --- | --- | --- |
-| `MYCODE_API_KEY` | `api_key` | OpenAI 兼容 API 的密钥 | （必填） |
-| `MYCODE_BASE_URL` | `base_url` | OpenAI 兼容 API 的 Base URL | OpenAI 官方 |
-| `MYCODE_MODEL_NAME` | `model_name` | 默认模型名 | （必填） |
 | `MYCODE_ADDITIONAL_SYSTEM_PROMPT` | `additional_system_prompt` | 附加系统提示词，拼接在内置提示词之后（用换行分隔）；留空表示无追加 | （空） |
+| `MYCODE_MODELS_FETCH_TIMEOUT` | `models_fetch_timeout` | 模型库（models.dev）异步更新的下载超时（秒） | `30` |
 | `MYCODE_BASH_TIMEOUT` | `bash_timeout` | `bash` 工具的超时（秒） | `60` |
 | `MYCODE_BASH_DANGEROUS` | `bash_dangerous` | 危险命令正则列表（`re.search` 命中即拒） | （空） |
 | `MYCODE_BASH_CAUTION` | `bash_caution` | 注意命令正则列表（命中时视模式需确认） | （空） |
@@ -167,6 +183,25 @@ uv run mycode
 # 也可以作为模块调用
 uv run python -m mycode
 ```
+
+### 模型提供商与模型切换
+
+首次启动后先运行 `/provider` 配置模型提供商：
+
+- **添加模型提供商**：从 models.dev 模型库选择（约 182 家 OpenAI 兼容提供商，
+  支持关键词筛选与分页），填写所需变量（密钥类掩码显示），勾选启用的模型
+  （每家上限 15 个）。模型库每天首次启动异步更新（`models_fetch_timeout`
+  可配超时，etag 协商 + zstd 压缩优先），更新状态展示在菜单里。
+- **添加自定义模型提供商**：手填显示名 / Base URL / API Key（本地服务可
+  留空）/ 模型列表（逗号分隔）。
+- **编辑**：修改变量、重选模型、删除提供商。
+
+配置写入 `~/.mycode/config.toml` 的 `[providers.<id>]`（自定义提供商用
+`user-defined-N` 递增命名），可同时配置多家。
+
+运行 `/model` 切换当前模型：`←→` 在已配置提供商间轮换，`↑↓`/`Enter`
+选定模型，切换即时生效并记录到会话历史。旧版顶层 `api_key` / `base_url`
+配置会在启动时自动迁移为一个 `user-defined-N` 提供商。
 
 ### 续接上次的会话
 
@@ -332,6 +367,12 @@ uv run pytest
 - 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
 - 交互询问 ask_user：多问题选项构建、JSON 返回值与 abort 退出集成（`test_ask_user.py`）
 - 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）
+- 通用表单界面 form_ui：字段切换/掩码/校验/提交取消（`test_form_ui.py`）
+- 通用筛选选择界面 filter_ui：过滤/分页/焦点/单多选/取消（`test_filter_ui.py`）
+- 模型数据源注册表：缓存/meta/etag/异步更新/候选解析（`test_models_registry.py`）
+- 模型提供商配置：读写保注释/迁移/id 分配（`test_providers.py`）
+- 模型提供商配置流程：主菜单/添加/自定义/编辑（`test_provider_setup.py`）
+- 模型切换：提供商轮换/选定写回/取消、ModelChangeEvent（`test_model_select.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 
 ### 类型检查
