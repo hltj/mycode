@@ -1679,3 +1679,18 @@ class TestRenderResumeHint:
             monkeypatch.setattr(renderer, "RENDER_STYLE", style)
             out = self._capture(lambda: _get_renderer().render_resume_hint("myc -r x"))
             assert "可通过以下命令继续本次会话：" in out
+
+
+# ===================================================================
+# ModelChangeEvent 渲染
+# ===================================================================
+
+class TestRenderModelChange:
+    def test_render_model_change_text(self, capsys):
+        from mycode.session import ModelChangeEvent
+        from mycode.renderer import render_terminal
+        render_terminal(ModelChangeEvent(model="DeepSeek/deepseek-chat",
+                                         provider="DeepSeek",
+                                         model_name="deepseek-chat"))
+        out = capsys.readouterr().out
+        assert "已切换模型：DeepSeek/deepseek-chat" in out

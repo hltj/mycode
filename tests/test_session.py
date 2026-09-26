@@ -990,3 +990,31 @@ class TestDirTrust:
         with patch('mycode.session.SESSIONS_DIR', sessions_dir):
             trust_dir(test_dir)
         assert (sessions_dir / sanitized).exists()
+
+
+# ===================================================================
+# ModelChangeEvent
+# ===================================================================
+
+class TestModelChangeEvent:
+    def test_roundtrip(self):
+        """ModelChangeEvent 可经 JSONL 往返（provider/model_name 字段）。"""
+        from mycode.session import (
+            ModelChangeEvent, _msg_to_dict, _dict_to_agent_message,
+        )
+        ev = ModelChangeEvent(model="a/m2", provider="a", model_name="m2")
+        d = _msg_to_dict(ev)
+        assert d["type"] == "model_change"
+        assert d["model"] == "a/m2"
+        assert d["model_change"]["provider"] == "a"
+        assert d["model_change"]["model_name"] == "m2"
+        loaded = _dict_to_agent_message(d)
+        assert isinstance(loaded, ModelChangeEvent)
+        assert loaded.provider == "a"
+        assert loaded.model_name == "m2"
+
+    def test_no_to_user_msg(self):
+        """ModelChangeEvent 不注入模型消息。"""
+        from mycode.session import ModelChangeEvent
+        ev = ModelChangeEvent(model="a/m2", provider="a", model_name="m2")
+        assert not hasattr(ev, "to_user_msg")

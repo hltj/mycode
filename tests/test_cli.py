@@ -2027,14 +2027,20 @@ class TestApiKeyBurnAfterReading:
     2. 在当前进程中验证 _api_key 属性与 client.api_key 的一致性
     """
 
-    def test_api_key_stored_in_private_variable(self):
-        """_api_key 应保留原始值（不为 None），供 OpenAI client 使用"""
-        assert hasattr(cli, '_api_key')
-        assert cli._api_key is not None
+    def test_client_lazy_built_none_until_get_client(self, monkeypatch):
+        """client 改为懒构建：初始 None，get_client() 后为实例。"""
+        monkeypatch.setattr(cli, "client", None)
+        assert cli.client is None
+        monkeypatch.setattr(cli, "OpenAI", MagicMock(return_value=MagicMock()))
+        cli.get_client()
+        assert cli.client is not None
 
-    def test_client_uses_stored_api_key(self):
-        """OpenAI client 的 api_key 应与 _api_key 一致"""
-        assert cli.client.api_key == cli._api_key
+    def test_client_uses_env_key_burned_after_read(self, monkeypatch):
+        """get_client() 会从环境变量清理 MYCODE_API_KEY（子进程防泄露）。"""
+        monkeypatch.setenv("MYCODE_API_KEY", "visible")
+        monkeypatch.setattr(cli, "OpenAI", MagicMock(return_value=MagicMock()))
+        cli.get_client()
+        assert "MYCODE_API_KEY" not in os.environ
 
     def test_burn_after_read_removes_from_environ(self):
         """通过独立 Python 进程验证：加载 dotenv + cli 后 MYCODE_API_KEY 被清除。
