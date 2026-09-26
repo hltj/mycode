@@ -42,6 +42,17 @@ _raw_cache: dict | None = None
 _raw_loaded = False
 
 
+def invalidate() -> None:
+    """失效原始配置缓存（providers 写回 config.toml 后调用）。
+
+    下次 ``_raw_config`` 会重新读取文件，让 ``config.get`` 立即可见
+    ``[providers.*]`` 与当前模型等变更。
+    """
+    global _raw_cache, _raw_loaded
+    _raw_cache = None
+    _raw_loaded = False
+
+
 def _raw_config() -> dict:
     """读取并缓存 config.toml 顶层表（文件不存在 / 解析失败返回空 dict）。
 
