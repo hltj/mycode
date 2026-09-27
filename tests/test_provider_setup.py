@@ -114,7 +114,7 @@ class TestBuildCandidateOptions:
     def test_label_format(self):
         infos = {"deepseek": _provider_info()}
         opts = ps._candidate_options(infos)
-        assert opts[0].label == "DeepSeek (deepseek) · 2 模型"
+        assert opts[0].label == "DeepSeek（deepseek · 2 模型）"
         assert opts[0].value == "deepseek"
 
     def test_sorted_by_id(self):
@@ -378,7 +378,7 @@ class TestEdit:
         ps.delete_provider("deepseek")
         q = seen["q"]
         assert q.title == "确认删除模型提供商"
-        assert q.description == "是否删除模型提供商：deepseek（DeepSeek · 2 模型）"
+        assert q.description == "是否删除模型提供商：DeepSeek（deepseek · 2 模型）"
         assert [o.effective_value() for o in q.options] == [
             ps.CONFIRM_CANCEL, ps.CONFIRM_DELETE]
 

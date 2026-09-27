@@ -102,19 +102,19 @@ def _main_menu_question(existing: dict[str, pv.ProviderConfig]) -> AskQuestion:
         p = existing[pid]
         n = len(p.models)
         opts.append(AskOption(
-            label=f"编辑：{pid}",
+            label=f"编辑：{p.name}",
             value=f"{EDIT_PREFIX}{pid}",
-            description=f"{p.name} · {n} 模型",
+            description=f"{pid} · {n} 模型",
         ))
     opts.append(AskOption(label="取消", value=MAIN_CANCEL))
     return AskQuestion(title="模型提供商配置", options=opts)
 
 
 def _candidate_options(infos: dict[str, mr.ProviderInfo]) -> list[FilterOption]:
-    """候选提供商 → filter_ui options（label 名称 (id) · N 模型）。"""
+    """候选提供商 → filter_ui options（label 名称（id · N 模型））。"""
     return [
         FilterOption(
-            label=f"{infos[pid].name} ({pid}) · {len(infos[pid].models)} 模型",
+            label=f"{infos[pid].name}（{pid} · {len(infos[pid].models)} 模型）",
             value=pid,
         )
         for pid in sorted(infos)
@@ -200,7 +200,7 @@ def add_from_catalog() -> Optional[str]:
     # 模型多选（候选全部可勾选，上限 15）
     pick_models = filter_ui(
         _model_options(info.models),
-        title=f"勾选 {info.name} 的模型",
+        title=f"勾选 {info.name}（{info.id}）的模型",
         description=f"可勾选多个（上限 {MAX_MODELS_PER_PROVIDER}）；"
                     f"输入关键词筛选，空格勾选，Enter 完成",
         multi=True,
@@ -287,7 +287,8 @@ def edit_variables(pid: str) -> None:
         FormField(name="models", label="模型列表",
                   initial=",".join(existing.models)),
     ]
-    form = form_ui(fields, title=f"编辑 {pid}", style=_current_style())
+    form = form_ui(fields, title=f"编辑：{existing.name}（{pid}）",
+                   style=_current_style())
     if form.aborted:
         return
     models = _parse_model_list(form.values.get("models", ""))
@@ -316,7 +317,7 @@ def edit_reselect_models(pid: str) -> None:
     for o in opts:
         if o.value in existing.models:
             o.selected = True
-    pick = filter_ui(opts, title=f"勾选 {pid} 的模型",
+    pick = filter_ui(opts, title=f"勾选 {existing.name}（{pid}）的模型",
                      description=f"可勾选多个（上限 {MAX_MODELS_PER_PROVIDER}）",
                      multi=True, style=_current_style())
     if pick.aborted:
@@ -341,7 +342,7 @@ def delete_provider(pid: str) -> bool:
     n = len(existing.models)
     result = ask_ui([AskQuestion(
         title="确认删除模型提供商",
-        description=f"是否删除模型提供商：{pid}（{existing.name} · {n} 模型）",
+        description=f"是否删除模型提供商：{existing.name}（{pid} · {n} 模型）",
         options=[
             AskOption(label="取消删除", value=CONFIRM_CANCEL),
             AskOption(label="确认删除", value=CONFIRM_DELETE),
@@ -362,7 +363,8 @@ def delete_provider(pid: str) -> bool:
 def _edit_menu_question(pid: str, existing: pv.ProviderConfig) -> AskQuestion:
     """构造编辑二级菜单。"""
     return AskQuestion(
-        title=f"编辑：{pid}",
+        title=f"编辑：{existing.name}",
+        description=f"{pid} · {len(existing.models)} 模型",
         options=[
             AskOption(label="修改变量", value=EDIT_VARS),
             AskOption(label="重选模型", value=EDIT_MODELS),

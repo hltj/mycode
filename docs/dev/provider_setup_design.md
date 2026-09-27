@@ -22,20 +22,20 @@
 模型提供商配置
   ❯ 🟢 添加模型提供商（模型库更新于 09-26 01:00 · 182 家可用）
     ⚪ 添加自定义模型提供商
-    ⚪ 编辑：deepseek（DeepSeek · 2 模型）
-    ⚪ 编辑：user-defined-1（api.openai.com · 1 模型）
+    ⚪ 编辑：DeepSeek（deepseek · 2 模型）
+    ⚪ 编辑：api.openai.com（user-defined-1 · 1 模型）
     ⚪ 取消
 ```
 
 - “添加模型提供商”的 `description` 承载模型库状态；除“取消”外各选项
   value 用带前缀标识（`add_from_catalog` / `add_custom` / `edit:<id>` /
-  `cancel`）区分。
+  `cancel`）区分。提供商名称/id 统一按 `名称（id · N 模型）` 格式展示。
 - 循环：一次菜单返回后，若用户未取消则执行对应动作，再回到主菜单；
   取消退出循环。
 
 ## 添加提供商（来自 models.dev）
 
-1. `filter_ui` 单选候选（`名称 (id) · N 模型` 作为 label，value=id；
+1. `filter_ui` 单选候选（`名称（id · N 模型）` 作为 label，value=id；
    `ProviderInfo.models` 作为候选数量展示）。
 2. `form_ui` 填写 `ProviderInfo.env` 中的变量：
    - 每个 env 变量一个字段（`name=变量名`，`label=变量名`）；
@@ -65,19 +65,24 @@
 二级菜单 `ask_ui` 单问题：
 
 ```
-编辑：deepseek
+编辑：DeepSeek
+
+deepseek · 2 模型
+
   ❯ 🟢 修改变量
     ⚪ 重选模型
     ⚪ 删除提供商
     ⚪ 返回
 ```
 
+二级菜单标题用显示名，问题 `description` 承载 `{id} · N 模型`。
+
 - **修改变量**：`form_ui` 三字段 Base URL / API Key / 模型列表
   （models.dev 提供商与自定义提供商统一按此编辑；不做 `${VAR}` 反解）。
 - **重选模型**：models.dev 提供商 → `filter_ui` 多选（回显现有勾选）；
   自定义提供商 → 也走模型列表编辑（同名字段）；勾选上限同 15。
 - **删除**：ask_ui 单问题二次确认（标题 `确认删除模型提供商`，描述
-  `是否删除模型提供商：{id}（{name} · N 模型）`；`取消删除` 在前——
+  `是否删除模型提供商：{name}（{id} · N 模型）`；`取消删除` 在前——
   光标默认停在该项，直接 Enter / Ctrl-C 均不删除；`确认删除` 才执行）。
   确认后删除 section；若该提供商是当前 `model_provider`，同时清空
   当前模型。
