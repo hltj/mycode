@@ -117,10 +117,10 @@ def _candidate_options(infos: dict[str, mr.ProviderInfo]) -> list[FilterOption]:
     ]
 
 
-def _model_options(models: list[str], names: dict[str, str]) -> list[FilterOption]:
-    """模型 id → filter_ui options（label 模型名称（模型id））。"""
+def _model_options(models: dict[str, mr.ModelInfo]) -> list[FilterOption]:
+    """模型 → filter_ui options（label 模型名称（模型id），按接口顺序）。"""
     return [
-        FilterOption(label=f"{names.get(m, m)}（{m}）", value=m)
+        FilterOption(label=f"{models[m].name or m}（{m}）", value=m)
         for m in models
     ]
 
@@ -188,10 +188,8 @@ def add_from_catalog() -> Optional[str]:
     )
 
     # 模型多选（候选全部可勾选，上限 15）
-    model_names = _model_names_for_provider(info.id)
-    model_opts = _model_options(info.models, model_names)
     pick_models = filter_ui(
-        model_opts,
+        _model_options(info.models),
         title=f"勾选 {info.name} 的模型",
         description=f"可勾选多个（上限 {MAX_MODELS_PER_PROVIDER}）；"
                     f"输入关键词筛选，空格勾选，Enter 完成",
@@ -263,24 +261,6 @@ def _host_of(url: str) -> str:
         return ""
 
 
-def _model_names_for_provider(pid: str) -> dict[str, str]:
-    """从缓存取该 provider 的模型 id → 名称映射。"""
-    data = mr.load_cached_api()
-    if data is None:
-        return {}
-    raw = data.get(pid)
-    if not isinstance(raw, dict):
-        return {}
-    models = raw.get("models")
-    if not isinstance(models, dict):
-        return {}
-    result = {}
-    for mid, m in models.items():
-        if isinstance(m, dict) and isinstance(m.get("name"), str):
-            result[mid] = m["name"]
-    return result
-
-
 # ---------------------------------------------------------------------------
 # 编辑
 # ---------------------------------------------------------------------------
@@ -317,13 +297,12 @@ def edit_reselect_models(pid: str) -> None:
         return
     infos = candidate_providers()
     if pid in infos:
-        names = _model_names_for_provider(pid)
         models = infos[pid].models
     else:
-        names = {}
-        models = existing.models
+        # 自定义提供商无候选数据：无显示名，仅按 id 排序
+        models = {m: mr.ModelInfo(id=m) for m in existing.models}
     # 回显现有勾选
-    opts = _model_options(models, names)
+    opts = _model_options(models)
     for o in opts:
         if o.value in existing.models:
             o.selected = True

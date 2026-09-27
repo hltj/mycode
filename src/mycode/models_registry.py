@@ -21,7 +21,8 @@
 - 下载用 ``httpx``（``http://`` 与 ``https://``；压缩 zstd/brotli/gzip 走
   httpx 默认协商，安装 ``httpx[zstd]`` 后优先 zstd）。
 - 候选解析：只保留 npm 为 ``@ai-sdk/openai-compatible`` 的供应商；
-  每个 model 缺 ``tool_call`` 或为 true 才保留（agent 必须工具调用）。
+  每个 model 缺 ``tool_call`` 或为 true 才保留（agent 必须工具调用），
+  ``ProviderInfo.models`` 为模型 id → ``ModelInfo``（目前含 id/name）。
 - 供应商 ``api`` 字段是 `${VAR}` 模板，``resolve_base_url`` 负责插值渲染；
   ``is_secret_env_var`` 识别 env 列表里的密钥类变量（含 KEY/TOKEN/PAT）。
 """
@@ -64,6 +65,14 @@ def _meta_file() -> Path:
 
 
 @dataclass
+class ModelInfo:
+    """候选模型的规范化视图。"""
+
+    id: str
+    name: str = ""
+
+
+@dataclass
 class ProviderInfo:
     """候选供应商的规范化视图。"""
 
@@ -71,7 +80,8 @@ class ProviderInfo:
     name: str
     base_url: str
     env: list[str] = field(default_factory=list)
-    models: list[str] = field(default_factory=list)
+    # 模型 id → ModelInfo；仅含支持工具调用的模型
+    models: dict[str, ModelInfo] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +287,19 @@ def _model_supports_tool_call(obj: object) -> bool:
     return tc is not False
 
 
+def _model_name(obj: object) -> str:
+    """模型显示名；缺 name 字段或非字符串返回空串。"""
+    if not isinstance(obj, dict):
+        return ""
+    raw = obj.get("name")
+    return raw if isinstance(raw, str) else ""
+
+
 def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
     """解析 api.json 为候选供应商映射（id → ProviderInfo）。
 
     仅保留 npm 为 ``@ai-sdk/openai-compatible`` 的条目；models 只保留
-    支持工具调用的 id，顺序与接口一致。
+    支持工具调用的条目（id → ModelInfo），顺序与接口一致。
     """
     result: dict[str, ProviderInfo] = {}
     for pid, raw in api_data.items():
@@ -300,10 +318,11 @@ def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
         env_list = [str(x) for x in env] if isinstance(env, list) else []
 
         models_raw = raw.get("models")
-        models = [
-            mid for m in (models_raw.values() if isinstance(models_raw, dict) else ())
+        models = {
+            mid: ModelInfo(id=mid, name=_model_name(m))
+            for m in (models_raw.values() if isinstance(models_raw, dict) else ())
             if (mid := _model_id(m)) and _model_supports_tool_call(m)
-        ]
+        }
 
         result[pid] = ProviderInfo(
             id=pid,

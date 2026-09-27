@@ -46,7 +46,10 @@ def _provider_info(**over):
         name="DeepSeek",
         base_url="https://api.deepseek.com",
         env=["DEEPSEEK_API_KEY"],
-        models=["deepseek-chat", "deepseek-reasoner"],
+        models={"deepseek-chat": mr.ModelInfo(id="deepseek-chat",
+                                              name="DeepSeek Chat"),
+                "deepseek-reasoner": mr.ModelInfo(id="deepseek-reasoner",
+                                                  name="DeepSeek Reasoner")},
     )
     base.update(over)
     return mr.ProviderInfo(**base)
@@ -206,8 +209,11 @@ class TestModelCap:
         assert ps._cap_models(models) == models[:15]
 
     def test_full_flow_cap(self, monkeypatch):
-        infos = {"big": _provider_info(id="big", name="Big",
-                                       models=[f"m{i}" for i in range(20)])}
+        infos = {"big": _provider_info(
+            id="big", name="Big",
+            models={f"m{i}": mr.ModelInfo(id=f"m{i}", name=f"Model {i}")
+                    for i in range(20)},
+        )}
         ps._set_meta_status({"updated_at": "2026-09-26T01:00:00+08:00",
                              "status": "success", "providers_count": 1})
         monkeypatch.setattr(ps, "candidate_providers", lambda: infos)

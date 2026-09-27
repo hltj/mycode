@@ -7,7 +7,8 @@
 ## 数据流
 
 - 候选模型提供商来自 `models_registry.ProviderInfo`（api.json 中所有
-  `npm == "@ai-sdk/openai-compatible"` 的条目，当前约 182 家）。
+  `npm == "@ai-sdk/openai-compatible"` 的条目，当前约 182 家；
+  `ProviderInfo.models` 为模型 id → `ModelInfo` 映射，目前含 id/name）。
 - 配置写入 `providers.save_provider`（`[providers.<id>]`），当前模型经
   `providers.set_current`。
 - 模型库状态（更新于 … · N 家可用 / 更新失败 / 尚未就绪）来自
@@ -43,8 +44,8 @@
    - 提交后：密钥类取**第一个**填值存 `api_key`；所有填值组成
      `${VAR}` 渲染上下文，`resolve_base_url` 得到最终 `base_url`。
 3. `filter_ui` 多选勾选启用模型（上限 15，达上限禁止继续勾选并提示）：
-   label 用 `模型名称（模型id）`；模型名称来自 api.json 该模型的 `name`
-   字段（缺失回退 id）。
+   label 用 `模型名称（模型id）`，名称取 `ProviderInfo.models` 的显示名
+   （缺失回退 id）。
 4. `providers.save_provider`；若此前无任何提供商，同时设为当前（第一个
    勾选模型）。
 

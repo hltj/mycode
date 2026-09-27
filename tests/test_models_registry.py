@@ -351,7 +351,8 @@ class TestCandidateProviders:
         assert p.name == "Compat One"
         assert p.base_url == "https://api.example.com/v1"
         assert p.env == ["COMPAT_ONE_API_KEY"]
-        assert p.models == ["m-good", "m-tool-missing"]
+        assert p.models == {"m-good": mr.ModelInfo(id="m-good"),
+                            "m-tool-missing": mr.ModelInfo(id="m-tool-missing")}
 
     def test_tool_call_false_filtered(self):
         providers = mr.candidate_providers(_api_data())
@@ -361,7 +362,25 @@ class TestCandidateProviders:
 
     def test_models_sorted_by_api_order(self):
         providers = mr.candidate_providers(_api_data())
-        assert providers["openai-compat-1"].models == ["m-good", "m-tool-missing"]
+        assert list(providers["openai-compat-1"].models) == [
+            "m-good", "m-tool-missing"]
+
+    def test_model_names_extracted(self):
+        """models 为 id → ModelInfo 映射；缺 name 字段时 name 为空串。"""
+        data = {
+            "p": {
+                "id": "p", "npm": "@ai-sdk/openai-compatible", "name": "P",
+                "models": _models_dict([
+                    {"id": "m1", "name": "M One"},
+                    {"id": "m2"},
+                ]),
+            },
+        }
+        providers = mr.candidate_providers(data)
+        assert providers["p"].models == {
+            "m1": mr.ModelInfo(id="m1", name="M One"),
+            "m2": mr.ModelInfo(id="m2"),
+        }
 
 
 # ===================================================================
