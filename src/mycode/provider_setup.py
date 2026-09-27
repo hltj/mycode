@@ -364,7 +364,7 @@ def edit_settings(pid: str) -> str:
     # 或当前模型被取消勾选，重新读取当前以判断是否清空
     pid_cur, model_cur = pv.get_current() or ("", "")
     if pid_cur == new_id and model_cur not in existing.models:
-        pv.set_current("", "")
+        pv.set_current(new_id, "")
     return new_id
 
 
@@ -391,10 +391,10 @@ def edit_reselect_models(pid: str) -> None:
         return
     existing.models = _cap_models(pick.selected)
     pv.save_provider(existing)
-    # 若当前模型被取消勾选，清空当前
+    # 当前模型被取消勾选：只清模型，提供商保留
     pid_cur, model_cur = pv.get_current() or ("", "")
     if pid_cur == pid and model_cur not in existing.models:
-        pv.set_current("", "")
+        pv.set_current(pid, "")
 
 
 def delete_provider(pid: str) -> bool:

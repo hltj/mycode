@@ -67,6 +67,7 @@ _e429_wait_list: list[int] | None = config.get_int_list("e429_wait_seconds")
 # 导入工具
 # ---------------------------------------------------------------------------
 from mycode.tools_registry import ToolsRegistry
+from mycode import providers as _pv
 
 # 模型客户端按当前模型提供商/模型懒构建；/model 切换后 get_client(refresh=True)
 client: OpenAI | None = None
@@ -658,6 +659,109 @@ def _render_retry_hint_once(
     return trigger.id
 
 
+def _ensure_model_available(provider: str, model: str, bus: AgentEventBus) -> tuple[bool, str, str]:
+    """发送前检查当前提供商/模型是否可用；失效时弹 ask_ui 引导恢复。
+
+    返回值 (ok, provider, model)：
+
+    - 提供商与模型都在 → (True, provider, model)；
+    - 提供商或模型缺失，但还存在其他可用提供商 → 提示「未选择模型或
+      模型已失效」，确认后进入模型切换界面；完成后返回 (True, 新值)，取消
+      返回 (False, 原值)；
+    - 没有任何可用提供商 → 提示「目前没有模型提供商」，确认后进入提供商
+      设置页；完成后返回 (True, 新值)，取消返回 (False, 原值)。
+    """
+    providers = _pv.load_providers()
+    if provider in providers and model in providers[provider].models:
+        return True, provider, model
+
+    if providers:
+        # 还有其他提供商：引导选择模型
+        ok = _ask_confirm(
+            "选择模型",
+            "当前未选择模型或模型已失效，是否现在选择模型？",
+            action_label="现在选择",
+        )
+        if not ok:
+            return False, provider, model
+        from mycode.model_select import choose_model
+        picked = choose_model()
+        if picked is None:
+            return False, provider, model
+        _dispatch_model_change(bus, *picked)
+        return True, picked[0], picked[1]
+
+    # 无任何提供商：引导添加
+    ok = _ask_confirm(
+        "添加模型提供商",
+        "目前没有任何模型提供商，是否现在添加？",
+        action_label="现在添加",
+    )
+    if not ok:
+        return False, provider, model
+    from mycode.provider_setup import run_provider_setup
+    run_provider_setup()
+    current = _pv.get_current()
+    if current is None:
+        # 进入设置页但未添加提供商：直接返回
+        return False, provider, model
+    # 添加成功：再确认是否重新选择模型；确认后进入模型切换界面
+    ok = _ask_confirm(
+        "选择模型",
+        f"当前模型为 {current[0]}/{current[1]}，需要重新选择吗？",
+        action_label="重新选择",
+    )
+    if ok:
+        from mycode.model_select import choose_model
+        picked = choose_model()
+        if picked is not None:
+            _dispatch_model_change(bus, *picked)
+            return True, picked[0], picked[1]
+    # 取消选择或未选到：沿用添加后自动设为当前的模型
+    _dispatch_model_change(bus, *current)
+    return True, current[0], current[1]
+
+
+def _ask_confirm(title: str, description: str, action_label: str) -> bool:
+    """通用确认：ask_ui 单选确认按钮在前，Ctrl-C 或选取消返回 False。
+
+    ``action_label`` 为确认按钮文案（如「现在选择」/「现在添加」）。
+    """
+    from mycode.ask_ui import ask_ui, AskOption, AskQuestion
+
+    result = ask_ui(
+        [AskQuestion(
+            title=title,
+            description=description,
+            options=[
+                AskOption(label=action_label, value="now"),
+                AskOption(label="取消", value="cancel"),
+            ],
+        )],
+        style=_get_renderer().create_prompt_style(),
+    )
+    if result.aborted:
+        return False
+    return "now" in result.answers[0].selected
+
+
+def _dispatch_model_change(
+    bus: AgentEventBus, provider_id: str, model_id: str
+) -> None:
+    """切换模型：写回 current 并派发 ModelChangeEvent（渲染 + 持久化）。"""
+    _pv.set_current(provider_id, model_id)
+    providers = _pv.load_providers()
+    provider_name = providers[provider_id].name \
+        if provider_id in providers else ""
+    model_name = _model_display_name(provider_id, model_id)
+    bus.dispatch(ModelChangeEvent(
+        model=model_id,
+        provider=provider_id,
+        provider_name=provider_name,
+        model_name=model_name,
+    ))
+
+
 def _switch_mode(provider: str, model: str, bus: AgentEventBus, mode: Mode) -> None:
     """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
     MODE_STATE.set(mode)
@@ -871,7 +975,6 @@ def main():
     _check_dir_trust()
 
     # 旧顶层 api_key/base_url 一次性迁移为 [providers.udf-provider-N]
-    from mycode import providers as _pv
     if _pv.migrate_legacy() is not None:
         pass
 
@@ -967,20 +1070,8 @@ def main():
                 from mycode.model_select import choose_model
                 picked = choose_model()
                 if picked is not None:
-                    provider_id, model_id = picked
-                    # API 调用只用模型 id（不拼接 provider）
-                    provider = provider_id
-                    model = model_id
-                    providers = _pv.load_providers()
-                    provider_name = providers[provider_id].name \
-                        if provider_id in providers else ""
-                    model_name = _model_display_name(provider_id, model_id)
-                    bus.dispatch(ModelChangeEvent(
-                        model=model_id,
-                        provider=provider_id,
-                        provider_name=provider_name,
-                        model_name=model_name,
-                    ))
+                    _dispatch_model_change(bus, *picked)
+                    provider, model = picked
                 continue
 
             # ---- 模式切换命令 ----
@@ -998,6 +1089,12 @@ def main():
             # ---- /retry：中断/异常后恢复 agent 循环 ----
             if stripped == "/retry":
                 _handle_retry_command(hist_messages, bus, model, provider)
+                continue
+
+            # ---- 当前提供商/模型失效检测 ----
+            ok, provider, model = _ensure_model_available(provider, model, bus)
+            if not ok:
+                # 用户取消且值缺失：放弃本次输入
                 continue
 
             # 消息列表追加用户输入并进入智能体循环

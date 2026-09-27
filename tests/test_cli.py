@@ -2182,3 +2182,113 @@ class TestCountdownRetry:
         assert body_lens == {len("限流重试... ") + 2}
         # 结束用 ANSI 清整行
         assert out.endswith("\r\x1B[2K")
+
+
+# ===================================================================
+# _ensure_model_available —— 发送前失效检测
+# ===================================================================
+
+class TestEnsureModelAvailable:
+    """当前提供商/模型失效时引导用户切换或添加。"""
+
+    def _bus(self):
+        bus = cli.AgentEventBus()
+        bus.register(lambda m: None)
+        return bus
+
+    def test_ok_returns_true(self, monkeypatch):
+        """提供商与模型都在：直接返回 (True, pid, model)。"""
+        monkeypatch.setattr(cli, "_pv", _FakeProviders(
+            {"a": _FakePconf(["m1", "m2"])}))
+        ok, pid, model = cli._ensure_model_available("a", "m1", self._bus())
+        assert (ok, pid, model) == (True, "a", "m1")
+
+    def test_missing_model_with_other_providers_switches(
+            self, monkeypatch):
+        """模型失效但还有其他提供商：确认后进入模型切换。"""
+        fake = _FakeProviders({"a": _FakePconf(["m1"]),
+                               "b": _FakePconf(["m2"])})
+        monkeypatch.setattr(cli, "_pv", fake)
+        confirm_calls = []
+
+        def fake_confirm(title, desc, **kw):
+            confirm_calls.append((title, desc))
+            return True
+
+        monkeypatch.setattr(cli, "_ask_confirm", fake_confirm)
+        monkeypatch.setattr("mycode.model_select.choose_model",
+                            lambda: ("b", "m2"))
+        ok, pid, model = cli._ensure_model_available("a", "missing", self._bus())
+        assert (ok, pid, model) == (True, "b", "m2")
+        # 提示标题统一为「选择模型」
+        assert confirm_calls[0][0] == "选择模型"
+
+    def test_missing_model_confirm_cancel_keeps(self, monkeypatch):
+        """确认弹窗取消：返回 (False, 原值)。"""
+        monkeypatch.setattr(cli, "_pv", _FakeProviders(
+            {"a": _FakePconf(["m1"])}))
+        monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+        ok, pid, model = cli._ensure_model_available("a", "gone", self._bus())
+        assert (ok, pid, model) == (False, "a", "gone")
+
+    def test_no_providers_guides_add(self, monkeypatch):
+        """无任何提供商：提示后进入提供商设置页。"""
+        fake = _FakeProviders({})
+        monkeypatch.setattr(cli, "_pv", fake)
+        confirm_calls = []
+
+        def fake_confirm(title, desc, **kw):
+            confirm_calls.append((title, kw.get("action_label"), desc))
+            return True
+
+        monkeypatch.setattr(cli, "_ask_confirm", fake_confirm)
+        import mycode.provider_setup as _ps
+
+        def fake_setup():
+            # 模拟添加了一个提供商
+            fake._providers["a"] = _FakePconf(["m1"])
+
+        monkeypatch.setattr(_ps, "run_provider_setup", fake_setup)
+        ok, pid, model = cli._ensure_model_available("", "", self._bus())
+        assert ok
+        # 先确认添加，再确认重新选择；第二问列出当前自动设置的模型，
+        # 确认按钮为「重新选择」（选择界面未选到 → 沿用自动当前）
+        assert confirm_calls == [
+            ("添加模型提供商", "现在添加",
+             "目前没有任何模型提供商，是否现在添加？"),
+            ("选择模型", "重新选择",
+             "当前模型为 a/m1，需要重新选择吗？"),
+        ]
+        assert pid == "a"
+        assert model == "m1"
+
+    def test_no_providers_cancel(self, monkeypatch):
+        monkeypatch.setattr(cli, "_pv", _FakeProviders({}))
+        monkeypatch.setattr(cli, "_ask_confirm", lambda *a, **k: False)
+        ok, pid, model = cli._ensure_model_available("", "", self._bus())
+        assert ok is False
+
+
+class _FakePconf:
+    def __init__(self, models, name=""):
+        self.models = models
+        self.name = name
+
+
+class _FakeProviders:
+    """模拟 providers 模块的最小对象。"""
+
+    def __init__(self, providers):
+        self._providers = providers
+
+    def load_providers(self):
+        return self._providers
+
+    def get_current(self):
+        for pid, p in self._providers.items():
+            if p.models:
+                return (pid, p.models[0])
+        return None
+
+    def set_current(self, pid, model):
+        pass
