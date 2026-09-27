@@ -294,7 +294,7 @@ class TestSwitchMode:
         bus = cli.AgentEventBus()
         captured = []
         bus.register(lambda msg: captured.append(msg))
-        cli._switch_mode("m", bus, Mode.ASK)
+        cli._switch_mode("p", "m", bus, Mode.ASK)
         assert MODE_STATE.get() == Mode.ASK
         assert len(captured) == 1
         assert isinstance(captured[0], ModeChangeEvent)

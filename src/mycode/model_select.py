@@ -8,7 +8,7 @@
 
 - ``choose_model()``：运行外挂 tab（提供商）+ ask_ui 单问题（模型选择）的
   完整交互，选定后写回 ``providers.set_current`` 并刷新 client，返回
-  ``(provider_id, model_name)``；取消返回 None。
+  ``(provider_id, model_id)``；取消返回 None。
 - ``_build_question``：构造单个提供商的 ask_ui 问题（测试钩子）。
 """
 
@@ -55,7 +55,7 @@ def _build_question(providers: dict, index: int) -> AskQuestion:
 
 
 def choose_model() -> Optional[tuple[str, str]]:
-    """运行模型切换交互；返回选中的 (provider_id, model_name) 或 None。"""
+    """运行模型切换交互；返回选中的 (provider_id, model_id) 或 None。"""
     providers = load_providers()
     if not providers:
         print("尚未配置模型提供商，请先运行 /provider 添加。")

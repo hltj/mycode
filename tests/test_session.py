@@ -998,23 +998,82 @@ class TestDirTrust:
 
 class TestModelChangeEvent:
     def test_roundtrip(self):
-        """ModelChangeEvent 可经 JSONL 往返（provider/model_name 字段）。"""
+        """ModelChangeEvent 可经 JSONL 往返（公共 provider、model + 显示名字段）。"""
         from mycode.session import (
             ModelChangeEvent, _msg_to_dict, _dict_to_agent_message,
         )
-        ev = ModelChangeEvent(model="a/m2", provider="a", model_name="m2")
+        ev = ModelChangeEvent(model="m2", provider="a",
+                              provider_name="Alpha", model_name="m2")
         d = _msg_to_dict(ev)
         assert d["type"] == "model_change"
-        assert d["model"] == "a/m2"
-        assert d["model_change"]["provider"] == "a"
-        assert d["model_change"]["model_name"] == "m2"
+        assert d["model"] == "m2"
+        assert d["provider"] == "a"
+        assert d["model_change"] == {
+            "provider_name": "Alpha", "model_name": "m2",
+        }
         loaded = _dict_to_agent_message(d)
         assert isinstance(loaded, ModelChangeEvent)
         assert loaded.provider == "a"
+        assert loaded.provider_name == "Alpha"
         assert loaded.model_name == "m2"
 
     def test_no_to_user_msg(self):
         """ModelChangeEvent 不注入模型消息。"""
         from mycode.session import ModelChangeEvent
-        ev = ModelChangeEvent(model="a/m2", provider="a", model_name="m2")
+        ev = ModelChangeEvent(model="m2", provider="a", model_name="m2")
         assert not hasattr(ev, "to_user_msg")
+
+
+# ===================================================================
+# provider 公共字段
+# ===================================================================
+
+class TestProviderField:
+    def test_roundtrip_defaults_empty(self):
+        """未传 provider 时序列化写空串，反序列化回空串（兼容旧文件）。"""
+        from mycode.session import UserMessage, _msg_to_dict, _dict_to_agent_message
+        msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="m",
+        )
+        d = _msg_to_dict(msg)
+        assert d["provider"] == ""
+        loaded = _dict_to_agent_message(d)
+        assert loaded.provider == ""
+
+    def test_roundtrip_with_provider(self):
+        from mycode.session import UserMessage, _msg_to_dict, _dict_to_agent_message
+        msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="m", provider="deepseek",
+        )
+        loaded = _dict_to_agent_message(_msg_to_dict(msg))
+        assert loaded.provider == "deepseek"
+
+    def test_inject_meta_fills_provider(self, temp_home):
+        """inject_meta 从 SessionHistory.provider 补齐空 provider。"""
+        from mycode.session import SessionHistory, MODE_STATE  # noqa: F401
+        sessions_dir = temp_home / "sessions"
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            history = SessionHistory("/test/project", model="test-model",
+                                     provider="deepseek")
+        msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="test-model",
+        )
+        history.inject_meta(msg)
+        assert msg.provider == "deepseek"
+
+    def test_inject_meta_keeps_explicit_provider(self, temp_home):
+        """显式传入的 provider 不被覆盖。"""
+        from mycode.session import SessionHistory
+        sessions_dir = temp_home / "sessions"
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            history = SessionHistory("/test/project", model="test-model",
+                                     provider="deepseek")
+        msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="test-model", provider="openai",
+        )
+        history.inject_meta(msg)
+        assert msg.provider == "openai"

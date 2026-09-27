@@ -7,7 +7,7 @@
 
 # 当前使用的模型（/model 切换时自动更新）
 # model_provider = "deepseek"
-# model_name = "deepseek-chat"
+# model = "deepseek-chat"
 
 # 已配置的模型提供商（/provider 界面自动写入，也可手工编辑）：
 #

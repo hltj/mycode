@@ -145,7 +145,8 @@ def trust_dir(dir_path: str) -> None:
 class MessageProtocol(Protocol):
     id: str
     parent_id: Optional[str]
-    model: str
+    model: str          # 模型 id
+    provider: str       # 提供商 id
     entry_type: str
     time: str
     mode: str
@@ -156,6 +157,7 @@ class SessionRecord(MessageProtocol):
     """session 记录，仅用于文件标识"""
     session: SessionData
     model: str
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -167,6 +169,7 @@ class SessionRecord(MessageProtocol):
 class UserMessage(MessageProtocol):
     model: str
     message: ChatCompletionUserMessageParam
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -178,6 +181,7 @@ class UserMessage(MessageProtocol):
 class AssistantMessage(MessageProtocol):
     model: str
     message: ChatCompletionAssistantMessageParam
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -189,6 +193,7 @@ class AssistantMessage(MessageProtocol):
 class ToolCallEvent(MessageProtocol):
     model: str
     tool_call: ChatCompletionMessageFunctionToolCallParam
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -201,6 +206,7 @@ class ToolResultEvent(MessageProtocol):
     """工具执行结果。"""
     model: str
     tool_result: ToolResultData
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -221,6 +227,7 @@ class InterruptEvent(MessageProtocol):
     """中断事件。"""
     model: str
     interrupt: InterruptData
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -233,6 +240,7 @@ class InterruptEvent(MessageProtocol):
 class ExceptionEvent(MessageProtocol):
     model: str
     exception: ExceptionData
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -245,6 +253,7 @@ class ModeChangeEvent(MessageProtocol):
     """模式切换事件（session 公共字段记录）。"""
     model: str
     mode: str
+    provider: str = ""
     id: str = ""
     parent_id: Optional[str] = None
     entry_type: str = "mode_change"
@@ -255,11 +264,13 @@ class ModeChangeEvent(MessageProtocol):
 class ModelChangeEvent(MessageProtocol):
     """模型切换事件（session 公共字段记录，不注入模型消息）。
 
-    ``model`` 字段写 ``f"{provider}/{model_name}"``。
+    ``provider`` / ``model`` 记录切换后的提供商 id 与模型 id；
+    ``provider_name`` / ``model_name`` 为对应显示名（渲染用）。
     """
 
     model: str
     provider: str = ""
+    provider_name: str = ""
     model_name: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
@@ -284,6 +295,7 @@ class NoticeEvent(MessageProtocol):
     """系统注入的提醒（如陈旧待办提醒、命令已更新提醒）。"""
     model: str
     notice: NoticeData
+    provider: str = ""
     mode: str = Mode.AUTO.value
     id: str = ""
     parent_id: Optional[str] = None
@@ -331,7 +343,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
     """将 AgentMessage 转为 JSONL 字典。
 
     序列化规范：只有 ``MessageProtocol`` 定义的公共字段
-    （time / type / id / parent_id / model / mode）平铺在顶层；
+    （time / type / id / parent_id / model / provider / mode）平铺在顶层；
     各事件自己的扩展字段聚合在以 ``entry_type`` 为名的 key 下
     （如 ``notice`` / ``interrupt`` / ``exception``），
     与 ``type`` 值保持一致。
@@ -342,6 +354,7 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
         "id": msg.id,
         "parent_id": msg.parent_id,
         "model": msg.model,
+        "provider": msg.provider,
         "mode": msg.mode,
     }
     match msg:
@@ -360,10 +373,10 @@ def _msg_to_dict(msg: AgentMessage) -> Dict[str, Any]:
         case ExceptionEvent(exception=exc_data):
             d["exception"] = exc_data
         case ModeChangeEvent():
-            pass  # mode 已由 base dict 记录
+            pass  # mode / provider 已由 base dict 记录
         case ModelChangeEvent() as ev:
             d["model_change"] = {
-                "provider": ev.provider,
+                "provider_name": ev.provider_name,
                 "model_name": ev.model_name,
             }
         case NoticeEvent(notice=notice):
@@ -385,6 +398,7 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         "id": data["id"],
         "parent_id": data.get("parent_id"),
         "model": data["model"],
+        "provider": data.get("provider", ""),
         "time": data["time"],
         "mode": data.get("mode", Mode.AUTO.value),
     }
@@ -427,8 +441,10 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
         mc = data.get("model_change")
         if not isinstance(mc, dict):
             mc = {}
+        # provider 在 base_kwargs（session 公共字段）；model_change 扩展
+        # 字典只提供 provider_name / model_name 显示名
         return ModelChangeEvent(
-            provider=str(mc.get("provider", "")),
+            provider_name=str(mc.get("provider_name", "")),
             model_name=str(mc.get("model_name", "")),
             **base_kwargs,
         )
@@ -447,9 +463,10 @@ def _dict_to_agent_message(data: Dict[str, Any]) -> AgentMessage | None:
 class SessionHistory:
     """会话历史记录管理器"""
 
-    def __init__(self, cwd: str, model: str):
+    def __init__(self, cwd: str, model: str, provider: str = ""):
         self.cwd = cwd
         self.model = model
+        self.provider = provider
         self.mode: Mode = Mode.AUTO
         sanitized_cwd = sanitize_path(cwd)
         self.directory = SESSIONS_DIR / sanitized_cwd
@@ -468,6 +485,7 @@ class SessionHistory:
         session_record = SessionRecord(
             session=session_data,
             model=model,
+            provider=provider,
             id=self.session_uuid[:8],
             parent_id=None,
             entry_type="session",
@@ -493,6 +511,8 @@ class SessionHistory:
         msg.parent_id = self.entries[-1].id if self.entries else None
         msg.time = get_iso_timestamp()
         msg.mode = MODE_STATE.get().value
+        if hasattr(msg, "provider") and not msg.provider:
+            msg.provider = getattr(self, "provider", "")
 
     def append(self, msg: AgentMessage) -> None:
         """追加一条 AgentMessage（元数据需在调用前注入好）"""
@@ -521,6 +541,7 @@ class SessionHistory:
                         instance.cwd = session_data.get("cwd", os.getcwd())
                         instance.directory = file_path.parent
                         instance.model = data["model"]
+                        instance.provider = data.get("provider", "")
                         instance.mode = Mode(session_data.get("mode", Mode.AUTO.value))
                     # 所有类型都加入 entries
                     agent_msg = _dict_to_agent_message(data)

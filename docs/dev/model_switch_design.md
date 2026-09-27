@@ -48,16 +48,20 @@ def choose_model() -> tuple[str, str] | None:
 ## cli 集成
 
 - ``client`` 改为懒构建：``get_client(refresh=False)`` 按当前
-  ``model_provider`` / ``model_name`` 从 providers 读 base_url/api_key
+  ``model_provider`` / ``model`` 从 providers 读 base_url/api_key
   构建 OpenAI 实例；``refresh=True`` 关闭旧实例并重建。
 - ``/model`` 命令命中时：``choose_model()``；成功返回后派发
-  ``ModelChangeEvent(model=f"{pid}/{model}", provider=pid, model_name=model)``。
+  ``ModelChangeEvent(model=model_id, provider=pid, provider_name=名称,
+  model_name=模型显示名)``（显示名分别取 providers 配置与模型库缓存，
+  缺失回退 id），渲染「已切换模型：{provider_name}/{model_name}
+  （{provider}/{model}）」。
 - 补全列表加入 ``/model``（连同 ``/provider``）。
 
 ## 事件持久化
 
-``session.ModelChangeEvent``（新增）：字段 ``provider``、``model_name``；
-``model`` 字段写 ``f"{provider}/{model_name}"``。
+``session.ModelChangeEvent``：公共字段 ``provider``（提供商 id）、
+``model``（模型 id）；扩展字段 ``provider_name`` / ``model_name``
+（显示名，渲染用）。
 进入历史但不作为消息注入模型。
 
 ## renderer

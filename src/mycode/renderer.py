@@ -613,10 +613,12 @@ class _Renderer:
         print(additional.rstrip(chr(0x0A)))
 
     # ---- 渲染（公共流程在基类） ----
-    def render_assistant(self, message: ChatCompletionAssistantMessageParam, model: str) -> None:
-        # AI 回复：标题（风格差异）+ 正文；无正文（纯 tool_calls）时仅标题
+    def render_assistant(self, message: ChatCompletionAssistantMessageParam,
+                         model: str, provider: str = "") -> None:
+        # AI 回复：标题（风格差异）+ 正文；无正文（纯 tool_calls）时仅标题。
+        # 标题展示 provider/model（提供商 id / 模型 id）；无 provider 时退化为模型 id。
         content = message.get("content")
-        title = self.ai_title(model)
+        title = self.ai_title(f"{provider}/{model}" if provider else model)
         if content and str(content).strip():
             print(f"\x1B[35m{title}\x1B[0m")
             self.render_assistant_body(str(content))
@@ -765,9 +767,17 @@ class _Renderer:
         # 模式切换：输出一行提示（保持简洁，不打扰流水）
         print(f"\x1B[90m已切换到【{mode}】模式\x1B[0m\n")
 
-    def render_model_change(self, provider: str, model_name: str) -> None:
-        # 模型切换：一行灰色提示
-        print(f"\x1B[90m已切换模型：{provider}/{model_name}\x1B[0m\n")
+    def render_model_change(self, provider_name: str, model_name: str,
+                            provider: str = "", model: str = "") -> None:
+        """模型切换提示：展示显示名（名称而非 id）。
+
+        ``provider_name`` / ``model_name`` 为显示名（缺失时回退对应 id），
+        后缀括号内展示 id（缺失时省略）。
+        """
+        pn = provider_name or provider
+        mn = model_name or model
+        suffix = f"（{provider}/{model}）" if provider and model else ""
+        print(f"\x1B[90m已切换模型：{pn}/{mn}{suffix}\x1B[0m\n")
 
     def render_resume_hint(self, cmd: str) -> None:
         """渲染退出时的「继续本次会话」恢复命令。
@@ -1223,8 +1233,8 @@ def _render_common(msg: AgentMessage) -> None:
         case UserMessage(message=message, mode=mode):
             # CLI 里用户消息 content 始终为 str，cast 掉 openai 的联合类型
             renderer.render_user_message(cast(str, message.get('content', '')), Mode(mode))
-        case AssistantMessage(message=message, model=model):
-            renderer.render_assistant(message, model)
+        case AssistantMessage(message=message, model=model, provider=provider):
+            renderer.render_assistant(message, model, provider)
         case ToolCallEvent(tool_call=tool_call):
             renderer.render_tool_call(tool_call)
         case ToolResultEvent(tool_result=tool_result):
@@ -1235,8 +1245,10 @@ def _render_common(msg: AgentMessage) -> None:
             renderer.render_notice(notice)
         case ModeChangeEvent(mode=mode):
             renderer.render_mode_change(mode)
-        case ModelChangeEvent(provider=provider, model_name=model_name):
-            renderer.render_model_change(provider, model_name)
+        case ModelChangeEvent(provider=provider, provider_name=provider_name,
+                              model=model, model_name=model_name):
+            renderer.render_model_change(provider_name, model_name,
+                                         provider, model)
         case ExceptionEvent(exception=exc):
             renderer.render_exception(exc)
         case _ as unreachable:

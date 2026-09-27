@@ -26,12 +26,13 @@ AgentMessage = SessionRecord | UserMessage | AssistantMessage | ToolCallEvent | 
 class MessageProtocol(Protocol):
     id: str                  # 记录 ID（短 ID，通常为 UUID 前 8 位）
     parent_id: Optional[str] # 前一条记录的 id，构成链表
-    model: str               # 使用的模型名称
+    model: str               # 模型 id
+    provider: str            # 提供商 id
     entry_type: str          # session / message / tool_call / tool_result / interrupt / exception / mode_change / notice
     time: str                # ISO8601 时间戳
 ```
 
-各字段的**默认值均为空**（`id=""`, `parent_id=None`, `time=""`），在 dispatch 时由 AgentEventBus 统一注入。
+各字段的**默认值均为空**（`id=""`, `parent_id=None`, `provider=""`, `time=""`），在 dispatch 时由 AgentEventBus 统一注入（`provider` 取自 `SessionHistory.provider`，显式传入的值不被覆盖）。
 
 ### 子类型一览
 
@@ -45,6 +46,7 @@ class MessageProtocol(Protocol):
 | `InterruptEvent` | `abort: bool` | `"interrupt"` | Ctrl-C 中断（abort 标记取消/无理由拒绝） |
 | `ExceptionEvent` | `exception: ExceptionData` | `"exception"` | 异常 |
 | `ModeChangeEvent` | （无额外字段，模式见公共 `mode`） | `"mode_change"` | 模式切换 |
+| `ModelChangeEvent` | `provider_name` / `model_name`（显示名，渲染用） | `"model_change"` | 模型切换 |
 | `NoticeEvent` | `content` / `display_content` / `additional_content` / `tag_name` | `"notice"` | 系统级提醒注入 |
 
 > **注意**：`entry_type` 在 dataclass 中通过默认值硬编码，不可修改。联合类型顺序固定为 SessionRecord → UserMessage → ... → InterruptEvent → ExceptionEvent，所有 match-case 必须按此顺序处理并在末尾添加 `case _ as unreachable: assert_never(unreachable)` 确保 exhaustiveness。
@@ -119,7 +121,7 @@ class _Renderer:
     def render_interrupt(self) -> None: ...
 
     # 风格差异（子类覆写）
-    def ai_title(self, model) -> str: ...
+    def ai_title(self, model) -> str: ...   # model 传 provider/model（无 provider 时仅模型 id）
     def tool_call_title(self, func_name) -> str: ...
     def tool_result_title(self) -> str: ...
     def notice_text(self, content) -> str: ...
@@ -145,10 +147,12 @@ def _render_common(msg: AgentMessage) -> None:
     match msg:
         case SessionRecord(): pass
         case UserMessage(message): renderer.render_user_message(content)
-        case AssistantMessage(message, model): ...  # renderer.ai_title + 正文
+        case AssistantMessage(message, model, provider): ...  # ai_title 显示 provider/model + 正文
         case ToolCallEvent(tool_call): renderer.render_tool_call(tool_call)
         case ToolResultEvent(tool_result): renderer.render_tool_result(tool_result)
         case InterruptEvent(): renderer.render_interrupt()
+        case ModeChangeEvent(mode): ...  # 已切换模式
+        case ModelChangeEvent(provider_name, model_name, ...): ...  # 已切换模型：名称（id）
         case NoticeEvent(notice): renderer.render_notice(notice)
         case ExceptionEvent(exception): renderer.render_exception(exception)
         case _ as unreachable: assert_never(unreachable)

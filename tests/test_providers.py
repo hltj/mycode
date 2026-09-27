@@ -11,7 +11,7 @@
 - ``migrate_legacy``：
   - 顶层 api_key/base_url（任一非空）迁移为 [providers.user-defined-N]，
     name 取 base_url host，models 取旧 model_name
-  - 保留 model_name 并补写 model_provider；删除顶层 api_key/base_url
+  - 写 model_provider / model；删除顶层 api_key/base_url
   - 环境变量 MYCODE_API_KEY 等不参与迁移
   - 无旧配置时返回 None
   - 已有 user-defined-N 时取未占用下一个
@@ -160,7 +160,7 @@ class TestCurrent:
         assert pv.get_current() == ("deepseek", "deepseek-reasoner")
         text = _read_config()
         assert 'model_provider = "deepseek"' in text
-        assert 'model_name = "deepseek-reasoner"' in text
+        assert 'model = "deepseek-reasoner"' in text
 
     def test_current_persists_comment(self):
         _write_config(BASE_DOC)
@@ -271,11 +271,11 @@ class TestConfigInvalidation:
         _write_config(BASE_DOC)
         pv.set_current("deepseek", "deepseek-reasoner")
         assert config.get("model_provider") == "deepseek"
-        assert config.get("model_name") == "deepseek-reasoner"
+        assert config.get("model") == "deepseek-reasoner"
 
     def test_set_current_seen_by_config_get_after_second_write(self):
         _write_config(BASE_DOC)
         pv.set_current("deepseek", "a")
-        config.get("model_name")  # 触发一次缓存
+        config.get("model")  # 触发一次缓存
         pv.set_current("deepseek", "b")
-        assert config.get("model_name") == "b"
+        assert config.get("model") == "b"

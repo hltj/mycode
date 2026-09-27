@@ -106,6 +106,28 @@ def get_client(refresh: bool = False) -> OpenAI:
     client = OpenAI(api_key=api_key, base_url=base_url or None)
     return client
 
+
+def _model_display_name(provider_id: str, model_id: str) -> str:
+    """从模型库缓存取模型显示名；缓存缺失或无该模型时回退模型 id。
+
+    供 ``ModelChangeEvent.model_name`` 渲染用（事件展示名称而非 id）。
+    """
+    from mycode import models_registry as mr
+
+    data = mr.load_cached_api()
+    if data is None:
+        return model_id
+    raw = data.get(provider_id)
+    if not isinstance(raw, dict):
+        return model_id
+    models = raw.get("models")
+    if not isinstance(models, dict):
+        return model_id
+    m = models.get(model_id)
+    if isinstance(m, dict) and isinstance(m.get("name"), str) and m["name"]:
+        return m["name"]
+    return model_id
+
 # ===================================================================
 # 从 session 导入 ADT 类型
 # ===================================================================
@@ -250,6 +272,7 @@ def _run_tool_with_permission(
     args: dict,
     handler: Callable,
     model: str = "",
+    provider: str = "",
     bus: AgentEventBus | None = None,
     messages: list[ChatCompletionMessageParam] | None = None,
 ) -> str:
@@ -304,6 +327,7 @@ def _run_tool_with_permission(
                 new_cmd = cast(str, extra)
                 event = NoticeEvent(
                     model=model,
+                    provider=provider,
                     notice={
                         "tag_name": "notice",
                         "content": "用户将命令修改为：",
@@ -348,6 +372,7 @@ def agent_loop(
     messages: list[ChatCompletionMessageParam],
     bus: AgentEventBus,
     model: str,
+    provider: str = "",
 ) -> None:
     from mycode.tools.todo_write import (
         bump_stale_rounds,
@@ -373,6 +398,7 @@ def agent_loop(
             # <reminder>...</reminder> 标签。
             event = NoticeEvent(
                 model=model,
+                provider=provider,
                 notice={"tag_name": "reminder", "content": reminder_text},
             )
             bus.dispatch(event)
@@ -392,7 +418,8 @@ def agent_loop(
         except KeyboardInterrupt:
             # Ctrl-C 中断大模型等待：分发 InterruptEvent，然后跳出循环、
             # agent_loop 自然返回，由外层 continue 接下一轮输入。
-            bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
+            bus.dispatch(InterruptEvent(model=model, provider=provider,
+                                        interrupt={"abort": False}))
             return
         except RateLimitError:
             # 429 限流：按连续发生次数取 e429_wait_seconds 中的秒数，
@@ -410,7 +437,8 @@ def agent_loop(
             except KeyboardInterrupt:
                 # Ctrl-C 中断 429 倒计时等待：分发 InterruptEvent 后跳出
                 # agent 循环（不继续重试）。
-                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
+                bus.dispatch(InterruptEvent(model=model, provider=provider,
+                                        interrupt={"abort": False}))
                 return
             continue
         # 成功产生模型事件：重置连续 429 计数
@@ -438,7 +466,8 @@ def agent_loop(
         messages.append(assistant_msg)
 
         # dispatch AI 回复
-        bus.dispatch(AssistantMessage(model=model, message=assistant_msg))
+        bus.dispatch(AssistantMessage(model=model, provider=provider,
+                                      message=assistant_msg))
 
         # 非工具调用结束循环
         if choice.finish_reason != 'tool_calls':
@@ -466,7 +495,7 @@ def agent_loop(
             handler = ToolsRegistry.get_handler(func_name)
 
             # dispatch 工具调用事件
-            bus.dispatch(ToolCallEvent(model=model, tool_call=tool_call))
+            bus.dispatch(ToolCallEvent(model=model, provider=provider, tool_call=tool_call))
 
             args_str = tool_call["function"]["arguments"]
             tool_result: str | None = None
@@ -482,6 +511,7 @@ def agent_loop(
                         args_ if isinstance(args_, dict) else {},
                         handler,
                         model=model,
+                        provider=provider,
                         bus=bus,
                         messages=messages,
                     )
@@ -492,7 +522,8 @@ def agent_loop(
                 cause = e
                 interrupted_at = idx
                 tool_result = e.tool_result
-                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": True}))
+                bus.dispatch(InterruptEvent(model=model, provider=provider,
+                                        interrupt={"abort": True}))
                 break
             except KeyboardInterrupt as e:
                 # Ctrl-C 中断工具执行：先 dispatch InterruptEvent 让 ^C 后
@@ -501,7 +532,8 @@ def agent_loop(
                 cause = e
                 interrupted_at = idx
                 tool_result = "Error: 工具执行被用户中断"
-                bus.dispatch(InterruptEvent(model=model, interrupt={"abort": False}))
+                bus.dispatch(InterruptEvent(model=model, provider=provider,
+                                        interrupt={"abort": False}))
                 break
             except BaseException as e:
                 # 工具执行抛异常：补一条 tool 错误消息、dispatch ExceptionEvent
@@ -512,7 +544,7 @@ def agent_loop(
                 cause = e
                 interrupted_at = idx
                 tool_result = f"Error: 工具执行失败: {type(e).__name__}: {e}"
-                bus.dispatch(ExceptionEvent(model=model, exception={
+                bus.dispatch(ExceptionEvent(model=model, provider=provider, exception={
                     "type": type(e).__name__,
                     "message": str(e),
                     "traceback": _tb.format_exc().rstrip(),
@@ -531,6 +563,7 @@ def agent_loop(
                 messages.append(tool_msg)
                 bus.dispatch(ToolResultEvent(
                     model=model,
+                    provider=provider,
                     tool_result={
                         "tool_call_id": tool_call["id"],
                         "content": tool_result,
@@ -555,13 +588,14 @@ def agent_loop(
             # 为「此索引之后」的剩余未处理的 tool_call 补占位 tool 消息
             # 并 dispatch 相应事件，保持消息序列对模型合法。
             for remaining in pending[interrupted_at + 1:]:
-                bus.dispatch(ToolCallEvent(model=model, tool_call=remaining))
+                bus.dispatch(ToolCallEvent(model=model, provider=provider, tool_call=remaining))
                 tool_msg = ChatCompletionToolMessageParam(
                     role='tool', tool_call_id=remaining["id"], content=skip_message
                 )
                 messages.append(tool_msg)
                 bus.dispatch(ToolResultEvent(
                     model=model,
+                    provider=provider,
                     tool_result={
                         "tool_call_id": remaining["id"],
                         "content": skip_message,
@@ -624,16 +658,17 @@ def _render_retry_hint_once(
     return trigger.id
 
 
-def _switch_mode(model: str, bus: AgentEventBus, mode: Mode) -> None:
+def _switch_mode(provider: str, model: str, bus: AgentEventBus, mode: Mode) -> None:
     """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
     MODE_STATE.set(mode)
-    bus.dispatch(ModeChangeEvent(model=model, mode=mode.value))
+    bus.dispatch(ModeChangeEvent(model=model, provider=provider, mode=mode.value))
 
 
 def _handle_retry_command(
     hist_messages: list[ChatCompletionMessageParam],
     bus: AgentEventBus,
     model: str,
+    provider: str = "",
 ) -> None:
     """/retry：重新进入 agent 循环。
 
@@ -645,12 +680,12 @@ def _handle_retry_command(
     "继续"（dispatch UserMessage 渲染 + 持久化），再进入 agent 循环。
     """
     if hist_messages and hist_messages[-1].get("role") in ("user", "tool"):
-        agent_loop(hist_messages, bus, model)
+        agent_loop(hist_messages, bus, model, provider)
         return
     continue_msg = ChatCompletionUserMessageParam(role='user', content='继续')
     hist_messages.append(continue_msg)
-    bus.dispatch(UserMessage(model=model, message=continue_msg))
-    agent_loop(hist_messages, bus, model)
+    bus.dispatch(UserMessage(model=model, provider=provider, message=continue_msg))
+    agent_loop(hist_messages, bus, model, provider)
 
 
 # ===================================================================
@@ -696,7 +731,8 @@ class MycCommandCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text), display=cmd)
 
 
-def _create_prompt_session(bus: AgentEventBus, model: str) -> PromptSession[str]:
+def _create_prompt_session(bus: AgentEventBus, model: str,
+                           provider: str = "") -> PromptSession[str]:
     """创建 prompt_toolkit 输入会话（按渲染风格配置样式）。
 
     default 风格输入区灰色背景说明：
@@ -730,7 +766,8 @@ def _create_prompt_session(bus: AgentEventBus, model: str) -> PromptSession[str]
         # 与光标位置由 prompt_toolkit 内部状态保持，不受破坏。
         async def _emit() -> None:
             await run_in_terminal(
-                lambda: bus.dispatch(ModeChangeEvent(model=model, mode=new.value))
+                lambda: bus.dispatch(ModeChangeEvent(model=model, provider=provider,
+                                             mode=new.value))
             )
         event.app.create_background_task(_emit())
 
@@ -847,7 +884,8 @@ def main():
         pass
 
     current = _pv.get_current()
-    model = current[1] if current else (config.get("model_name") or '')
+    provider = current[0] if current else ""
+    model = current[1] if current else (config.get("model") or '')
 
     # 消息列表初始化系统提示词
     hist_messages: list[ChatCompletionMessageParam] = [
@@ -874,7 +912,8 @@ def main():
         session_hist = SessionHistory.load(session_file)
         hist_messages.extend(session_hist.get_messages())
     else:
-        session_hist = SessionHistory(cwd=os.getcwd(), model=model)
+        session_hist = SessionHistory(cwd=os.getcwd(), model=model,
+                                      provider=provider)
 
     # 恢复会话时同步模式（session 公共字段），新会话默认自动
     MODE_STATE.set(session_hist.mode)
@@ -894,7 +933,7 @@ def main():
 
     # ---- prompt_toolkit 配置 ----
 
-    session = _create_prompt_session(bus, model)
+    session = _create_prompt_session(bus, model, provider)
 
     # 已渲染过提示的「触发事件 id」水印：仅当新的中断/异常事件出现时才
     # 重新渲染提示，避免 prompt 阶段 Ctrl-C 静默继续时反复渲染同一提示。
@@ -923,19 +962,25 @@ def main():
                 from mycode.model_select import choose_model
                 picked = choose_model()
                 if picked is not None:
-                    provider_id, model_name = picked
-                    # API 调用只用 model_name（不拼接 provider）
-                    model = model_name
+                    provider_id, model_id = picked
+                    # API 调用只用模型 id（不拼接 provider）
+                    provider = provider_id
+                    model = model_id
+                    providers = _pv.load_providers()
+                    provider_name = providers[provider_id].name \
+                        if provider_id in providers else ""
+                    model_name = _model_display_name(provider_id, model_id)
                     bus.dispatch(ModelChangeEvent(
-                        model=f"{provider_id}/{model_name}",
+                        model=model_id,
                         provider=provider_id,
+                        provider_name=provider_name,
                         model_name=model_name,
                     ))
                 continue
 
             # ---- 模式切换命令 ----
             if stripped in {"/ask", "/auto", "/yolo"}:
-                _switch_mode(model, bus, {
+                _switch_mode(provider, model, bus, {
                     "/ask": Mode.ASK,
                     "/auto": Mode.AUTO,
                     "/yolo": Mode.YOLO,
@@ -947,7 +992,7 @@ def main():
 
             # ---- /retry：中断/异常后恢复 agent 循环 ----
             if stripped == "/retry":
-                _handle_retry_command(hist_messages, bus, model)
+                _handle_retry_command(hist_messages, bus, model, provider)
                 continue
 
             # 消息列表追加用户输入并进入智能体循环
@@ -955,9 +1000,10 @@ def main():
             hist_messages.append(user_msg)
 
             # dispatch 用户消息（持久化 + 渲染）
-            bus.dispatch(UserMessage(model=model, message=user_msg))
+            bus.dispatch(UserMessage(model=model, provider=provider,
+                                     message=user_msg))
 
-            agent_loop(hist_messages, bus, model)
+            agent_loop(hist_messages, bus, model, provider)
 
         except EOFError:
             # Ctrl-D: 退出程序
@@ -974,7 +1020,7 @@ def main():
             # agent_loop 内部的异常已由它自身处理。
             import traceback as tb
             tb_lines = tb.format_exc().rstrip()
-            bus.dispatch(ExceptionEvent(model=model, exception={
+            bus.dispatch(ExceptionEvent(model=model, provider=provider, exception={
                 "type": type(e).__name__,
                 "message": str(e),
                 "traceback": tb_lines,

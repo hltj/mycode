@@ -1069,6 +1069,22 @@ class TestRenderCommonAssistantUser:
         assert "AI【m】" in out
         assert "AI【m】:" not in out
 
+    def test_assistant_with_provider_shows_provider_model(self):
+        """带 provider 的助手消息标题展示 provider/model。"""
+        ev = AssistantMessage(model="m", provider="p",
+                              message=ChatCompletionAssistantMessageParam(
+                                  role="assistant", content="hello"))
+        out = self._capture(lambda: _render_common(ev))
+        assert "AI【p/m】" in out
+
+    def test_assistant_without_provider_shows_model_only(self):
+        """provider 为空（旧会话重放）时标题仅展示模型 id。"""
+        ev = AssistantMessage(model="m",
+                              message=ChatCompletionAssistantMessageParam(
+                                  role="assistant", content="hello"))
+        out = self._capture(lambda: _render_common(ev))
+        assert "AI【m】" in out
+
     def test_user_message_trailing_blank_line(self):
         """用户消息输出之后要加一个空行。"""
         from openai.types.chat import ChatCompletionUserMessageParam
@@ -1687,10 +1703,21 @@ class TestRenderResumeHint:
 
 class TestRenderModelChange:
     def test_render_model_change_text(self, capsys):
+        """切换提示展示显示名（名称而非 id）。"""
         from mycode.session import ModelChangeEvent
         from mycode.renderer import render_terminal
-        render_terminal(ModelChangeEvent(model="DeepSeek/deepseek-chat",
-                                         provider="DeepSeek",
-                                         model_name="deepseek-chat"))
+        render_terminal(ModelChangeEvent(model="deepseek-chat",
+                                         provider="deepseek",
+                                         provider_name="DeepSeek",
+                                         model_name="DeepSeek Chat"))
         out = capsys.readouterr().out
-        assert "已切换模型：DeepSeek/deepseek-chat" in out
+        assert "已切换模型：DeepSeek/DeepSeek Chat（deepseek/deepseek-chat）" in out
+
+    def test_render_model_change_falls_back_to_ids(self, capsys):
+        """显示名缺失时回退 id。"""
+        from mycode.session import ModelChangeEvent
+        from mycode.renderer import render_terminal
+        render_terminal(ModelChangeEvent(model="deepseek-chat",
+                                         provider="deepseek"))
+        out = capsys.readouterr().out
+        assert "已切换模型：deepseek/deepseek-chat" in out

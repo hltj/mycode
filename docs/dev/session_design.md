@@ -47,18 +47,19 @@ entries[4] = ToolResultEvent   # 工具结果
 ```json
 {"time":"...","type":"session","id":"a1b2c3d4","parent_id":null,"model":"gpt-4o","session":{"id":"full-uuid...","cwd":"/path"}}
 {"time":"...","type":"message","id":"e5f6g7h8","parent_id":"a1b2c3d4","model":"gpt-4o","message":{"role":"user","content":"hello"}}
-{"time":"...","type":"interrupt","id":"...","parent_id":"...","model":"gpt-4o","interrupt":{"abort":true}}
-{"time":"...","type":"notice","id":"...","parent_id":"...","model":"gpt-4o","notice":{"content":"...","tag_name":"notice","display_content":"...","additional_content":"..."}}
-{"time":"...","type":"tool_result","id":"...","parent_id":"...","model":"gpt-4o","tool_result":{"tool_call_id":"...","content":"...","tool_name":"bash"}}
+{"time":"...","type":"interrupt","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","interrupt":{"abort":true}}
+{"time":"...","type":"notice","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","notice":{"content":"...","tag_name":"notice","display_content":"...","additional_content":"..."}}
+{"time":"...","type":"tool_result","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","tool_result":{"tool_call_id":"...","content":"...","tool_name":"bash"}}
 ```
 
 **序列化规范**：
 
 1. 只有 `MessageProtocol` 定义的公共字段（`time` / `type` / `id` /
-   `parent_id` / `model` / `mode`）平铺在 JSON 顶层；
+   `parent_id` / `model` / `provider` / `mode`）平铺在 JSON 顶层；
 2. 每个事件**自己的扩展字段**聚合在 JSON 中 `type` 值对应的 key 下
    （`session` / `message` / `tool_call` / `interrupt` / `exception` /
-   `notice` / `tool_result`），即扩展字段的 key 名与 `type` 值一致；
+   `notice` / `tool_result` / `model_change`），即扩展字段的 key 名与
+   `type` 值一致；
 3. `parent_id` 链构成完整的消息树。
 
 ### ID 生成策略

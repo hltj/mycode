@@ -33,8 +33,8 @@ default 风格下，所有「方块」——每个代码块、user message 背�
 
 | 风格 | 类 | AI 标题 | 工具调用标题 | 工具输出标题 | 待办符号 | 提示符 |
 |------|----|---------|--------------|--------------|----------|--------|
-| `default` | `_DefaultRenderer` | `🤖 {model}` | `🔧 调用工具 - x` | `📤 工具输出` | emoji（🔳/🟧/✅️） | `│` / `│?` / `│!` |
-| `classic` | `_ClassicRenderer` | `AI【{model}】` | `调用工具 - x` | `工具输出` | 复选框（`- [ ]:` 等） | `myc[模式] >` |
+| `default` | `_DefaultRenderer` | `🤖 {provider}/{model}` | `🔧 调用工具 - x` | `📤 工具输出` | emoji（🔳/🟧/✅️） | `│` / `│?` / `│!` |
+| `classic` | `_ClassicRenderer` | `AI【{provider}/{model}】` | `调用工具 - x` | `工具输出` | 复选框（`- [ ]:` 等） | `myc[模式] >` |
 
 模块级 `RENDER_STYLE` 是全局状态；测试通过 `monkeypatch.setattr(renderer, "RENDER_STYLE", ...)` 切换。
 

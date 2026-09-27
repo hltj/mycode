@@ -2,7 +2,7 @@
 供应商配置模块。
 
 管理 ``{MYCODE_HOME_DIR}/config.toml`` 中的 ``[providers.<id>]`` section
-与当前模型（``model_provider`` / ``model_name``），以及旧顶层
+与当前模型（``model_provider`` / ``model``），以及旧顶层
 ``api_key`` / ``base_url`` / ``model_name`` 的一次性自动迁移。
 
 设计要点：
@@ -15,7 +15,7 @@
     取未占用的最小 N）。
 - ``migrate_legacy()``：顶层 ``api_key`` / ``base_url`` 任一非空时，迁移
   为一个 ``user-defined-N`` 供应商（name 取 base_url 的 host，models 取
-  旧 ``model_name``），保留 ``model_name`` 并补 ``model_provider``，
+  旧 ``model_name``），写 ``model_provider`` / ``model``，
   删除顶层 ``api_key`` / ``base_url``。环境变量不参与迁移。
 - 写回后调用 ``config.invalidate()`` 失效缓存，让 ``config.get`` 立即可见。
 """
@@ -127,19 +127,19 @@ def delete_provider(pid: str) -> None:
 
 
 def get_current() -> tuple[str, str] | None:
-    """返回 (provider_id, model_name)；未配置返回 None。"""
+    """返回 (provider_id, model_id)；未配置返回 None。"""
     pid = config.get("model_provider")
-    model = config.get("model_name")
+    model = config.get("model")
     if pid and model:
         return (pid, model)
     return None
 
 
-def set_current(provider_id: str, model_name: str) -> None:
-    """写回 model_provider 与 model_name（保留文档其余内容）。"""
+def set_current(provider_id: str, model_id: str) -> None:
+    """写回 model_provider 与 model（保留文档其余内容）。"""
     doc = _document()
     doc["model_provider"] = provider_id
-    doc["model_name"] = model_name
+    doc["model"] = model_id
     _write_document(doc)
 
 
@@ -170,7 +170,7 @@ def migrate_legacy() -> Optional[str]:
 
     条件：顶层 ``api_key`` 或 ``base_url`` 任一非空。生成
     ``[providers.user-defined-N]``（name = base_url host，models = 旧
-    model_name 列表），保留 model_name 并补 model_provider，
+    model_name 列表），写 ``model_provider`` / ``model``，
     删除顶层 api_key / base_url。
     """
     doc = _document()
@@ -202,7 +202,7 @@ def migrate_legacy() -> Optional[str]:
     doc = _document()
     if model_name:
         doc["model_provider"] = pid
-        doc["model_name"] = model_name
+        doc["model"] = model_name
     for key in ("api_key", "base_url"):
         if key in doc:
             del doc[key]
