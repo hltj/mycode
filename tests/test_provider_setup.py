@@ -123,6 +123,22 @@ class TestBuildCandidateOptions:
         opts = ps._candidate_options(infos)
         assert [o.value for o in opts] == ["a", "b"]
 
+    def test_existing_provider_marked(self):
+        """已添加的候选：【已添加】前缀 + {m}/{n} 模型（m=已选个数）。"""
+        infos = {"deepseek": _provider_info(
+            models={"deepseek-chat": mr.ModelInfo(id="deepseek-chat",
+                                                   name="DeepSeek Chat"),
+                    "deepseek-reasoner": mr.ModelInfo(id="deepseek-reasoner",
+                                                      name="R1")})}
+        existing = {"deepseek": _provider_config(models=["deepseek-chat"])}
+        opts = ps._candidate_options(infos, existing)
+        assert opts[0].label == "DeepSeek（【已添加】deepseek · 1/2 模型）"
+
+    def test_unadded_provider_not_marked(self):
+        infos = {"deepseek": _provider_info()}
+        opts = ps._candidate_options(infos, {"other": _provider_config()})
+        assert "【已添加】" not in opts[0].label
+
 
 # ===================================================================
 # 模型选项构建
@@ -208,6 +224,35 @@ class TestAddFromCatalog:
         p = _providers()["cf"]
         assert p.base_url == "https://api.x.com/accounts/acc-1/v1"
         assert p.api_key == "sk-cf"
+
+    def test_existing_provider_routes_to_edit(self, monkeypatch):
+        """选中的候选已添加：不重复添加，进入「编辑：提供商」二级菜单。"""
+        pv.save_provider(_provider_config())
+        infos = {"deepseek": _provider_info()}
+        ps._set_meta_status({"updated_at": "2026-09-26T01:00:00+08:00",
+                             "status": "success", "providers_count": 1})
+        monkeypatch.setattr(ps, "candidate_providers", lambda: infos)
+        monkeypatch.setattr(ps, "filter_ui",
+                            lambda choices, **kw: ps.FilterResult(
+                                selected=["deepseek"]))
+        seen = {}
+
+        def fake_ask(qs, **kw):
+            seen["q"] = qs[0]
+            return AskResult(answers=[AskAnswer(selected=[ps.EDIT_BACK])])
+
+        monkeypatch.setattr(ps, "ask_ui", fake_ask)
+        form_called = []
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: form_called.append(fields)
+                            or ps.FormResult(values={}))
+        assert ps.add_from_catalog() == "deepseek"
+        # 进入的是编辑二级菜单（非 env 变量表单、非设定值表单）
+        assert seen["q"].title == "编辑：DeepSeek"
+        assert form_called == []
+        # 数据未被改动
+        assert _providers()["deepseek"].models == [
+            "deepseek-chat", "deepseek-reasoner"]
 
     def test_abort_form_no_write(self, monkeypatch):
         infos = {"deepseek": _provider_info()}

@@ -24,19 +24,22 @@
     ⚪ 添加自定义模型提供商
     ⚪ 编辑：DeepSeek（deepseek · 2 模型）
     ⚪ 编辑：api.openai.com（udf-provider-1 · 1 模型）
-    ⚪ 取消
+    ⚪ 返回
 ```
 
-- “添加模型提供商”的 `description` 承载模型库状态；除“取消”外各选项
+- “添加模型提供商”的 `description` 承载模型库状态；除“返回”外各选项
   value 用带前缀标识（`add_from_catalog` / `add_user_defined` / `edit:<id>` /
   `cancel`）区分。提供商名称/id 统一按 `名称（id · N 模型）` 格式展示。
 - 循环：一次菜单返回后，若用户未取消则执行对应动作，再回到主菜单；
-  取消退出循环。
+  选择“返回”退出循环。
 
 ## 添加提供商（来自 models.dev）
 
 1. `filter_ui` 单选候选（`名称（id · N 模型）` 作为 label，value=id；
-   `ProviderInfo.models` 作为候选数量展示）。
+   `ProviderInfo.models` 作为候选数量展示）。已添加的提供商在括号内
+   id 前标注「【已添加】」，模型数为 `{m}/{n}`（m = 已选个数）；选中
+   已添加项不重复走添加流程，进入「编辑：提供商（id · N 模型）」
+   二级菜单。
 2. `form_ui` 填写 `ProviderInfo.env` 中的变量：
    - 每个 env 变量一个字段（`name=变量名`，`label=变量名`）；
    - 密钥类（`is_secret_env_var`）`password=True`；
@@ -57,7 +60,7 @@
   `provider-N`；留空回退自动分配；重名经校验器阻止提交）
 - 显示名（name，必填，空则回退 base_url host）
 - Base URL（必填）
-- API Key（password，可留空——本地服务无密钥）
+- API Key（password，必填）
 - 模型列表（逗号分隔；必填，不允许留空）
 
 写入 `[providers.udf-provider-N]`。

@@ -106,19 +106,29 @@ def _main_menu_question(existing: dict[str, pv.ProviderConfig]) -> AskQuestion:
             value=f"{EDIT_PREFIX}{pid}",
             description=f"{pid} · {n} 模型",
         ))
-    opts.append(AskOption(label="取消", value=MAIN_CANCEL))
+    opts.append(AskOption(label="返回", value=MAIN_CANCEL))
     return AskQuestion(title="模型提供商配置", options=opts)
 
 
-def _candidate_options(infos: dict[str, mr.ProviderInfo]) -> list[FilterOption]:
-    """候选提供商 → filter_ui options（label 名称（id · N 模型））。"""
-    return [
-        FilterOption(
-            label=f"{infos[pid].name}（{pid} · {len(infos[pid].models)} 模型）",
-            value=pid,
-        )
-        for pid in sorted(infos)
-    ]
+def _candidate_options(
+    infos: dict[str, mr.ProviderInfo],
+    existing: dict[str, pv.ProviderConfig] | None = None,
+) -> list[FilterOption]:
+    """候选提供商 → filter_ui options（label 名称（id · N 模型））。
+
+    已添加的提供商在括号内 id 前标注「【已添加】」，模型数为
+    ``{m}/{n}``（m = 已选个数，n = 候选总数）。
+    """
+    existing = existing or {}
+
+    def label(pid: str) -> str:
+        name, n = infos[pid].name, len(infos[pid].models)
+        added = existing.get(pid)
+        if added is None:
+            return f"{name}（{pid} · {n} 模型）"
+        return f"{name}（【已添加】{pid} · {len(added.models)}/{n} 模型）"
+
+    return [FilterOption(label=label(pid), value=pid) for pid in sorted(infos)]
 
 
 def _model_options(models: dict[str, mr.ModelInfo]) -> list[FilterOption]:
@@ -145,11 +155,15 @@ def _cap_models(models: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def add_from_catalog() -> Optional[str]:
-    """添加一个 models.dev 候选提供商；返回新 provider id（取消返回 None）。"""
+    """添加一个 models.dev 候选提供商；返回新 provider id（取消返回 None）。
+
+    选中的候选若已添加：不重复走添加流程，进入该提供商的
+    「编辑：提供商」二级菜单。
+    """
     infos = candidate_providers()
     if not infos:
         return None
-    candidates = _candidate_options(infos)
+    candidates = _candidate_options(infos, pv.load_providers())
     pick = filter_ui(
         candidates,
         title="选择模型提供商",
@@ -160,6 +174,11 @@ def add_from_catalog() -> Optional[str]:
         return None
     pid = pick.selected[0]
     info = infos[pid]
+
+    if pid in pv.load_providers():
+        # 已添加：进入「编辑：提供商」二级菜单
+        _run_edit_loop(pid)
+        return pid
 
     # 变量表单：env 列表逐变量填写
     fields: list[FormField] = []
@@ -173,7 +192,7 @@ def add_from_catalog() -> Optional[str]:
             label=var,
             hint=hint,
             password=is_secret,
-            placeholder="输入密钥" if is_secret else "输入值",
+            placeholder="sk-..." if is_secret else "输入值",
         ))
     # 无 env 变量（如某些本地服务）跳过表单
     values: dict[str, str] = {}
@@ -246,7 +265,7 @@ def add_user_defined() -> Optional[str]:
         FormField(name="base_url", label="Base URL", required=True,
                   placeholder="https://api.example.com/v1"),
         FormField(name="api_key", label="API Key", password=True,
-                  placeholder="本地服务可留空"),
+                  required=True, placeholder="sk-..."),
         FormField(name="models", label="模型列表", required=True,
                   placeholder="逗号分隔，如 gpt-4o,gpt-4o-mini"),
     ]
