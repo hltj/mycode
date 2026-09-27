@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 
 from mycode import config, models_registry as mr, providers as pv, provider_setup as ps
+from mycode.ask_ui import AskAnswer, AskResult
 
 
 @pytest.fixture(autouse=True)
@@ -333,15 +334,63 @@ class TestEdit:
         assert _providers()["deepseek"].models == ["m3"]
 
     def test_delete_provider(self, monkeypatch):
+        """确认删除：删除并清空当前模型。"""
         pv.save_provider(_provider_config())
         pv.set_current("deepseek", "deepseek-chat")
-        ps.delete_provider("deepseek")
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            answers=[AskAnswer(selected=[ps.CONFIRM_DELETE])]))
+        assert ps.delete_provider("deepseek") is True
         assert _providers() == {}
         assert pv.get_current() is None
+
+    def test_delete_confirm_default_no(self, monkeypatch):
+        """默认不删：取消选项 / 空选择 / Ctrl-C 均不删除。"""
+        pv.save_provider(_provider_config())
+        pv.set_current("deepseek", "deepseek-chat")
+
+        # 选中「取消删除」（默认光标所在项）
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            answers=[AskAnswer(selected=[ps.CONFIRM_CANCEL])]))
+        assert ps.delete_provider("deepseek") is False
+        # 空选择
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            answers=[AskAnswer(selected=[])]))
+        assert ps.delete_provider("deepseek") is False
+        # Ctrl-C 中止
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            aborted=True))
+        assert ps.delete_provider("deepseek") is False
+        assert _providers()["deepseek"].models == [
+            "deepseek-chat", "deepseek-reasoner"]
+        assert pv.get_current() == ("deepseek", "deepseek-chat")
+
+    def test_delete_confirm_question(self, monkeypatch):
+        """确认问题文案：取消项在前、展示提供商摘要。"""
+        pv.save_provider(_provider_config())
+        seen = {}
+
+        def fake_ask(qs, **kw):
+            seen["q"] = qs[0]
+            return AskResult(answers=[AskAnswer(
+                selected=[ps.CONFIRM_CANCEL])])
+
+        monkeypatch.setattr(ps, "ask_ui", fake_ask)
+        ps.delete_provider("deepseek")
+        q = seen["q"]
+        assert q.title == "确认删除模型提供商"
+        assert q.description == "是否删除模型提供商：deepseek（DeepSeek · 2 模型）"
+        assert [o.effective_value() for o in q.options] == [
+            ps.CONFIRM_CANCEL, ps.CONFIRM_DELETE]
 
     def test_delete_non_current_keeps_current(self, monkeypatch):
         pv.save_provider(_provider_config(id="a", name="A"))
         pv.save_provider(_provider_config(id="b", name="B"))
         pv.set_current("a", "m")
-        ps.delete_provider("b")
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            answers=[AskAnswer(selected=[ps.CONFIRM_DELETE])]))
+        assert ps.delete_provider("b") is True
         assert pv.get_current() == ("a", "m")
+
+    def test_delete_nonexistent(self, monkeypatch):
+        """提供商不存在：不询问直接返回。"""
+        assert ps.delete_provider("nope") is False
