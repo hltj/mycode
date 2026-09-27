@@ -158,8 +158,39 @@ def next_user_defined_id() -> str:
 
 
 def is_user_defined(pid: str) -> bool:
-    """是否为自定义提供商（``udf-provider-N`` 命名）。"""
+    """是否为自定义提供商（``udf-`` 前缀命名）。"""
     return pid.startswith("udf-")
+
+
+def rename_provider(old_id: str, new_id: str) -> Optional[str]:
+    """重命名自定义提供商 id；返回新 id（无需改名返回 None，冲突返回 None）。
+
+    同步处理：
+
+    - ``[providers.<old>]`` section 键改为 ``<new>``；
+    - 若该提供商是当前 ``model_provider``，顶层键同步改为新 id；
+    - 写回后 ``config.invalidate()``，``config.get`` 立即可见（内存中
+      读到的当前提供商随之更新）。
+    """
+    new_id = (new_id or "").strip()
+    if not new_id or new_id == old_id:
+        return None
+    full_new = f"udf-{new_id}"
+    if not old_id.startswith("udf-") or full_new == old_id:
+        return None
+    doc = _document()
+    tables = doc.get("providers")
+    if not isinstance(tables, tomlkit.items.Table) or old_id not in tables:
+        return None
+    if full_new in tables:
+        return None  # 目标 id 已被占用
+
+    tables[full_new] = tables.pop(old_id)
+    pid, model = get_current() or ("", "")
+    if pid == old_id and model:
+        doc["model_provider"] = full_new
+    _write_document(doc)
+    return full_new
 
 
 def _host_of(base_url: str) -> str:

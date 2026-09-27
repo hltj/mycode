@@ -957,6 +957,11 @@ def main():
             if stripped == "/provider":
                 from mycode.provider_setup import run_provider_setup
                 run_provider_setup()
+                # 配置过程中可能改了提供商 id 后缀（含当前提供商）或删除
+                # 提供商：从 config 重新同步
+                current = _pv.get_current()
+                provider = current[0] if current else ""
+                model = current[1] if current else ""
                 continue
             if stripped == "/model":
                 from mycode.model_select import choose_model

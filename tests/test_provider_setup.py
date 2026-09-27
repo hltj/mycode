@@ -85,7 +85,7 @@ class TestMainMenu:
         assert q.title == "模型提供商配置"
         opts = q.options or []
         values = [o.effective_value() for o in opts]
-        assert values[:2] == ["add_from_catalog", "add_custom"]
+        assert values[:2] == ["add_from_catalog", "add_user_defined"]
         assert values[-1] == "cancel"
 
     def test_catalog_description_fresh(self):
@@ -258,7 +258,7 @@ class TestModelCap:
 # 添加自定义提供商
 # ===================================================================
 
-class TestAddCustom:
+class TestAddUserDefined:
     def test_full_flow(self, monkeypatch):
         seen = {}
 
@@ -272,7 +272,7 @@ class TestAddCustom:
             })
 
         monkeypatch.setattr(ps, "form_ui", fake_form)
-        ps.add_custom()
+        ps.add_user_defined()
         pid = "udf-provider-1"
         p = _providers()[pid]
         assert p.name == "api.openai.com"
@@ -288,7 +288,7 @@ class TestAddCustom:
                                 "api_key": "",
                                 "models": "gpt-4o",
                             }))
-        ps.add_custom()
+        ps.add_user_defined()
         p = _providers()["udf-provider-1"]
         assert p.name == "api.openai.com"
         assert p.models == ["gpt-4o"]
@@ -300,7 +300,7 @@ class TestAddCustom:
                                 "name": "x", "base_url": "https://x/v1",
                                 "api_key": "", "models": "",
                             }))
-        ps.add_custom()
+        ps.add_user_defined()
         assert _providers() == {}
 
 
@@ -390,6 +390,136 @@ class TestEdit:
         p = _providers()["udf-provider-1"]
         assert p.name == "Y"
         assert p.base_url == "https://y.example/v1"
+
+    def test_add_user_defined_with_id_suffix(self, monkeypatch):
+        """指定 id 后缀：提供商 id 为 udf-<后缀>。"""
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "id_suffix": "local",
+                                "name": "",
+                                "base_url": "https://api.openai.com/v1",
+                                "api_key": "",
+                                "models": "gpt-4o",
+                            }))
+        assert ps.add_user_defined() == "udf-local"
+        assert "udf-local" in _providers()
+
+    def test_add_user_defined_id_suffix_default(self, monkeypatch):
+        """后缀默认自动分配（provider-N），留空同样回退自动分配。"""
+        seen = {}
+
+        def fake_form(fields, **kw):
+            seen["default"] = [f.initial for f in fields
+                               if f.name == "id_suffix"][0]
+            return ps.FormResult(values={
+                "id_suffix": "", "name": "n",
+                "base_url": "https://x/v1", "api_key": "",
+                "models": "m",
+            })
+
+        monkeypatch.setattr(ps, "form_ui", fake_form)
+        ps.add_user_defined()
+        assert seen["default"] == "provider-1"
+        assert "udf-provider-1" in _providers()
+
+    def test_id_suffix_validator_rejects_taken(self):
+        """校验器：后缀与现有 id 重复报错；排除自身；留空合法。"""
+        pv.save_provider(_provider_config(id="udf-local", name="X",
+                                          models=["m"]))
+        v = ps._id_suffix_validator()
+        assert v("local") == "udf-local 已被占用"
+        assert v("free") is None
+        assert v("") is None
+        # 编辑场景：排除自身后缀
+        v2 = ps._id_suffix_validator(exclude_pid="udf-local")
+        assert v2("local") is None
+        assert v2("localx") is None
+
+    def test_edit_settings_rename_suffix_not_current(self, monkeypatch):
+        """编辑设定值改后缀：section 键更新；非当前提供商不动顶层。"""
+        pv.save_provider(_provider_config(id="udf-local", name="X",
+                                          models=["m"]))
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "name": "X",
+                                "id_suffix": "remote",
+                                "base_url": "https://x/v1",
+                                "api_key": "",
+                                "models": "m",
+                            }))
+        new_id = ps.edit_settings("udf-local")
+        assert new_id == "udf-remote"
+        assert set(_providers()) == {"udf-remote"}
+        assert pv.get_current() is None
+
+    def test_edit_settings_rename_suffix_current_synced(self, monkeypatch):
+        """改后缀的是当前提供商：顶层 model_provider 同步新 id。"""
+        pv.save_provider(_provider_config(id="udf-local", name="X",
+                                          models=["m"]))
+        pv.set_current("udf-local", "m")
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "name": "X",
+                                "id_suffix": "remote",
+                                "base_url": "https://x/v1",
+                                "api_key": "",
+                                "models": "m",
+                            }))
+        new_id = ps.edit_settings("udf-local")
+        assert new_id == "udf-remote"
+        assert set(_providers()) == {"udf-remote"}
+        # config 与内存中的当前提供商已同步为新 id
+        assert pv.get_current() == ("udf-remote", "m")
+
+    def test_edit_settings_rename_suffix_conflict_keeps_old(self, monkeypatch):
+        """目标后缀已被占用：保持原 id，其余字段照常更新。"""
+        pv.save_provider(_provider_config(id="udf-a", name="A", models=["m"]))
+        pv.save_provider(_provider_config(id="udf-b", name="B", models=["m"]))
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "name": "A",
+                                "id_suffix": "b",
+                                "base_url": "https://new/v1",
+                                "api_key": "",
+                                "models": "m",
+                            }))
+        new_id = ps.edit_settings("udf-a")
+        assert new_id == "udf-a"
+        assert set(_providers()) == {"udf-a", "udf-b"}
+        assert _providers()["udf-a"].base_url == "https://new/v1"
+
+    def test_edit_settings_rename_loop_follows_new_id(self, monkeypatch):
+        """二级菜单改后缀后，编辑循环跟随新 id（不退出）。"""
+        pv.save_provider(_provider_config(id="udf-local", name="X",
+                                          models=["m"]))
+        answers = iter([
+            AskResult(answers=[AskAnswer(selected=[ps.EDIT_VARS])]),
+            AskResult(answers=[AskAnswer(selected=[ps.EDIT_VARS])]),
+            AskResult(answers=[AskAnswer(selected=[ps.EDIT_BACK])]),
+        ])
+
+        def fake_ask(qs, **kw):
+            return next(answers)
+
+        monkeypatch.setattr(ps, "ask_ui", fake_ask)
+        calls = []
+
+        def fake_form(fields, **kw):
+            calls.append(fields)
+            if len(calls) == 1:
+                return ps.FormResult(values={
+                    "name": "X", "id_suffix": "remote",
+                    "base_url": "https://x/v1", "api_key": "", "models": "m",
+                })
+            return ps.FormResult(values={
+                "name": "Y", "id_suffix": "remote",
+                "base_url": "https://y/v1", "api_key": "", "models": "m",
+            })
+
+        monkeypatch.setattr(ps, "form_ui", fake_form)
+        ps._run_edit_loop("udf-local")
+        assert set(_providers()) == {"udf-remote"}
+        assert _providers()["udf-remote"].name == "Y"
 
     def test_delete_provider(self, monkeypatch):
         """确认删除：删除并清空当前模型。"""

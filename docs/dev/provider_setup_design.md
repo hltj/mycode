@@ -28,7 +28,7 @@
 ```
 
 - “添加模型提供商”的 `description` 承载模型库状态；除“取消”外各选项
-  value 用带前缀标识（`add_from_catalog` / `add_custom` / `edit:<id>` /
+  value 用带前缀标识（`add_from_catalog` / `add_user_defined` / `edit:<id>` /
   `cancel`）区分。提供商名称/id 统一按 `名称（id · N 模型）` 格式展示。
 - 循环：一次菜单返回后，若用户未取消则执行对应动作，再回到主菜单；
   取消退出循环。
@@ -51,8 +51,10 @@
 
 ## 添加自定义提供商
 
-`form_ui` 四字段：
+`form_ui` 五字段：
 
+- id 后缀（id_suffix，提供商 id 为 `udf-<后缀>`；默认自动分配
+  `provider-N`；留空回退自动分配；重名经校验器阻止提交）
 - 显示名（name，必填，空则回退 base_url host）
 - Base URL（必填）
 - API Key（password，可留空——本地服务无密钥）
@@ -91,9 +93,12 @@ udf-provider-1 · 1 模型
     ⚪ 返回
 ```
 
-- **修改设定值**：`form_ui` 四字段 显示名 / Base URL / API Key /
-  模型列表（models.dev 提供商与自定义提供商统一按此编辑；不做
-  `${VAR}` 反解）；显示名留空回退现有名称。
+- **修改设定值**：`form_ui` 字段 id 后缀（仅自定义提供商） / 显示名 /
+  Base URL / API Key / 模型列表；自定义提供商（`udf-` 前缀）改后缀即
+  重命名提供商 id：section 键更新；若是当前 `model_provider`，顶层键
+  同步为新 id。显示名留空回退现有名称；后缀留空保持原 id，重名经
+  校验器阻止提交。改后缀后编辑循环跟随新 id 继续。models.dev 提供商
+  与自定义提供商统一按此编辑（不做 `${VAR}` 反解）。
 - **重选模型**：仅 models.dev 提供商 → `filter_ui` 多选（回显现有
   勾选）；勾选上限同 15。
 - **删除**：ask_ui 单问题二次确认（标题 `确认删除模型提供商`，描述

@@ -11,7 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from mycode import models_registry as mr
 from mycode import providers as pv
@@ -24,7 +24,7 @@ MAX_MODELS_PER_PROVIDER = 15
 
 # 主菜单 / 二级菜单 action 标识
 MAIN_ADD_CATALOG = "add_from_catalog"
-MAIN_ADD_CUSTOM = "add_custom"
+MAIN_ADD_USER_DEFINED = "add_user_defined"
 MAIN_CANCEL = "cancel"
 EDIT_PREFIX = "edit:"
 
@@ -96,7 +96,7 @@ def _main_menu_question(existing: dict[str, pv.ProviderConfig]) -> AskQuestion:
             value=MAIN_ADD_CATALOG,
             description=_meta_status_text(),
         ),
-        AskOption(label="添加自定义模型提供商", value=MAIN_ADD_CUSTOM),
+        AskOption(label="添加自定义模型提供商", value=MAIN_ADD_USER_DEFINED),
     ]
     for pid in sorted(existing):
         p = existing[pid]
@@ -219,9 +219,28 @@ def add_from_catalog() -> Optional[str]:
     return pid
 
 
-def add_custom() -> Optional[str]:
+def _id_suffix_validator(exclude_pid: str = "") -> Callable[[str], Optional[str]]:
+    """id 后缀校验器：留空合法（回退自动分配）；与现有 id 重复则阻止提交。
+
+    ``exclude_pid`` 为编辑场景下当前提供商的完整 id（自身的后缀不算冲突）。
+    """
+    def _validate(text: str) -> Optional[str]:
+        s = (text or "").strip()
+        if not s:
+            return None
+        if f"udf-{s}" != exclude_pid and f"udf-{s}" in pv.load_providers():
+            return f"udf-{s} 已被占用"
+        return None
+    return _validate
+
+
+def add_user_defined() -> Optional[str]:
     """添加自定义模型提供商；返回新 provider id（取消/模型列表空返回 None）。"""
+    default_suffix = pv.next_user_defined_id()[len("udf-"):]
     fields = [
+        FormField(name="id_suffix", label="id 后缀", initial=default_suffix,
+                  hint="提供商 id 为 udf-<后缀>",
+                  validator=_id_suffix_validator()),
         FormField(name="name", label="显示名",
                   placeholder="留空则取 Base URL 的 host"),
         FormField(name="base_url", label="Base URL", required=True,
@@ -239,6 +258,7 @@ def add_custom() -> Optional[str]:
     )
     if form.aborted:
         return None
+    suffix = form.values.get("id_suffix", "").strip()
     name = form.values.get("name", "").strip()
     base_url = form.values.get("base_url", "").strip()
     api_key = form.values.get("api_key", "")
@@ -248,7 +268,8 @@ def add_custom() -> Optional[str]:
         return None
     if not name:
         name = _host_of(base_url)
-    pid = pv.next_user_defined_id()
+    # 后缀留空：回退自动分配（取未占用的最小 N）；重名由校验器阻止
+    pid = f"udf-{suffix}" if suffix else pv.next_user_defined_id()
     pv.save_provider(pv.ProviderConfig(
         id=pid, name=name, base_url=base_url,
         api_key=api_key, models=models,
@@ -275,32 +296,57 @@ def _host_of(url: str) -> str:
 # 编辑
 # ---------------------------------------------------------------------------
 
-def edit_settings(pid: str) -> None:
-    """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表。"""
+def edit_settings(pid: str) -> str:
+    """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表。
+
+    自定义提供商额外可编辑 id 后缀（提供商 id 为 ``udf-<后缀>``）；
+    若该提供商是当前提供商，改后缀后同步顶层 ``model_provider``（config
+    与内存）。返回提供商 id（改后缀时为新 id）。
+    """
     existing = pv.load_providers().get(pid)
     if existing is None:
-        return
-    fields = [
+        return pid
+    is_udf = pv.is_user_defined(pid)
+    fields = []
+    if is_udf:
+        fields.append(FormField(
+            name="id_suffix", label="id 后缀", initial=pid[len("udf-"):],
+            hint="提供商 id 为 udf-<后缀>；改动会同步当前提供商配置",
+            validator=_id_suffix_validator(exclude_pid=pid),
+        ))
+    fields.extend([
         FormField(name="name", label="显示名", initial=existing.name),
         FormField(name="base_url", label="Base URL", initial=existing.base_url),
         FormField(name="api_key", label="API Key", initial=existing.api_key,
                   password=True),
         FormField(name="models", label="模型列表",
                   initial=",".join(existing.models)),
-    ]
+    ])
     form = form_ui(fields, title=f"编辑：{existing.name}（{pid}）",
                    style=_current_style())
     if form.aborted:
-        return
+        return pid
     models = _parse_model_list(form.values.get("models", ""))
     base_url = form.values.get("base_url", "").strip()
     if not base_url or not models:
-        return
+        return pid
     existing.name = form.values.get("name", "").strip() or existing.name
     existing.base_url = base_url
     existing.api_key = form.values.get("api_key", "")
     existing.models = models
+    new_id = pid
+    if is_udf:
+        suffix = form.values.get("id_suffix", "").strip()
+        if suffix and f"udf-{suffix}" != pid:
+            new_id = pv.rename_provider(pid, suffix) or pid
+    existing.id = new_id
     pv.save_provider(existing)
+    # 若当前提供商被改后缀（rename_provider 已同步 model_provider），
+    # 或当前模型被取消勾选，重新读取当前以判断是否清空
+    pid_cur, model_cur = pv.get_current() or ("", "")
+    if pid_cur == new_id and model_cur not in existing.models:
+        pv.set_current("", "")
+    return new_id
 
 
 def edit_reselect_models(pid: str) -> None:
@@ -399,8 +445,8 @@ def run_provider_setup() -> None:
             return
         if value == MAIN_ADD_CATALOG:
             add_from_catalog()
-        elif value == MAIN_ADD_CUSTOM:
-            add_custom()
+        elif value == MAIN_ADD_USER_DEFINED:
+            add_user_defined()
         elif value.startswith(EDIT_PREFIX):
             pid = value[len(EDIT_PREFIX):]
             _run_edit_loop(pid)
@@ -422,7 +468,8 @@ def _run_edit_loop(pid: str) -> None:
         if value == EDIT_BACK:
             return
         if value == EDIT_VARS:
-            edit_settings(pid)
+            # 修改 id 后缀时跟随新 id 继续编辑循环
+            pid = edit_settings(pid)
         elif value == EDIT_MODELS:
             edit_reselect_models(pid)
         elif value == EDIT_DELETE:
