@@ -33,6 +33,10 @@ EDIT_MODELS = "edit_models"
 EDIT_DELETE = "edit_delete"
 EDIT_BACK = "edit_back"
 
+# 删除确认
+CONFIRM_DELETE = "confirm_delete"
+CONFIRM_CANCEL = "confirm_cancel"
+
 
 @dataclass
 class _MetaStatus:
@@ -325,12 +329,34 @@ def edit_reselect_models(pid: str) -> None:
         pv.set_current("", "")
 
 
-def delete_provider(pid: str) -> None:
-    """删除提供商；若是当前提供商则清空当前模型。"""
+def delete_provider(pid: str) -> bool:
+    """删除提供商（ask_ui 二次确认，默认不删）；返回是否已删除。
+
+    确认问题「取消删除」在前：光标默认停在该项，直接 Enter / Ctrl-C
+    均不删除。
+    """
+    existing = pv.load_providers().get(pid)
+    if existing is None:
+        return False
+    n = len(existing.models)
+    result = ask_ui([AskQuestion(
+        title="确认删除模型提供商",
+        description=f"是否删除模型提供商：{pid}（{existing.name} · {n} 模型）",
+        options=[
+            AskOption(label="取消删除", value=CONFIRM_CANCEL),
+            AskOption(label="确认删除", value=CONFIRM_DELETE),
+        ],
+    )], style=_current_style())
+    if result.aborted:
+        return False
+    answer = result.answers[0]
+    if CONFIRM_DELETE not in answer.selected:
+        return False
     pv.delete_provider(pid)
     pid_cur, _ = pv.get_current() or ("", "")
     if pid_cur == pid:
         pv.set_current("", "")
+    return True
 
 
 def _edit_menu_question(pid: str, existing: pv.ProviderConfig) -> AskQuestion:
