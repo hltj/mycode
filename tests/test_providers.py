@@ -1,5 +1,5 @@
 """
-供应商配置模块（mycode.providers）测试。
+提供商配置模块（mycode.providers）测试。
 
 覆盖：
 
@@ -7,14 +7,14 @@
 - ``save_provider`` / ``load_providers`` / ``delete_provider``：保注释读写、
   更新已有 section、删除
 - ``set_current`` / ``get_current`` / ``is_configured``
-- ``next_user_defined_id``：从小到大取未占用的 user-defined-N
+- ``next_user_defined_id``：从小到大取未占用的 udf-provider-N
 - ``migrate_legacy``：
-  - 顶层 api_key/base_url（任一非空）迁移为 [providers.user-defined-N]，
+  - 顶层 api_key/base_url（任一非空）迁移为 [providers.udf-provider-N]，
     name 取 base_url host，models 取旧 model_name
   - 写 model_provider / model；删除顶层 api_key/base_url
   - 环境变量 MYCODE_API_KEY 等不参与迁移
   - 无旧配置时返回 None
-  - 已有 user-defined-N 时取未占用下一个
+  - 已有 udf-provider-N 时取未占用下一个
 - 写回后 config 缓存失效（config.get 能读到新写 model_provider）
 """
 
@@ -174,20 +174,20 @@ class TestCurrent:
 
 
 # ===================================================================
-# user-defined id 分配
+# udf-provider id 分配
 # ===================================================================
 
 class TestNextUserDefined:
     def test_first_is_1(self):
         _write_config("")
-        assert pv.next_user_defined_id() == "user-defined-1"
+        assert pv.next_user_defined_id() == "udf-provider-1"
 
     def test_skips_existing(self):
         _write_config(
-            '[providers.user-defined-1]\nname="a"\n\n'
-            '[providers.user-defined-3]\nname="b"\n'
+            '[providers.udf-provider-1]\nname="a"\n\n'
+            '[providers.udf-provider-3]\nname="b"\n'
         )
-        assert pv.next_user_defined_id() == "user-defined-2"
+        assert pv.next_user_defined_id() == "udf-provider-2"
 
 
 # ===================================================================
@@ -204,15 +204,15 @@ class TestMigrateLegacy:
             'syntax_theme = "nord"\n'
         )
         pid = pv.migrate_legacy()
-        assert pid == "user-defined-1"
+        assert pid == "udf-provider-1"
         ps = pv.load_providers()
-        assert set(ps) == {"user-defined-1"}
-        p = ps["user-defined-1"]
+        assert set(ps) == {"udf-provider-1"}
+        p = ps["udf-provider-1"]
         assert p.name == "api.openai.com"
         assert p.base_url == "https://api.openai.com/v1"
         assert p.api_key == "legacy-key"
         assert p.models == ["gpt-4o"]
-        assert pv.get_current() == ("user-defined-1", "gpt-4o")
+        assert pv.get_current() == ("udf-provider-1", "gpt-4o")
         text = _read_config()
         # 顶层 legacy 的 base_url / api_key 已删（provider 内的同名键不受
         # 影响，不能简单断言整文不含 base_url）
@@ -226,8 +226,8 @@ class TestMigrateLegacy:
     def test_migrates_base_url_only(self):
         _write_config('base_url = "http://127.0.0.1:1234/v1"\n')
         pid = pv.migrate_legacy()
-        assert pid == "user-defined-1"
-        p = pv.load_providers()["user-defined-1"]
+        assert pid == "udf-provider-1"
+        p = pv.load_providers()["udf-provider-1"]
         assert p.base_url == "http://127.0.0.1:1234/v1"
         assert p.api_key == ""
         assert p.models == []
@@ -238,7 +238,7 @@ class TestMigrateLegacy:
         monkeypatch.setenv("MYCODE_BASE_URL", "https://env.example/v1")
         monkeypatch.setenv("MYCODE_MODEL_NAME", "env-model")
         pid = pv.migrate_legacy()
-        assert pid == "user-defined-1"
+        assert pid == "udf-provider-1"
         p = pv.load_providers()[pid]
         assert p.base_url == "https://api.openai.com/v1"
         assert p.api_key == ""
@@ -254,12 +254,12 @@ class TestMigrateLegacy:
             'api_key = "legacy"\n'
             'base_url = "https://api.example.com/v1"\n'
             'model_name = "m1"\n'
-            '[providers.user-defined-1]\n'
+            '[providers.udf-provider-1]\n'
             'name = "existing"\n'
         )
         pid = pv.migrate_legacy()
-        assert pid == "user-defined-2"
-        assert set(pv.load_providers()) == {"user-defined-1", "user-defined-2"}
+        assert pid == "udf-provider-2"
+        assert set(pv.load_providers()) == {"udf-provider-1", "udf-provider-2"}
 
 
 # ===================================================================

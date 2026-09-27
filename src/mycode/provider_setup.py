@@ -275,12 +275,13 @@ def _host_of(url: str) -> str:
 # 编辑
 # ---------------------------------------------------------------------------
 
-def edit_variables(pid: str) -> None:
-    """编辑提供商的 base_url / api_key / 模型列表。"""
+def edit_settings(pid: str) -> None:
+    """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表。"""
     existing = pv.load_providers().get(pid)
     if existing is None:
         return
     fields = [
+        FormField(name="name", label="显示名", initial=existing.name),
         FormField(name="base_url", label="Base URL", initial=existing.base_url),
         FormField(name="api_key", label="API Key", initial=existing.api_key,
                   password=True),
@@ -295,6 +296,7 @@ def edit_variables(pid: str) -> None:
     base_url = form.values.get("base_url", "").strip()
     if not base_url or not models:
         return
+    existing.name = form.values.get("name", "").strip() or existing.name
     existing.base_url = base_url
     existing.api_key = form.values.get("api_key", "")
     existing.models = models
@@ -361,16 +363,25 @@ def delete_provider(pid: str) -> bool:
 
 
 def _edit_menu_question(pid: str, existing: pv.ProviderConfig) -> AskQuestion:
-    """构造编辑二级菜单。"""
-    return AskQuestion(
-        title=f"编辑：{existing.name}",
-        description=f"{pid} · {len(existing.models)} 模型",
-        options=[
-            AskOption(label="修改变量", value=EDIT_VARS),
+    """构造编辑二级菜单（models.dev 与自定义提供商选项不同）。"""
+    if pv.is_user_defined(pid):
+        # 自定义提供商：模型列表在「修改设定值」表单中编辑，无「重选模型」
+        opts = [
+            AskOption(label="修改设定值", value=EDIT_VARS),
+            AskOption(label="删除模型提供商", value=EDIT_DELETE),
+            AskOption(label="返回", value=EDIT_BACK),
+        ]
+    else:
+        opts = [
+            AskOption(label="修改设定值", value=EDIT_VARS),
             AskOption(label="重选模型", value=EDIT_MODELS),
             AskOption(label="删除模型提供商", value=EDIT_DELETE),
             AskOption(label="返回", value=EDIT_BACK),
-        ],
+        ]
+    return AskQuestion(
+        title=f"编辑：{existing.name}",
+        description=f"{pid} · {len(existing.models)} 模型",
+        options=opts,
     )
 
 
@@ -411,7 +422,7 @@ def _run_edit_loop(pid: str) -> None:
         if value == EDIT_BACK:
             return
         if value == EDIT_VARS:
-            edit_variables(pid)
+            edit_settings(pid)
         elif value == EDIT_MODELS:
             edit_reselect_models(pid)
         elif value == EDIT_DELETE:

@@ -1,5 +1,5 @@
 """
-供应商配置模块。
+提供商配置模块。
 
 管理 ``{MYCODE_HOME_DIR}/config.toml`` 中的 ``[providers.<id>]`` section
 与当前模型（``model_provider`` / ``model``），以及旧顶层
@@ -9,12 +9,12 @@
 
 - 用 ``tomlkit`` 读写，保留用户手写配置的注释与格式；只增删改目标
   section 与顶层两个键。
-- 供应商 id 两种命名：
-  - models.dev 的供应商用其原始 id（如 ``deepseek``）；
-  - 自定义 / 迁移的供应商用 ``user-defined-N``（``next_user_defined_id``
+- 提供商 id 两种命名：
+  - models.dev 的提供商用其原始 id（如 ``deepseek``）；
+  - 自定义 / 迁移的提供商用 ``udf-provider-N``（``next_user_defined_id``
     取未占用的最小 N）。
 - ``migrate_legacy()``：顶层 ``api_key`` / ``base_url`` 任一非空时，迁移
-  为一个 ``user-defined-N`` 供应商（name 取 base_url 的 host，models 取
+  为一个 ``udf-provider-N`` 提供商（name 取 base_url 的 host，models 取
   旧 ``model_name``），写 ``model_provider`` / ``model``，
   删除顶层 ``api_key`` / ``base_url``。环境变量不参与迁移。
 - 写回后调用 ``config.invalidate()`` 失效缓存，让 ``config.get`` 立即可见。
@@ -33,7 +33,7 @@ from mycode import config
 
 @dataclass
 class ProviderConfig:
-    """单个供应商配置。"""
+    """单个提供商配置。"""
 
     id: str
     name: str = ""
@@ -66,14 +66,14 @@ def _write_document(doc: tomlkit.TOMLDocument) -> None:
 
 
 def _provider_table(id_: str) -> tomlkit.items.Table:
-    """构造空供应商 section 表。"""
+    """构造空提供商 section 表。"""
     tbl = tomlkit.table()
     tbl.append(tomlkit.key("name"), "")  # placeholder, replaced later
     return tbl
 
 
 def save_provider(p: ProviderConfig) -> None:
-    """保存（新增或更新）一个供应商 section，保留文档其余注释与键。"""
+    """保存（新增或更新）一个提供商 section，保留文档其余注释与键。"""
     doc = _document()
     tables = doc.get("providers")
     if not isinstance(tables, tomlkit.items.Table):
@@ -118,7 +118,7 @@ def load_providers() -> dict[str, ProviderConfig]:
 
 
 def delete_provider(pid: str) -> None:
-    """删除指定供应商 section（不存在则空操作）。"""
+    """删除指定提供商 section（不存在则空操作）。"""
     doc = _document()
     tables = doc.get("providers")
     if isinstance(tables, tomlkit.items.Table) and pid in tables:
@@ -144,17 +144,22 @@ def set_current(provider_id: str, model_id: str) -> None:
 
 
 def is_configured() -> bool:
-    """是否存在至少一个已配置供应商。"""
+    """是否存在至少一个已配置提供商。"""
     return bool(load_providers())
 
 
 def next_user_defined_id() -> str:
-    """取未占用的最小 ``user-defined-N``。"""
+    """取未占用的最小 ``udf-provider-N``。"""
     providers = load_providers()
     n = 1
-    while f"user-defined-{n}" in providers:
+    while f"udf-provider-{n}" in providers:
         n += 1
-    return f"user-defined-{n}"
+    return f"udf-provider-{n}"
+
+
+def is_user_defined(pid: str) -> bool:
+    """是否为自定义提供商（``udf-provider-N`` 命名）。"""
+    return pid.startswith("udf-")
 
 
 def _host_of(base_url: str) -> str:
@@ -169,7 +174,7 @@ def migrate_legacy() -> Optional[str]:
     """一次迁移顶层 legacy 配置；无 legacy 返回 None，否则返回新 provider id。
 
     条件：顶层 ``api_key`` 或 ``base_url`` 任一非空。生成
-    ``[providers.user-defined-N]``（name = base_url host，models = 旧
+    ``[providers.udf-provider-N]``（name = base_url host，models = 旧
     model_name 列表），写 ``model_provider`` / ``model``，
     删除顶层 api_key / base_url。
     """

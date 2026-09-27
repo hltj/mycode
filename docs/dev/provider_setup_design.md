@@ -23,7 +23,7 @@
   ❯ 🟢 添加模型提供商（模型库更新于 09-26 01:00 · 182 家可用）
     ⚪ 添加自定义模型提供商
     ⚪ 编辑：DeepSeek（deepseek · 2 模型）
-    ⚪ 编辑：api.openai.com（user-defined-1 · 1 模型）
+    ⚪ 编辑：api.openai.com（udf-provider-1 · 1 模型）
     ⚪ 取消
 ```
 
@@ -58,29 +58,44 @@
 - API Key（password，可留空——本地服务无密钥）
 - 模型列表（逗号分隔；必填，不允许留空）
 
-写入 `[providers.user-defined-N]`。
+写入 `[providers.udf-provider-N]`。
 
 ## 编辑已配置提供商
 
-二级菜单 `ask_ui` 单问题：
+二级菜单 `ask_ui` 单问题，按提供商类型出选项（标题用显示名，问题
+`description` 承载 `{id} · N 模型`）：
+
+models.dev 提供商：
 
 ```
 编辑：DeepSeek
 
 deepseek · 2 模型
 
-  ❯ 🟢 修改变量
+  ❯ 🟢 修改设定值
     ⚪ 重选模型
     ⚪ 删除提供商
     ⚪ 返回
 ```
 
-二级菜单标题用显示名，问题 `description` 承载 `{id} · N 模型`。
+自定义提供商（`udf-` 前缀）无「重选模型」——模型列表在
+「修改设定值」表单中编辑：
 
-- **修改变量**：`form_ui` 三字段 Base URL / API Key / 模型列表
-  （models.dev 提供商与自定义提供商统一按此编辑；不做 `${VAR}` 反解）。
-- **重选模型**：models.dev 提供商 → `filter_ui` 多选（回显现有勾选）；
-  自定义提供商 → 也走模型列表编辑（同名字段）；勾选上限同 15。
+```
+编辑：api.openai.com
+
+udf-provider-1 · 1 模型
+
+  ❯ 🟢 修改设定值
+    ⚪ 删除提供商
+    ⚪ 返回
+```
+
+- **修改设定值**：`form_ui` 四字段 显示名 / Base URL / API Key /
+  模型列表（models.dev 提供商与自定义提供商统一按此编辑；不做
+  `${VAR}` 反解）；显示名留空回退现有名称。
+- **重选模型**：仅 models.dev 提供商 → `filter_ui` 多选（回显现有
+  勾选）；勾选上限同 15。
 - **删除**：ask_ui 单问题二次确认（标题 `确认删除模型提供商`，描述
   `是否删除模型提供商：{name}（{id} · N 模型）`；`取消删除` 在前——
   光标默认停在该项，直接 Enter / Ctrl-C 均不删除；`确认删除` 才执行）。

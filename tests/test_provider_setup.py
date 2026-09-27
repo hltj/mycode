@@ -273,7 +273,7 @@ class TestAddCustom:
 
         monkeypatch.setattr(ps, "form_ui", fake_form)
         ps.add_custom()
-        pid = "user-defined-1"
+        pid = "udf-provider-1"
         p = _providers()[pid]
         assert p.name == "api.openai.com"
         assert p.base_url == "https://api.openai.com/v1"
@@ -289,7 +289,7 @@ class TestAddCustom:
                                 "models": "gpt-4o",
                             }))
         ps.add_custom()
-        p = _providers()["user-defined-1"]
+        p = _providers()["udf-provider-1"]
         assert p.name == "api.openai.com"
         assert p.models == ["gpt-4o"]
 
@@ -309,19 +309,36 @@ class TestAddCustom:
 # ===================================================================
 
 class TestEdit:
-    def test_edit_variables(self, monkeypatch):
+    def test_edit_settings(self, monkeypatch):
         pv.save_provider(_provider_config())
         monkeypatch.setattr(ps, "form_ui",
                             lambda fields, **kw: ps.FormResult(values={
+                                "name": "新名字",
                                 "base_url": "https://new.example/v1",
                                 "api_key": "sk-new",
                                 "models": "m1,m2",
                             }))
-        ps.edit_variables("deepseek")
+        ps.edit_settings("deepseek")
         p = _providers()["deepseek"]
+        assert p.name == "新名字"
         assert p.base_url == "https://new.example/v1"
         assert p.api_key == "sk-new"
         assert p.models == ["m1", "m2"]
+
+    def test_edit_settings_name_empty_keeps_old(self, monkeypatch):
+        """显示名留空：回退现有名称，其余照常更新。"""
+        pv.save_provider(_provider_config())
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "name": "",
+                                "base_url": "https://new.example/v1",
+                                "api_key": "sk-new",
+                                "models": "m1",
+                            }))
+        ps.edit_settings("deepseek")
+        p = _providers()["deepseek"]
+        assert p.name == "DeepSeek"
+        assert p.base_url == "https://new.example/v1"
 
     def test_edit_reselect_models(self, monkeypatch):
         pv.save_provider(_provider_config())
@@ -332,6 +349,47 @@ class TestEdit:
                             lambda: {"deepseek": _provider_info()})
         ps.edit_reselect_models("deepseek")
         assert _providers()["deepseek"].models == ["m3"]
+
+    def test_custom_edit_menu_has_no_reselect(self):
+        """自定义提供商二级菜单：无「重选模型」。"""
+        pv.save_provider(_provider_config(id="udf-provider-1", name="X"))
+        q = ps._edit_menu_question(
+            "udf-provider-1", _providers()["udf-provider-1"])
+        values = [o.effective_value() for o in q.options or []]
+        assert ps.EDIT_MODELS not in values
+        assert values[-1] == ps.EDIT_BACK
+
+    def test_catalog_edit_menu_has_reselect(self):
+        """models.dev 提供商二级菜单：含「重选模型」。"""
+        pv.save_provider(_provider_config())
+        q = ps._edit_menu_question("deepseek", _providers()["deepseek"])
+        values = [o.effective_value() for o in q.options or []]
+        assert ps.EDIT_MODELS in values
+        assert values[0] == ps.EDIT_VARS
+
+    def test_edit_loop_routes_vars(self, monkeypatch):
+        """二级菜单选「修改设定值」走 edit_settings 分支（含改名）。"""
+        pv.save_provider(_provider_config(id="udf-provider-1", name="X"))
+        answers = iter([
+            AskResult(answers=[AskAnswer(selected=[ps.EDIT_VARS])]),
+            AskResult(answers=[AskAnswer(selected=[ps.EDIT_BACK])]),
+        ])
+
+        def fake_ask(qs, **kw):
+            return next(answers)
+
+        monkeypatch.setattr(ps, "ask_ui", fake_ask)
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: ps.FormResult(values={
+                                "name": "Y",
+                                "base_url": "https://y.example/v1",
+                                "api_key": "",
+                                "models": "m1",
+                            }))
+        ps._run_edit_loop("udf-provider-1")
+        p = _providers()["udf-provider-1"]
+        assert p.name == "Y"
+        assert p.base_url == "https://y.example/v1"
 
     def test_delete_provider(self, monkeypatch):
         """确认删除：删除并清空当前模型。"""

@@ -251,7 +251,7 @@ def replay_history(session_hist: SessionHistory) -> None:
 def _check_missing_params(func_name: str, args: dict) -> list[str]:
     """返回工具调用中缺失的必填参数名列表（按注册 schema 的 required 顺序）。
 
-    部分模型供应商不强制校验工具参数的 ``required`` 约束，可能漏传必填
+    部分模型提供商不强制校验工具参数的 ``required`` 约束，可能漏传必填
     参数；直接 ``handler(**args)`` 会抛 ``TypeError`` 并以异常 traceback
     呈现。执行前先做此检查，缺失时返回友好错误文本让模型自我纠正。
     未知工具或参数解析异常时返回空列表（交由后续逻辑处理）。
@@ -456,7 +456,7 @@ def agent_loop(
         )
 
         # 消息列表追加模型回复。
-        # 某些模型供应商不接受 tool_calls 字段为空数组（会报 invalid_parameter_error），
+        # 某些模型提供商不接受 tool_calls 字段为空数组（会报 invalid_parameter_error），
         # 因此仅当确有 tool_calls 时才设置该字段。
         assistant_msg: ChatCompletionAssistantMessageParam = {
             'role': 'assistant', 'content': content
@@ -552,7 +552,7 @@ def agent_loop(
                 break
             finally:
                 # 始终补上对应的 tool 消息与 ToolResultEvent，
-                # 避免下次恢复会话时模型供应商校验失败
+                # 避免下次恢复会话时模型提供商校验失败
                 # （tool call result does not follow tool call）。
                 # finally 在 break 前执行，能保证补上消息后再跳出循环。
                 if tool_result is None:
@@ -870,7 +870,7 @@ def main():
     # 目录信任确认
     _check_dir_trust()
 
-    # 旧顶层 api_key/base_url 一次性迁移为 [providers.user-defined-N]
+    # 旧顶层 api_key/base_url 一次性迁移为 [providers.udf-provider-N]
     from mycode import providers as _pv
     if _pv.migrate_legacy() is not None:
         pass

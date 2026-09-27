@@ -2,7 +2,7 @@
 通用筛选选择界面模块。
 
 与具体业务解耦的分页 + 关键词筛选选择界面（基于 prompt_toolkit 独立
-``Application``），用于候选项较多的场景（如 models.dev 的 182 家供应商、
+``Application``），用于候选项较多的场景（如 models.dev 的 182 家提供商、
 单家数百个模型）。
 
 设计概要（详见 ``docs/dev/filter_ui_design.md``）：

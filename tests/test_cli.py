@@ -4,7 +4,7 @@ cli.py 的测试：智能体自循环与 CLI 交互逻辑。
 渲染（renderer）相关测试见 test_renderer.py。本文件覆盖：
 
 1. agent_loop 工具执行被打断/异常时的消息补齐行为：
-   - 每个 tool_call 都必须对应一个 tool 消息，避免供应商因
+   - 每个 tool_call 都必须对应一个 tool 消息，避免提供商因
      "tool call result does not follow tool call" 校验失败（HTTP 400）；
    - 工具正常 / KeyboardInterrupt / 普通异常 / eval 参数失败的各分支。
 2. 用户输入读取（_prompt_user_input）：输入中 Ctrl-C（有内容时清空继续、
@@ -239,7 +239,7 @@ class TestAgentLoopToolResultBackfill:
 
     def test_backfilled_tool_message_id_matches_tool_call_id(self):
         """补齐的 tool 消息的 tool_call_id 必须与对应 tool_call.id 一致——
-        这是模型供应商校验 'tool call result does not follow tool call' 的关键。"""
+        这是模型提供商校验 'tool call result does not follow tool call' 的关键。"""
         messages: list = []
         bus = cli.AgentEventBus()
         tc = _make_tool_call(call_id="call_match", name="boom")
@@ -275,7 +275,7 @@ class TestAgentLoopMultiToolCallBackfill:
     只是其 ToolResultEvent / tool 消息变成了错误占位；
     其后所有未触达的 tool_call 则必须同时补齐 ToolCallEvent 与
     ToolResultEvent / tool 消息，使 assistant.tool_calls 与
-    tool.tool_call_id 一一对应，避免模型供应商的 400 校验失败。"""
+    tool.tool_call_id 一一对应，避免模型提供商的 400 校验失败。"""
 
     @staticmethod
     def _run_multi(handlers_by_id, tcs):
@@ -421,7 +421,7 @@ class TestAgentLoopMultiToolCallBackfill:
 
     def test_all_tool_calls_have_matching_tool_message_ids(self):
         """即使首个 tool_call 就被 Ctrl-C 中断，assistant.tool_calls 中的每个 id
-        仍必须能在 tool 消息中找到对应 tool_call_id —— 这是模型供应商校验
+        仍必须能在 tool 消息中找到对应 tool_call_id —— 这是模型提供商校验
         'tool call result does not follow tool call' 的硬性条件。"""
         tcs = [
             _make_tool_call(call_id="id-a", name="t1"),

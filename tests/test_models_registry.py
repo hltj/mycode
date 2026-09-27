@@ -11,7 +11,7 @@
   - 缓存不存在时全量下载（不带 If-None-Match）并原子写入
   - 缓存存在且非当天时带 If-None-Match，304 只更新 meta 不改缓存
   - 下载/解析失败写 meta 的 error 状态
-- 候选供应商解析：仅 ``npm == "@ai-sdk/openai-compatible"`` 入选；
+- 候选提供商解析：仅 ``npm == "@ai-sdk/openai-compatible"`` 入选；
   model 的 ``tool_call == false`` 被过滤（缺字段视为支持）
 - ``resolve_base_url``：``${VAR}`` 插值渲染（缺失变量替换为空串）
 - ``is_secret_env_var``：名称含 KEY / TOKEN / PAT 视为密钥

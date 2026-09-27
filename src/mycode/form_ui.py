@@ -2,8 +2,8 @@
 通用表单界面模块。
 
 与具体业务解耦的多字段表单输入界面（基于 prompt_toolkit 独立
-``Application``），用于供应商变量配置（``/provider`` 的 env 填写、
-自定义供应商表单）等场景复用。
+``Application``），用于提供商变量配置（``/provider`` 的 env 填写、
+自定义提供商表单）等场景复用。
 
 设计概要（详见 ``docs/dev/form_ui_design.md``）：
 

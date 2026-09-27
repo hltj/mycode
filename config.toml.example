@@ -17,9 +17,9 @@
 # api_key = "sk-..."
 # models = ["deepseek-chat", "deepseek-reasoner"]
 #
-# 自定义提供商用 user-defined-N 递增命名：
+# 自定义提供商用 udf-provider-N 递增命名：
 #
-# [providers.user-defined-1]
+# [providers.udf-provider-1]
 # name = "api.openai.com"
 # base_url = "https://api.openai.com/v1"
 # api_key = "sk-..."

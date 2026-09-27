@@ -1,9 +1,9 @@
 """
 模型数据源注册表模块。
 
-从 models.dev 的 ``api.json?type=all`` 拉取 / 缓存供应商与模型数据，并解析
-出「OpenAI 兼容」候选供应商（``"npm": "@ai-sdk/openai-compatible"``），供
-``/provider`` 供应商配置与 ``/model`` 模型切换界面使用。
+从 models.dev 的 ``api.json?type=all`` 拉取 / 缓存提供商与模型数据，并解析
+出「OpenAI 兼容」候选提供商（``"npm": "@ai-sdk/openai-compatible"``），供
+``/provider`` 提供商配置与 ``/model`` 模型切换界面使用。
 
 设计概要：
 
@@ -20,10 +20,10 @@
   - 任何失败只写 meta 的 ``status=error``。
 - 下载用 ``httpx``（``http://`` 与 ``https://``；压缩 zstd/brotli/gzip 走
   httpx 默认协商，安装 ``httpx[zstd]`` 后优先 zstd）。
-- 候选解析：只保留 npm 为 ``@ai-sdk/openai-compatible`` 的供应商；
+- 候选解析：只保留 npm 为 ``@ai-sdk/openai-compatible`` 的提供商；
   每个 model 缺 ``tool_call`` 或为 true 才保留（agent 必须工具调用），
   ``ProviderInfo.models`` 为模型 id → ``ModelInfo``（目前含 id/name）。
-- 供应商 ``api`` 字段是 `${VAR}` 模板，``resolve_base_url`` 负责插值渲染；
+- 提供商 ``api`` 字段是 `${VAR}` 模板，``resolve_base_url`` 负责插值渲染；
   ``is_secret_env_var`` 识别 env 列表里的密钥类变量（含 KEY/TOKEN/PAT）。
 """
 
@@ -74,7 +74,7 @@ class ModelInfo:
 
 @dataclass
 class ProviderInfo:
-    """候选供应商的规范化视图。"""
+    """候选提供商的规范化视图。"""
 
     id: str
     name: str
@@ -296,7 +296,7 @@ def _model_name(obj: object) -> str:
 
 
 def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
-    """解析 api.json 为候选供应商映射（id → ProviderInfo）。
+    """解析 api.json 为候选提供商映射（id → ProviderInfo）。
 
     仅保留 npm 为 ``@ai-sdk/openai-compatible`` 的条目；models 只保留
     支持工具调用的条目（id → ModelInfo），顺序与接口一致。
@@ -312,7 +312,7 @@ def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
         if not isinstance(name, str) or not name:
             name = pid
         if not isinstance(api, str) or not api:
-            # 少数供应商无 api 模板（用官方 openai base）；保留空串占位
+            # 少数提供商无 api 模板（用官方 openai base）；保留空串占位
             api = ""
         env = raw.get("env")
         env_list = [str(x) for x in env] if isinstance(env, list) else []
@@ -335,7 +335,7 @@ def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
 
 
 def all_model_ids(api_data: dict) -> dict[str, list[str]]:
-    """兼容便捷函数：返回候选供应商 id → 模型 id 列表。"""
+    """兼容便捷函数：返回候选提供商 id → 模型 id 列表。"""
     return {pid: list(p.models) for pid, p in candidate_providers(api_data).items()}
 
 
