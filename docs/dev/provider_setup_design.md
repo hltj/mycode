@@ -45,7 +45,7 @@
      `${VAR}` 渲染上下文，`resolve_base_url` 得到最终 `base_url`。
 3. `filter_ui` 多选勾选启用模型（上限 15，达上限禁止继续勾选并提示）：
    label 用 `模型名称（模型id）`，名称取 `ProviderInfo.models` 的显示名
-   （缺失回退 id）。
+   （缺失回退 id）；候选按显示名排序（不区分大小写，同名回退按 id）。
 4. `providers.save_provider`；若此前无任何提供商，同时设为当前（第一个
    勾选模型）。
 

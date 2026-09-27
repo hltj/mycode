@@ -118,10 +118,16 @@ def _candidate_options(infos: dict[str, mr.ProviderInfo]) -> list[FilterOption]:
 
 
 def _model_options(models: dict[str, mr.ModelInfo]) -> list[FilterOption]:
-    """模型 → filter_ui options（label 模型名称（模型id），按接口顺序）。"""
+    """模型 → filter_ui options（label 模型名称（模型id））。
+
+    按显示名排序（不区分大小写；缺失回退 id），同名再按 id 保证稳定。
+    """
+    def sort_key(m: str) -> tuple[str, str]:
+        return ((models[m].name or m).lower(), m)
+
     return [
         FilterOption(label=f"{models[m].name or m}（{m}）", value=m)
-        for m in models
+        for m in sorted(models, key=sort_key)
     ]
 
 

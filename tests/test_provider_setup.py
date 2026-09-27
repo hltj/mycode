@@ -124,6 +124,28 @@ class TestBuildCandidateOptions:
 
 
 # ===================================================================
+# 模型选项构建
+# ===================================================================
+
+class TestBuildModelOptions:
+    def test_sorted_by_display_name(self):
+        """候选模型按显示名排序（不区分大小写），缺失名称回退 id。"""
+        models = {"m1": mr.ModelInfo(id="m1", name="DeepSeek V3"),
+                  "m2": mr.ModelInfo(id="m2", name="chat-lite"),
+                  "m3": mr.ModelInfo(id="m3", name="deepseek r1")}
+        opts = ps._model_options(models)
+        assert [o.value for o in opts] == ["m2", "m3", "m1"]
+        assert opts[0].label == "chat-lite（m2）"
+
+    def test_missing_name_falls_back_to_id(self):
+        models = {"b-model": mr.ModelInfo(id="b-model"),
+                  "a-model": mr.ModelInfo(id="a-model")}
+        opts = ps._model_options(models)
+        assert [o.value for o in opts] == ["a-model", "b-model"]
+        assert opts[0].label == "a-model（a-model）"
+
+
+# ===================================================================
 # 添加 models.dev 提供商
 # ===================================================================
 
