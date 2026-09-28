@@ -89,6 +89,36 @@ class TestChooseModel:
         assert ms.choose_model() is None
         assert pv.get_current() is None
 
+    def test_initial_cursor_on_current_model(self, monkeypatch):
+        """进入时初始光标定位到当前模型（而非第一个模型）。"""
+        providers = {"a": _pconf("a", "A", ["m1", "m2", "m3"])}
+        monkeypatch.setattr(ms, "load_providers", lambda: providers)
+        monkeypatch.setattr(ms, "get_current", lambda: ("a", "m3"))
+        captured = {}
+
+        def fake_ask_ui(questions, **kw):
+            captured["cursor"] = questions[0].cursor_index
+            return _fake_ask(aborted=True)(questions, **kw)
+
+        monkeypatch.setattr(ms, "ask_ui", fake_ask_ui)
+        ms.choose_model()
+        assert captured["cursor"] == 2
+
+    def test_initial_cursor_falls_back_to_first(self, monkeypatch):
+        """当前模型不在该提供商列表（或无当前）：光标回退首项。"""
+        providers = {"a": _pconf("a", "A", ["m1", "m2"])}
+        monkeypatch.setattr(ms, "load_providers", lambda: providers)
+        monkeypatch.setattr(ms, "get_current", lambda: ("a", "gone"))
+        captured = {}
+
+        def fake_ask_ui(questions, **kw):
+            captured["cursor"] = questions[0].cursor_index
+            return _fake_ask(aborted=True)(questions, **kw)
+
+        monkeypatch.setattr(ms, "ask_ui", fake_ask_ui)
+        ms.choose_model()
+        assert captured["cursor"] == 0
+
     def test_navigate_then_select(self, monkeypatch):
         """左右切换提供商后循环继续：第一次 ask_ui 返回导航空答案，
         choose_model 不退出，第二次选定成功。"""

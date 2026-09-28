@@ -76,9 +76,11 @@ def choose_model() -> Optional[tuple[str, str]]:
         pid = pids[index]
         info = providers[pid]
         q = _build_question(providers, index)
-        # 注入 cursor 恢复
+        # 注入光标：导航退出记忆的位置；首次进入定位到当前模型
         if pid in cursors:
             q.cursor_index = cursors[pid]
+        elif current and current[0] == pid and current[1] in info.models:
+            q.cursor_index = info.models.index(current[1])
 
         def _navigate(direction: int) -> bool:
             nonlocal index
