@@ -57,7 +57,7 @@ DEFAULT_PAGE_SIZE = 15
 
 _KEYWORD_LABEL = "筛选: "
 _KEYWORD_PLACEHOLDER = "输入关键词筛选"
-_HINT_LINE = "↑↓ 移动 · 空格 勾选/选择 · ←→ PgUp PgDn 翻页 · ↵ 确定 · Ctrl-C 取消"
+_HINT_LINE = "↑↓ 移动 · Tab 切换筛选/列表 · 空格 勾选/选择 · ←→ PgUp PgDn 翻页 · ↵ 确定 · Ctrl-C 取消"
 _NO_MATCH_LINE = "无匹配项"
 
 
