@@ -521,7 +521,8 @@ class TestAskUiLayout:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        assert len(layout.children) == 5
+        # 末尾含提示行（空行 + 提示文本，共 2 个 child）
+        assert len(layout.children) == 7
         # 标题与描述之间的空行是第二个元素（内容为空文本）
         assert self._layout_text(layout.children[1]) == ""
         # 描述与选项之间的空行是第四个元素
@@ -534,7 +535,7 @@ class TestAskUiLayout:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        assert len(layout.children) == 3  # 标题 + 空行 + 选项
+        assert len(layout.children) == 5  # 标题 + 空行 + 选项 + 空行 + 提示行
         # 第二个元素为空行
         text = self._layout_text(layout.children[1])
         assert text == ""
@@ -547,7 +548,7 @@ class TestAskUiLayout:
             AskOption(label="B", value="b"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        assert len(layout.children) == 2  # 仅两个选项，无空行
+        assert len(layout.children) == 4  # 仅两个选项 + 空行 + 提示行
 
     def test_description_omitted_when_empty(self):
         from mycode.ask_ui import _AskState, _build_ask_layout
@@ -573,8 +574,8 @@ class TestAskUiLayout:
         # 第二个选项行（label 为「其它」）应为 VSplit
         rows = layout.children
         assert len(rows) >= 3  # 标题 + 描述行 + 选项（无描述时也不少于）
-        # 找到自定义行：最后一个选项行
-        custom_row = rows[-1]
+        # 找到自定义行：最后一个选项行（children[-3]，其后是空行 + 提示行）
+        custom_row = rows[-3]
         assert isinstance(custom_row, VSplit)
 
     def test_normal_row_is_plain_window(self):
@@ -586,9 +587,9 @@ class TestAskUiLayout:
             AskOption(label="B", value="b"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        # 普通选项行不含 BufferControl（不是 VSplit）
+        # 普通选项行不含 BufferControl（不是 VSplit）；末尾空行 + 提示行跳过
         rows = layout.children
-        for row in rows[1:]:  # 跳过标题行
+        for row in rows[1:-2]:  # 跳过标题行与末尾空行/提示行
             if isinstance(row, VSplit):
                 pytest.fail("普通选项行不应是 VSplit")
 
@@ -621,8 +622,8 @@ class TestAskUiLayout:
         # 标题为空：不含任何空标题文本；描述与选项仍展示
         assert "d" in text
         assert "A" in text
-        # 标题窗口不应被构造（rows 数 = 描述行 + 空行 + 1 选项 = 3）
-        assert len(layout.children) == 3
+        # 标题窗口不应被构造（rows 数 = 描述 + 空行 + 选项 + 空行 + 提示 = 5）
+        assert len(layout.children) == 5
 
     def test_description_optional(self):
         """description 为空时不渲染描述行（但有标题 → 仍留 header 空行）。"""
@@ -631,8 +632,8 @@ class TestAskUiLayout:
             AskOption(label="A", value="a"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        # 标题行 + 空行 + 选项 = 3 行
-        assert len(layout.children) == 3
+        # 标题行 + 空行 + 选项 + 空行 + 提示行 = 5 行
+        assert len(layout.children) == 5
 
     def test_both_optional_only_options(self):
         """title / description 都为空时只渲染选项。"""
@@ -642,7 +643,7 @@ class TestAskUiLayout:
             AskOption(label="B", value="b"),
         ], multi=False)])
         layout = _build_ask_layout(state, custom_buffer=None)
-        assert len(layout.children) == 2  # 仅两个选项
+        assert len(layout.children) == 4  # 仅两个选项 + 空行 + 提示行
 
     def test_ask_ui_call_without_title_or_description(self):
         """ask_ui 可直接调用而不传 title / description（默认空）。"""
@@ -1477,7 +1478,7 @@ class TestAskUiApplication:
         from prompt_toolkit.layout.controls import BufferControl
         rows = app.layout.container.children
         # 找到自定义选项行（最后一个）
-        custom_row = rows[-1]
+        custom_row = rows[-3]  # 末尾为空行 + 提示行
         assert isinstance(custom_row, VSplit)
         input_win = custom_row.children[1]
         ctrl = input_win.content
@@ -1508,7 +1509,7 @@ class TestAskUiApplication:
         from prompt_toolkit.layout.containers import VSplit
         from prompt_toolkit.layout.controls import BufferControl
         rows = app.layout.container.children
-        custom_row = rows[-1]
+        custom_row = rows[-3]  # 末尾为空行 + 提示行
         assert isinstance(custom_row, VSplit)
         input_win = custom_row.children[1]
         ctrl = input_win.content
@@ -1537,7 +1538,7 @@ class TestAskUiApplication:
 
         from prompt_toolkit.layout.containers import VSplit
         rows = app.layout.container.children
-        custom_row = rows[-1]
+        custom_row = rows[-3]  # 末尾为空行 + 提示行
         assert isinstance(custom_row, VSplit)
         input_win = custom_row.children[1]
         assert input_win.style == "class:mycode-input"
@@ -1663,39 +1664,6 @@ class TestAskUiMultiQuestionInteract:
             r = ask_ui(self._questions(), input=inp, output=DummyOutput())
         assert r.aborted is False
         assert [a.skipped for a in r.answers] == [True, True, True]
-
-    def test_tab_advances_like_right(self):
-        """Tab 与向右类似：逐题前进、末题进入提交，而非直接切到提交预览页。"""
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        with create_pipe_input() as inp:
-            # Q1 Tab → Q2，Down 选 D，Enter → Q3；Enter 选 E → 预览；确认
-            inp.send_text("\t\x0e\r\r\r")
-            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
-        assert r.aborted is False
-        assert [a.selected for a in r.answers] == [[], ["d"], ["e"]]
-
-    def test_tab_from_last_goes_to_preview(self):
-        """最后一个问题按 Tab 进入提交预览页（与 Right 一致）。"""
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        with create_pipe_input() as inp:
-            # Tab ×3：Q1→Q2→Q3→提交预览页；Enter 确认（三题均未答）
-            inp.send_text("\t\t\t\r")
-            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
-        assert r.aborted is False
-        assert [a.skipped for a in r.answers] == [True, True, True]
-
-    def test_tab_in_preview_returns_to_first(self):
-        """提交预览页按 Tab 回到第一个问题（与 Right 一致）。"""
-        from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
-        with create_pipe_input() as inp:
-            # Tab ×3 到提交预览页，再 Tab 回到第一个问题；逐题 Enter → 预览；确认
-            inp.send_text("\t\t\t\t\r\r\r\r")
-            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
-        assert r.aborted is False
-        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
 
     def test_unanswered_shown_in_preview_and_returns_empty(self):
         """未回答的问题在预览展示「未回答」，确认后该问题答案空。"""
@@ -1866,10 +1834,9 @@ class TestAskUiMultiQuestionAnswers:
             AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
         ]
         with create_pipe_input() as inp:
-            # Q1：Down 到自定义，输入 abc；Tab（焦点在输入框上也切到 Q2）；
-            # Q2 无自定义，输入 d 被丢弃；Left 回 Q1；Enter 提交自定义；
-            # Q2 Enter → 预览；Enter 确认
-            inp.send_text("\x0eabc\t\x1b[D\r\r\r")
+            # Q1：Down 到自定义，输入 abc；Tab（焦点在输入框上也进预览页）；
+            # Tab 回 Q1；Enter 提交自定义；Q2 Enter → 预览；Enter 确认
+            inp.send_text("\x0eabc\t\t\r\r\r")
             r = ask_ui(qs, input=inp, output=DummyOutput())
         assert r.aborted is False
         assert r.answers[0].selected == ["other"]
@@ -2176,3 +2143,384 @@ class TestAskUiMultiQuestionSingleChoice:
             ], input=inp, output=DummyOutput())
         assert r.answers[0].selected == ["a"]
         assert r.answers[0].cursor_index == 0
+
+
+class TestAskUiMultiQuestionKeyHints:
+    """多问题键绑定调整与底部提示行。"""
+
+    @staticmethod
+    def _questions():
+        return [
+            AskQuestion(
+                title="Q1", description="问题一",
+                options=[
+                    AskOption(label="A", value="a"),
+                    AskOption(label="B", value="b"),
+                ],
+            ),
+            AskQuestion(
+                title="Q2", description="问题二",
+                options=[
+                    AskOption(label="C", value="c"),
+                    AskOption(label="D", value="d"),
+                ],
+            ),
+            AskQuestion(
+                title="Q3", description="问题三",
+                options=[
+                    AskOption(label="E", value="e"),
+                    AskOption(label="F", value="f"),
+                ],
+            ),
+        ]
+
+    # ---- PgUp / PgDn：问题与提交预览页间循环切换 ----
+
+    def test_pgdn_pgup_switch_questions(self):
+        """PgDn/PgUp 相当于不受输入框限制的右/左键，在问题间切换。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # PgDn → Q2；Enter 选 C → Q3；PgUp → Q2；PgUp → Q1；
+            # Down 选 B，Enter → Q2；PgDn ×2 → 预览；确认
+            inp.send_text("\x1b[6~\r\x1b[5~\x1b[5~\x0e\r\x1b[6~\x1b[6~\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["b"], ["c"], []]
+        assert r.answers[2].skipped is True
+
+    def test_pgdn_from_last_goes_to_preview_pgup_back(self):
+        """末题 PgDn 切到提交预览页；预览页 PgDn 回第一题、PgUp 回末题。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # PgDn ×3：Q1→Q2→Q3→预览；PgUp 回 Q3，Enter 选 E → 预览；
+            # PgDn 回第一题（Q1），Enter 选 A → Q2 → Q3 → 预览；确认
+            inp.send_text("\x1b[6~\x1b[6~\x1b[6~\x1b[5~\r\x1b[6~\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+    def test_pgup_from_first_goes_to_preview(self):
+        """第一题 PgUp 切到提交预览页（与 Left 循环一致）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # PgUp：Q1 → 预览；Enter 确认（全部未答）
+            inp.send_text("\x1b[5~\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.skipped for a in r.answers] == [True, True, True]
+
+    def test_pgdn_pgup_work_in_custom_input(self):
+        """PgUp/PgDn 不受自定义输入框焦点限制：激活时仍切换问题。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="其他", value="other",
+                          description="输入", is_custom=True),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ]
+        with create_pipe_input() as inp:
+            # Q1：Down 到自定义，输入 abc；PgDn（输入框焦点中也切到 Q2）；
+            # Q2 无自定义，输入 d 被丢弃；PgUp 回 Q1；Enter 提交自定义；
+            # Q2 Enter → 预览；确认
+            inp.send_text("\x0eabc\x1b[6~d\x1b[5~\r\r\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert r.answers[0].selected == ["other"]
+        assert r.answers[0].input == "abc"  # Q2 上输入的 d 被丢弃
+        assert r.answers[1].selected == ["b"]
+
+    # ---- Tab：预览页往返（与 Right 解耦）----
+
+    def test_tab_goes_to_preview_from_any_question(self):
+        """Tab：任意问题直接切到提交预览页（不再逐题前进）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Q1 Tab → 预览；Tab 回第一题；Enter 选 A → Q2 → Q3 → 预览；确认
+            inp.send_text("\t\t\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+    def test_tab_in_preview_returns_to_previous_question(self):
+        """预览页 Tab 回到进入前的问题（不切到第一题）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Right → Q2；Tab → 预览；Tab 回 Q2；Enter 选 C → Q3；
+            # Enter 选 E → 预览；确认
+            inp.send_text("\x1b[C\t\t\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [[], ["c"], ["e"]]
+
+    def test_tab_in_preview_from_last_goes_to_last_question(self):
+        """末题 Tab 进预览后，预览 Tab 回到末题（记录来源问题）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # PgDn ×2 到 Q3；Tab → 预览；Tab 回 Q3；Enter 选 E → 预览；确认
+            inp.send_text("\x1b[6~\x1b[6~\t\t\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [[], [], ["e"]]
+
+    def test_tab_in_preview_after_right_from_last_returns_to_last(self):
+        """末题 Right 进预览后，预览 Tab 也回到末题（左右键同样记录来源）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Right ×3：Q1→Q2→Q3→预览；Tab 回 Q3；Enter 选 E → 预览；确认
+            inp.send_text("\x1b[C\x1b[C\x1b[C\t\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [[], [], ["e"]]
+
+    def test_tab_in_preview_after_left_from_first_returns_to_first(self):
+        """第一题 Left 进预览后，预览 Tab 回到第一题（来源为第一题）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Left：Q1 → 预览；Tab 回 Q1；逐题 Enter → 预览；确认
+            inp.send_text("\x1b[D\t\r\r\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+    def test_tab_in_preview_after_last_enter_returns_to_last(self):
+        """末题 Enter 进预览后，预览 Tab 回到末题（Enter 同样记录来源）。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # 逐题 Enter：Q1→Q2→Q3→预览；Tab 回 Q3；Enter 选 E → 预览；确认
+            inp.send_text("\r\r\r\t\r\r")
+            r = ask_ui(self._questions(), input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert [a.selected for a in r.answers] == [["a"], ["c"], ["e"]]
+
+    def test_preview_focus_lands_on_confirm_row(self):
+        """进预览页光标焦点落在确认/取消行，而非顶条或底部提示行。
+
+        `_focus_from_layout` 按 child 下标取确认/取消行，须扣除末尾
+        提示行占用的 2 个 child。
+        """
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from mycode.ask_ui import (_AskState, _build_preview_layout,
+                                   _focus_from_layout)
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        state.q_index = -1  # 预览页
+        layout = _build_preview_layout(state)
+
+        class _FakeApp:
+            class layout:
+                container = layout
+
+        focus = _focus_from_layout(_FakeApp(), state)
+        assert focus is not None
+        # 焦点行内容是「❯ 确认」（当前选中标记 + 确认），且可聚焦
+        assert isinstance(focus, Window)
+        ctrl = focus.content
+        assert getattr(ctrl, "focusable", lambda: False)() is True
+        frags = ctrl.text if hasattr(ctrl, "text") else ctrl()
+        assert "确认" in "".join(t for _, t in frags)
+
+    def test_preview_focus_cancel_row_on_move_down(self):
+        """预览页 Down 后焦点落到「取消」行（下标随提示行同步平移）。"""
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from mycode.ask_ui import (_AskState, _build_preview_layout,
+                                   _focus_from_layout)
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        state.q_index = -1
+        state.preview_sel = 1  # Down 到取消后重建
+        layout = _build_preview_layout(state)
+
+        class _FakeApp:
+            class layout:
+                container = layout
+
+        focus = _focus_from_layout(_FakeApp(), state)
+        ctrl = focus.content
+        frags = ctrl.text if hasattr(ctrl, "text") else ctrl()
+        assert "取消" in "".join(t for _, t in frags)
+
+    def test_tab_switches_even_in_custom_input(self):
+        """Tab 不受自定义输入框焦点限制：激活时也直接切到提交预览页。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        qs = [
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="其他", value="other",
+                          description="输入", is_custom=True),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ]
+        with create_pipe_input() as inp:
+            # Q1：Down 到自定义，输入 abc；Tab（输入框焦点中也进预览）；
+            # Tab 回到来源问题 Q1（焦点仍在自定义输入框），输入 d 继续追加；
+            # Enter 提交自定义；Q2 Enter → 预览；确认
+            inp.send_text("\x0eabc\t\td\r\r\r")
+            r = ask_ui(qs, input=inp, output=DummyOutput())
+        assert r.aborted is False
+        assert r.answers[0].selected == ["other"]
+        assert r.answers[0].input == "abcd"  # Tab 往返后输入焦点与文本保持
+        assert r.answers[1].selected == ["b"]
+
+    # ---- 单问题模式：PgUp/PgDn 走外挂导航扩展点 ----
+
+    def test_single_question_pgdn_uses_on_navigate(self):
+        """单问题 + on_navigate：PgUp/PgDn 也触发外挂横向导航。"""
+        calls: list[int] = []
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # PgDn → on_navigate(+1) 返回 True → 退出
+            inp.send_text("\x1b[6~")
+            r = ask_ui([
+                AskQuestion(title="Q", options=[AskOption(label="A", value="a")]),
+            ], input=inp, output=DummyOutput(),
+                on_navigate=lambda d: calls.append(d) or True,
+            )
+        assert calls == [1]
+
+    # ---- 底部提示行 ----
+
+    def test_hint_line_single_question_single_choice(self):
+        """单问题单选提示行：不展示空格说明与问题切换/Tab。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([AskQuestion(
+            title="Q", options=[AskOption(label="A", value="a")],
+        )])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None))
+        assert "↑↓ 移动" in text
+        assert "↵ 确定" in text
+        assert "Ctrl-C 取消" in text
+        assert "空格" not in text
+        assert "Tab" not in text
+        assert "切换问题" not in text
+
+    def test_hint_line_single_question_multi_choice(self):
+        """单问题多选提示行：展示空格勾选说明。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([AskQuestion(
+            title="Q", multi=True,
+            options=[AskOption(label="A", value="a")],
+        )])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None))
+        assert "空格 勾选/取消勾选" in text
+
+    def test_hint_line_multi_question(self):
+        """多问题提示行：合并导航键说明与 Tab 切换问题/提交。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None))
+        assert "←→ PgUp/PgDn 循环切换" in text
+        assert "Tab 切换问题/提交" in text
+        assert "↑↓ 移动" in text
+        assert "↵ 确定" in text
+        assert "Ctrl-C 取消" in text
+
+    def test_hint_line_in_preview_layout(self):
+        """提交预览页也显示提示行（含导航与 Tab 说明）。"""
+        from mycode.ask_ui import _AskState, _build_preview_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        state.q_index = -1  # 预览页
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_preview_layout(state))
+        assert "←→ PgUp/PgDn 循环切换" in text
+        assert "Tab 切换问题/提交" in text
+
+    def test_hint_line_custom_input_hides_left_right(self):
+        """多问题自定义输入框激活时：导航说明隐藏 ←→ 前缀（留给输入光标）。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[
+                AskOption(label="A", value="a"),
+                AskOption(label="其他", value="other",
+                          description="输入", is_custom=True),
+            ]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        state._sels[0] = 1  # 焦点到自定义行（单选即激活）
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None))
+        # ←→ 前缀隐藏，仅剩 PgUp/PgDn（不受输入框限制）
+        assert "←→ PgUp/PgDn" not in text
+        assert "PgUp/PgDn 循环切换" in text
+        assert "Tab 切换问题/提交" in text
+
+    # ---- 单问题外挂导航的自定义提示 ----
+
+    def test_hint_line_navigate_desc_custom_desc(self):
+        """单问题 + on_navigate：提示行导航位展示自定义描述。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([AskQuestion(
+            title="Q", options=[AskOption(label="A", value="a")],
+        )])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None, navigate_desc="切换提供商"))
+        assert "←→ PgUp/PgDn 切换提供商" in text
+        assert "Tab" not in text
+        assert "循环切换" not in text
+
+    def test_hint_line_no_navigate_desc_by_default(self):
+        """单问题未传 navigate_desc：提示行无导航说明（保持公共部分）。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([AskQuestion(
+            title="Q", options=[AskOption(label="A", value="a")],
+        )])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None))
+        assert "←→" not in text
+        assert "PgUp/PgDn" not in text
+
+    def test_navigate_desc_ignored_in_multi_question(self):
+        """多问题模式传 navigate_desc 不生效（仍用固定循环切换文案）。"""
+        from mycode.ask_ui import _AskState, _build_ask_layout
+        state = _AskState([
+            AskQuestion(title="Q1", options=[AskOption(label="A", value="a")]),
+            AskQuestion(title="Q2", options=[AskOption(label="B", value="b")]),
+        ])
+        text = TestAskUiMultiQuestionLayout._layout_text(
+            _build_ask_layout(state, None, navigate_desc="切换提供商"))
+        assert "←→ PgUp/PgDn 循环切换" in text
+        assert "切换提供商" not in text
+
+    def test_ask_ui_navigate_desc_passthrough(self):
+        """ask_ui 的 navigate_desc 透传到布局：单问题运行时展示自定义描述。"""
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            # Enter 直接选定退出（提示行渲染不参与按键）
+            inp.send_text("\r")
+            r = ask_ui([
+                AskQuestion(title="Q", options=[AskOption(label="A", value="a")]),
+            ], input=inp, output=DummyOutput(),
+                on_navigate=lambda d: True,
+                navigate_desc="切换提供商",
+            )
+        assert r.aborted is False
+        assert r.answers[0].selected == ["a"]

@@ -363,7 +363,7 @@ uv run pytest
 - 行数/KiB 联合截断（`test_truncate.py`）
 - 会话历史与 ADT 序列化往返（`test_session.py`）
 - 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染，`test_renderer.py`）
-- 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示（`test_ask_ui.py`）
+- 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示/多问题键绑定与提示行（`test_ask_ui.py`）
 - 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
 - 交互询问 ask_user：多问题选项构建、JSON 返回值与 abort 退出集成（`test_ask_user.py`）
 - 模式与权限：工具分类、决策矩阵、模式切换与持久化（`test_mode.py`）

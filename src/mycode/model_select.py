@@ -50,7 +50,7 @@ def _build_question(providers: dict, index: int) -> AskQuestion:
     for m in info.models:
         label = m if (pid, m) != (cur_pid, cur_model) else f"{m}（当前）"
         opts.append(AskOption(label=label, value=m))
-    title = f"◄ {info.name} ({index + 1}/{len(pids)}) ►　←→ 切换提供商"
+    title = f"◄ {info.name} ({index + 1}/{len(pids)}) ►"
     return AskQuestion(title=title, options=opts)
 
 
@@ -89,7 +89,8 @@ def choose_model() -> Optional[tuple[str, str]]:
             index = (index + direction) % len(pids)
             return True
 
-        result = ask_ui([q], style=_current_style(), on_navigate=_navigate)
+        result = ask_ui([q], style=_current_style(), on_navigate=_navigate,
+                        navigate_desc="切换提供商")
         if result.aborted:
             return None
         answer = result.answers[0]

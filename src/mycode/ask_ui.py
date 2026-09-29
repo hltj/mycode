@@ -10,8 +10,10 @@
 - **多问题模式**：一次询问多个问题；每个问题独立作答，顶部横向排列
   各问题短标题（含复选框 + 末尾「提交」），左右键切换、Enter 选定，
   最后一题回车进入提交预览页（确认 / 取消）。提交纳入标题行导航
-  循环：最后一个问题向右 / 第一个问题向左均切到提交预览页，
-  tab 与向右一样逐步前进且不受自定义输入框焦点限制。
+  循环：最后一个问题向右 / 第一个问题向左均切到提交预览页。
+  PgUp/PgDn 相当于不受自定义输入框焦点限制的右/左键（与左右键同样
+  循环切换）；Tab 与问题/提交预览页直切：问题页直接进提交预览页，
+  预览页返回进入前的问题（不受输入框焦点限制）。
 
 返回值::
 
@@ -58,6 +60,16 @@ _STYLE_ACTIVE = "class:ask-active"
 _STYLE_UNANSWERED = "class:ask-unanswered"
 # 与 cli.py 中 PromptSession 的 placeholder 共用样式类
 _STYLE_PLACEHOLDER = "class:placeholder"
+
+
+# 提示行（default 风格登记的 ask-description 暗灰）
+_HINT_MOVE = "↑↓ 移动"
+_HINT_SPACE = "空格 勾选/取消勾选"
+_HINT_NAV = "←→ PgUp/PgDn 循环切换"
+_HINT_NAV_PG = "PgUp/PgDn 循环切换"
+_HINT_TAB = "Tab 切换问题/提交"
+_HINT_ENTER = "↵ 确定"
+_HINT_ABORT = "Ctrl-C 取消"
 
 
 @dataclass
@@ -193,6 +205,9 @@ class _AskState:
         # 多问题单选：Enter 选定的选项索引（-1 未选定）。与光标 _sels
         # 分离——选定后移动光标只改光标，不改已记录的答案。
         self._chosens: list[int] = [-1] * len(self.questions)
+        # Tab 进提交预览页时记录来源问题索引（预览页 Tab 返回该问题）；
+        # 无论经 Tab / 左右键 / 末题 Enter 进入预览页，均记录当时所在问题。
+        self._preview_src: int = 0
 
     # ---- 模式判断 ----
     @property
@@ -439,6 +454,30 @@ def _mark_str(
     return "❯ 🟢 " if active else "  ⚪ "
 
 
+def _hint_line(state: _AskState, navigate_desc: str | None = None) -> str:
+    """按当前模式 / 焦点动态生成底部提示行。
+
+    - 公共部分：``↑↓ 移动 · ↵ 确定 · Ctrl-C 取消``；多选问题额外展示
+      ``空格 勾选/取消勾选``。
+    - 多问题模式追加导航键说明：``←→ PgUp/PgDn 循环切换``（自定义输入
+      框激活、左右键留给输入光标时前缀 ``←→ `` 隐藏，仅剩
+      ``PgUp/PgDn 循环切换``）与 ``Tab 切换问题/提交``。
+    - 单问题模式默认只展示公共部分；提供 ``on_navigate`` 时（经
+      ``navigate_desc`` 传入自定义描述）展示
+      ``←→ PgUp/PgDn {navigate_desc}``。
+    """
+    parts: list[str] = [_HINT_MOVE]
+    if state.multi:
+        parts.append(_HINT_SPACE)
+    if state.multi_question:
+        parts.append(_HINT_NAV if not state.custom_active else _HINT_NAV_PG)
+        parts.append(_HINT_TAB)
+    elif navigate_desc:
+        parts.append(f"←→ PgUp/PgDn {navigate_desc}")
+    parts.extend([_HINT_ENTER, _HINT_ABORT])
+    return " · ".join(parts)
+
+
 def _build_option_window(
     state: _AskState,
     idx: int,
@@ -615,6 +654,14 @@ def _build_preview_layout(state: _AskState) -> HSplit:
         *question_rows,
         Window(content=FormattedTextControl(""), height=1),
         *confirm_rows,
+        # 底部提示行：空行 + 提示文本（预览页 Tab 回到来源问题）
+        Window(content=FormattedTextControl(""), height=1),
+        Window(
+            content=FormattedTextControl(
+                [(_STYLE_DESCRIPTION, _hint_line(state))]),
+            height=1,
+            dont_extend_width=True,
+        ),
     ]
     return HSplit(rows)
 
@@ -622,6 +669,7 @@ def _build_preview_layout(state: _AskState) -> HSplit:
 def _build_ask_layout(
     state: _AskState,
     custom_buffer: Buffer | None,
+    navigate_desc: str | None = None,
 ) -> HSplit:
     """构建询问界面整体布局：标题 → 描述 → 各选项行。
 
@@ -685,6 +733,15 @@ def _build_ask_layout(
         for idx, opt in enumerate(state.options)
     )
 
+    # 底部提示行：空行 + 提示文本（按模式动态生成）
+    rows.append(Window(content=FormattedTextControl(""), height=1))
+    rows.append(Window(
+        content=FormattedTextControl(
+            [(_STYLE_DESCRIPTION, _hint_line(state, navigate_desc))]),
+        height=1,
+        dont_extend_width=True,
+    ))
+
     return HSplit(rows)
 
 
@@ -734,11 +791,11 @@ def _focused_window(
     return cast(Window, row)
 
 
-def _build_layout(state: _AskState) -> HSplit:
+def _build_layout(state: _AskState, navigate_desc: str | None = None) -> HSplit:
     """按当前状态构造整体布局：预览页或当前问题布局。"""
     if state.preview:
         return _build_preview_layout(state)
-    return _build_ask_layout(state, state.custom_buffer)
+    return _build_ask_layout(state, state.custom_buffer, navigate_desc)
 
 
 def _focus_from_layout(
@@ -752,8 +809,9 @@ def _focus_from_layout(
     container = app.layout.container
     if state.preview:
         rows = cast(HSplit, container).children
-        # children[-2] 确认（preview_sel=0）、children[-1] 取消（preview_sel=1）
-        return cast(Window, rows[-2 + state.preview_sel])
+        # 末尾 2 个 child 为提示行（空行 + 文本）；其前依次是
+        # 取消（preview_sel=1）、确认（preview_sel=0）
+        return cast(Window, rows[-4 + state.preview_sel])
     if state.options:
         rows = cast(HSplit, container).children
         return _focused_window(state, rows, state.custom_buffer)
@@ -766,6 +824,7 @@ def _run_ask_ui(
     output=None,
     style=None,
     on_navigate=None,
+    navigate_desc=None,
 ) -> AskResult:
     """运行 ask_ui 交互界面，返回结果。
 
@@ -775,7 +834,8 @@ def _run_ask_ui(
       预览页列出各问题答案（未回答显示亮黄），「确认」可整体返回，
       按「取消」即整体取消回答。提交纳入标题行循环导航：最后一个问题
       向右 / 第一个问题向左均切到提交预览页，预览页左切最后一个问题、
-      右切第一个问题；tab 与向右一致（不受自定义输入框焦点限制）。
+      右切第一个问题；PgUp/PgDn 等价不受输入框限制的左/右键；Tab 在
+      问题与提交预览页间直切（问题页进预览、预览页回来源问题）。
 
     ``state`` 的重建使用各问题的 custom_buffer（默认新建，文本与光标位置
     在问题间保持）。
@@ -794,6 +854,12 @@ def _run_ask_ui(
         for buf, idx in zip(state._custom_buffers, state._custom_idxs)
     ]
 
+    # 单问题外挂导航的自定义提示：仅在 on_navigate 生效时展示
+    # （多问题用固定导航文案，navigate_desc 忽略）。
+    hint_desc = navigate_desc if (
+        on_navigate is not None and not state.multi_question
+    ) else None
+
     def _current_custom() -> Buffer | None:
         """当前问题布局对应的输入框（无自定义选项时 None）。"""
         if state.preview or state.custom_idx < 0:
@@ -806,7 +872,7 @@ def _run_ask_ui(
         多问题模式：当前问题布局或提交预览页；焦点落到当前选中行的
         可聚焦 Window（自定义激活则输入框）。预览页焦点落到确认/取消行。
         """
-        app.layout.container = _build_layout(state)
+        app.layout.container = _build_layout(state, hint_desc)
         focus = _focus_from_layout(app, state)
         if focus is None:
             return
@@ -899,6 +965,7 @@ def _run_ask_ui(
             state._chosens[state.idx] = state.sel
         if state.multi_question:
             if state.idx >= len(state.questions) - 1:
+                state._preview_src = state.idx
                 state.q_index = -1
                 state.preview_sel = 0
             else:
@@ -917,7 +984,8 @@ def _run_ask_ui(
           提交预览页）。
         - 处于提交预览页：``delta=+1`` 回到第一个问题，``delta=-1``
           回到最后一个问题。
-        tab 与向右（``delta=+1``）一致，仅不受自定义输入框焦点限制。
+        经左右键进入预览页时同样记录 ``_preview_src``（预览页 Tab 回
+        进入前的问题）；Tab 直切的来源记录在 Tab 处理器中，不经过此处。
         """
         if state.finished or not state.multi_question:
             return
@@ -928,12 +996,14 @@ def _run_ask_ui(
         n = len(state.questions)
         if delta > 0:
             if state.idx >= n - 1:
+                state._preview_src = state.idx
                 state.q_index = -1
                 state.preview_sel = 0
             else:
                 state.q_index = state.idx + 1
         else:
             if state.idx <= 0:
+                state._preview_src = state.idx
                 state.q_index = -1
                 state.preview_sel = 0
             else:
@@ -994,10 +1064,36 @@ def _run_ask_ui(
     def _right(event):
         _nav_horizontal(event, +1)
 
-    @kb.add("tab")
+    # Tab：多问题模式下问题 ⇄ 提交预览页直切（不受自定义输入框焦点
+    # 限制）。单问题模式 Tab 无绑定。
+    @kb.add("tab", filter=Condition(lambda: state.multi_question))
     def _tab(event):
-        """Tab：与向右一致地推进到下一个问题/提交预览页，不受输入框限制。"""
-        _nav_horizontal(event, +1)
+        """Tab：问题页直接进提交预览页；预览页返回来源问题。"""
+        if state.finished:
+            return
+        if state.preview:
+            state.q_index = state._preview_src
+        else:
+            state._preview_src = state.idx
+            state.q_index = -1
+            state.preview_sel = 0
+        _rebuild(event.app)
+
+    # PgUp / PgDn：与左右键一样在问题与提交预览页间循环切换，但不受
+    # 自定义输入框焦点限制。
+    @kb.add("pageup")
+    def _pgup(event):
+        if state.finished:
+            return
+        if state.multi_question:
+            _nav_horizontal(event, -1)
+
+    @kb.add("pagedown")
+    def _pgdn(event):
+        if state.finished:
+            return
+        if state.multi_question:
+            _nav_horizontal(event, +1)
 
     # 外挂横向导航扩展点：仅单问题且调用方提供 on_navigate 时生效。
     # 方向键触发后先记录当前焦点，再退出本次 ask_ui（由调用方重建相邻
@@ -1012,15 +1108,13 @@ def _run_ask_ui(
         return handled
 
     @kb.add("left", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
+    @kb.add("pageup", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
     def _ext_left(event):
         _maybe_navigate(event, -1)
 
     @kb.add("right", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
+    @kb.add("pagedown", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
     def _ext_right(event):
-        _maybe_navigate(event, +1)
-
-    @kb.add("tab", filter=Condition(lambda: on_navigate is not None and not state.multi_question))
-    def _ext_tab(event):
         _maybe_navigate(event, +1)
 
     @kb.add("enter")
@@ -1115,7 +1209,7 @@ def _run_ask_ui(
             event.app.invalidate()
 
     app: Application = Application(
-        layout=Layout(_build_layout(state)),
+        layout=Layout(_build_layout(state, hint_desc)),
         key_bindings=kb,
         full_screen=False,
         erase_when_done=True,
@@ -1144,6 +1238,7 @@ def ask_ui(
     input=None,
     output=None,
     on_navigate=None,
+    navigate_desc=None,
 ) -> AskResult:
     """运行一次询问界面，返回 ``AskResult``。
 
@@ -1156,9 +1251,13 @@ def ask_ui(
         input: 可选，注入的 prompt_toolkit input（测试用）。
         output: 可选，注入的 prompt_toolkit output（测试用）。
         on_navigate: 可选，横向导航扩展点（仅单问题模式生效）：
-            ``Callable[[int], bool]``，左右 / tab 键触发，参数为方向
-            (-1/+1)；返回 True 表示已处理（退出当前界面，由调用方
-            重建相邻问题），False 表示不处理（维持默认无行为）。
+            ``Callable[[int], bool]``，左右 / PgUp/PgDn 键触发，
+            参数为方向 (-1/+1)；返回 True 表示已处理（退出当前界面，由
+            调用方重建相邻问题），False 表示不处理（维持默认无行为）。
+        navigate_desc: 可选，外挂导航键在底部提示行的自定义描述（仅
+            单问题且 ``on_navigate`` 非 None 时生效）；提供后在提示行
+            展示 ``←→ PgUp/PgDn {navigate_desc}``。多问题模式忽略此
+            参数（使用固定导航文案）。
 
     Returns:
         ``AskResult`` 数据类，字段：
@@ -1182,6 +1281,7 @@ def ask_ui(
         output=output,
         style=style,
         on_navigate=on_navigate,
+        navigate_desc=navigate_desc,
     )
 
 

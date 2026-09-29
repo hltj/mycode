@@ -8,10 +8,10 @@
 （多问题必须逐题作答，不符合“从某一个提供商选一个模型”的语义）。
 
 - 顶部标题行显示当前提供商，含位置指示：
-  ``◄ DeepSeek (2/5) ►　←→ 切换提供商``
+  ``◄ DeepSeek (2/5) ►``
 - 主体为 ask_ui 单问题：选项是该提供商勾选的模型，显示
   ``模型名称（模型id）``；当前使用的模型项标注“当前”。
-- ``←`` / ``→`` / ``tab`` 切到相邻提供商并重建主体（记忆光标，回到该
+- ``←`` / ``→``（及 PgUp/PgDn）切到相邻提供商并重建主体（记忆光标，回到该
   提供商时恢复）；Enter 选定模型 → 写回并生效；Ctrl-C 取消不改动。
 
 ## ask_ui 横向导航扩展点
@@ -19,11 +19,15 @@
 现有 ask_ui 单问题没有左右导航语义。为支持外挂 tab 轮换，为 `ask_ui`
 增加可选参数：
 
-- ``on_navigate: Callable[[int], bool] | None``：左右/tab 键触发，
+- ``on_navigate: Callable[[int], bool] | None``：左右 / PgUp/PgDn 键触发，
   参数为方向（-1/+1）；返回 True 表示已处理（调用方重建问题），
   False 表示不处理（维持默认无行为）。
+- ``navigate_desc: str | None``：外挂导航键在底部提示行的自定义描述
+  （仅单问题且 on_navigate 非 None 时生效），展示为
+  ``←→ PgUp/PgDn {navigate_desc}``；model_select 传「切换提供商」。
 - 仅在单问题模式（``len(questions) == 1``）且 on_navigate 非 None 时
-  绑定 left/right（及 C-b/C-f）/tab；多问题保持既有导航。
+  绑定 left/right（及 C-b/C-f）/PgUp/PgDn；多问题保持既有导航
+  （PgUp/PgDn 循环切换问题、Tab 直切提交预览页）。
 - 实现方式：回调触发时退出当前 ask_ui 实例（记录 cursor_index），由
   调用方在循环里用相邻 provider 重建并再次调用 ask_ui。
 
@@ -36,8 +40,10 @@ def choose_model() -> tuple[str, str] | None:
 
 - 读 `providers.load_providers()`；空则打印一行提示，返回 None。
 - 按 provider id 排序（保持稳定）。
-- 每次进入重建 ask_ui 问题：标题为 ``◄ 名称 (i/n) ►　←→ 切换提供商``，
+- 每次进入重建 ask_ui 问题：标题为 ``◄ 名称 (i/n) ►``，
   选项是当前提供商勾选的模型（标“当前”）。
+- 切换提示经 ``navigate_desc="切换提供商"`` 传给 ask_ui，由底部
+  提示行展示 ``←→ PgUp/PgDn 切换提供商``（见上文导航扩展点）。
 - ``on_navigate`` 回调：切换 provider index 并返回 True；调用方重新进入
   ask_ui（初始 cursor_index 用该 provider 上次记忆的 cursor）。
 - Enter 选定后：
