@@ -393,10 +393,41 @@ class TestLayout:
         assert isinstance(children[0], VSplit)   # 筛选框行
 
     def test_hint_line_text(self):
-        """底部提示行包含 PgUp/PgDn 翻页。"""
-        from mycode.filter_ui import _HINT_LINE
-        assert "PgUp" in _HINT_LINE
-        assert "PgDn" in _HINT_LINE
+        """底部提示行：多选展示勾选说明，含翻页与切换筛选/列表。"""
+        from mycode.filter_ui import _FilterState, _build_layout
+        state = _FilterState(_mk(3), multi=True, page_size=5)
+        text = self._layout_hint(_build_layout(state))
+        assert "空格 勾选/取消勾选" in text
+        assert "Tab 切换筛选/列表" in text
+        assert "↵ 确定" in text
+        assert "Ctrl-C 取消" in text
+
+    def test_hint_line_single_no_space_hint(self):
+        """单选提示行不展示空格勾选说明。"""
+        from mycode.filter_ui import _FilterState, _build_layout
+        state = _FilterState(_mk(3), page_size=5)
+        text = self._layout_hint(_build_layout(state))
+        assert "空格" not in text
+
+    def test_hint_line_paging_by_focus(self):
+        """焦点在列表时展示 ←→ PgUp PgDn；筛选框时去掉 ←→ 前缀。"""
+        from mycode.filter_ui import _FilterState, _build_layout
+        state = _FilterState(_mk(3), page_size=5)
+        # 默认焦点在筛选框：无 ←→ 前缀
+        assert "←→ PgUp PgDn 翻页" not in self._layout_hint(_build_layout(state))
+        assert "PgUp PgDn 翻页" in self._layout_hint(_build_layout(state))
+        # 焦点切到列表：完整前缀
+        state.focus_list = True
+        text = self._layout_hint(_build_layout(state))
+        assert "←→ PgUp PgDn 翻页" in text
+
+    @staticmethod
+    def _layout_hint(layout) -> str:
+        """取布局末尾提示行文本。"""
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        ctrl = layout.children[-1].content
+        frags = ctrl.text if hasattr(ctrl, "text") else ctrl()
+        return "".join(t for _, t in frags)
 
     def test_page_status_line(self):
         """分页状态行文本：第 x/y 页 · 共 n 项。"""

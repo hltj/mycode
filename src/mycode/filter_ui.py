@@ -57,7 +57,13 @@ DEFAULT_PAGE_SIZE = 15
 
 _KEYWORD_LABEL = "筛选: "
 _KEYWORD_PLACEHOLDER = "输入关键词筛选"
-_HINT_LINE = "↑↓ 移动 · Tab 切换筛选/列表 · 空格 勾选/选择 · ←→ PgUp PgDn 翻页 · ↵ 确定 · Ctrl-C 取消"
+_HINT_MOVE = "↑↓ 移动"
+_HINT_TAB = "Tab 切换筛选/列表"
+_HINT_SPACE = "空格 勾选/取消勾选"
+_HINT_NAV = "←→ PgUp PgDn 翻页"
+_HINT_NAV_PG = "PgUp PgDn 翻页"
+_HINT_ENTER = "↵ 确定"
+_HINT_ABORT = "Ctrl-C 取消"
 _NO_MATCH_LINE = "无匹配项"
 
 
@@ -324,6 +330,22 @@ def _build_keyword_row(state: _FilterState) -> VSplit:
     return VSplit([label_win, input_win])
 
 
+def _hint_line(state: _FilterState) -> str:
+    """按焦点动态生成底部提示行。
+
+    - 公共部分：``↑↓ 移动 · Tab 切换筛选/列表 · ↵ 确定 · Ctrl-C 取消``；
+      多选模式额外展示 ``空格 勾选/取消勾选``。
+    - 翻页说明：``←→ PgUp PgDn 翻页``；焦点在筛选框时（``←→ `` 留给
+      输入光标移动）去掉前缀，仅剩 ``PgUp PgDn 翻页``。
+    """
+    parts: list[str] = [_HINT_MOVE, _HINT_TAB]
+    if state.multi:
+        parts.append(_HINT_SPACE)
+    parts.append(_HINT_NAV if state.focus_list else _HINT_NAV_PG)
+    parts.extend([_HINT_ENTER, _HINT_ABORT])
+    return " · ".join(parts)
+
+
 def _build_layout(state: _FilterState) -> HSplit:
     """构建整体布局。
 
@@ -376,7 +398,7 @@ def _build_layout(state: _FilterState) -> HSplit:
     ))
     rows.append(Window(content=FormattedTextControl(""), height=1))
     rows.append(Window(
-        content=FormattedTextControl([(_STYLE_DESCRIPTION, _HINT_LINE)]),
+        content=FormattedTextControl([(_STYLE_DESCRIPTION, _hint_line(state))]),
         height=1,
         dont_extend_width=True,
     ))
