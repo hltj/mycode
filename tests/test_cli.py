@@ -963,6 +963,44 @@ class TestStyleArg:
             self._parse(["-s", "fancy"])
 
 
+class TestStartupBanner:
+    """启动时「【mycode】」标题的输出时机与格式。
+
+    首次在未信任目录中打开时，标题应先于目录信任确认框输出，因此
+    在 ``_check_dir_trust`` 被调用时标题必须已经打印出来。
+    """
+
+    def _run_until_trust(self, monkeypatch, capsys):
+        """驱动 main 到目录信任确认处，返回此时已输出的文本。"""
+        from argparse import Namespace
+
+        seen: dict = {}
+
+        def fake_trust():
+            # 信任确认被调用时抓取此刻的 stdout，随后中止 main
+            seen["out"] = capsys.readouterr().out
+            raise SystemExit(1)
+
+        monkeypatch.setattr(cli, "parse_args", lambda: Namespace(
+            style="default", resume=None, continue_session=False))
+        monkeypatch.setattr(cli, "_check_dir_trust", fake_trust)
+
+        with pytest.raises(SystemExit):
+            cli.main()
+        return seen["out"]
+
+    def test_title_before_dir_trust(self, monkeypatch, capsys):
+        """信任确认弹出前，「【mycode】」标题已输出。"""
+        out = self._run_until_trust(monkeypatch, capsys)
+        assert "【mycode】" in out
+
+    def test_title_followed_by_blank_line(self, monkeypatch, capsys):
+        """标题行之后紧跟一个空行。"""
+        out = self._run_until_trust(monkeypatch, capsys)
+        lines = out.splitlines()
+        assert "【mycode】" in lines[0]
+        assert lines[1] == ""
+
 
 class TestReplayTodoSync:
     """replay 时 todo_write 的 ToolCallEvent 同步 + 渲染验证。"""

@@ -971,6 +971,10 @@ def main():
     # 设置全局渲染风格
     set_render_style(args.style)
 
+    # 输出开头信息（标题橙色加粗）
+    print(f"\x1B[38;2;255;165;0;1m【mycode】\x1B[0m")
+    print()
+
     # 目录信任确认
     _check_dir_trust()
 
@@ -1026,8 +1030,7 @@ def main():
     bus.register(make_persist_handler(session_hist))
     bus.register(render_terminal)
 
-    # 输出开头信息（标题橙色加粗）
-    print(f"\x1B[38;2;255;165;0;1m【mycode】\x1B[0m")
+    # 输出会话 ID
     print(f"会话 ID: {session_hist.session_uuid}")
     print()
 
