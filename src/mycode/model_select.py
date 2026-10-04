@@ -7,8 +7,9 @@
 对外接口：
 
 - ``choose_model()``：运行外挂 tab（提供商）+ ask_ui 单问题（模型选择）的
-  完整交互，选定后写回 ``providers.set_current`` 并刷新 client，返回
-  ``(provider_id, model_id)``；取消返回 None。
+  完整交互，选定后写回 ``providers.set_current``，返回
+  ``(provider_id, model_id)``；取消返回 None。client 的刷新由 cli 的
+  模型切换收口函数 ``_dispatch_model_change`` 统一负责，本模块不依赖 cli。
 - ``_build_question``：构造单个提供商的 ask_ui 问题（测试钩子）。
 """
 
@@ -26,12 +27,6 @@ def get_current() -> tuple[str, str] | None:
 
 def load_providers() -> dict:
     return pv.load_providers()
-
-
-def refresh_client() -> None:
-    """切换生效：强制重建 OpenAI client（由 cli 注入实现）。"""
-    # 默认 no-op；cli 集成时 monkeypatch / 覆写为实际 get_client(refresh=True)
-    pass
 
 
 def _current_style():
@@ -99,7 +94,6 @@ def choose_model() -> Optional[tuple[str, str]]:
         if answer.selected:
             model = answer.selected[0]
             pv.set_current(pid, model)
-            refresh_client()
             return (pid, model)
         # 未选定（on_navigate 导航退出）：不退出循环，重建相邻提供商问题
         continue

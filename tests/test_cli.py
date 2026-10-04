@@ -2307,6 +2307,29 @@ class TestEnsureModelAvailable:
         assert ok is False
 
 
+class TestModelSwitchRefreshesClient:
+    """/model 等模型切换必须重建 OpenAI client，否则请求仍发往启动时的旧连接。
+
+    回归：显式切换写回 current 并渲染新模型，但 client 缓存未刷新，
+    后续请求仍走旧 base_url/api_key，直到退出重启才生效。
+    """
+
+    def test_dispatch_model_change_refreshes_client(self, monkeypatch):
+        """切换写回后触发 get_client(refresh=True)，旧 client 被重建。"""
+        fake = _FakeProviders({"a": _FakePconf(["m1", "m2"], name="A")})
+        monkeypatch.setattr(cli, "_pv", fake)
+        refreshed = MagicMock()
+        monkeypatch.setattr(cli, "get_client", refreshed)
+        monkeypatch.setattr(cli, "_model_display_name",
+                            lambda pid, mid: mid)
+
+        bus = cli.AgentEventBus()
+        bus.register(lambda m: None)
+        cli._dispatch_model_change(bus, "a", "m2")
+
+        refreshed.assert_called_once_with(refresh=True)
+
+
 class _FakePconf:
     def __init__(self, models, name=""):
         self.models = models

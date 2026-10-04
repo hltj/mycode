@@ -9,7 +9,7 @@
 - ``_build_question``：标题位置指示、选项“当前”标注
 - ``choose_model``：
   - 无提供商打印提示返回 None
-  - 选定模型写回 set_current 且刷新 client
+  - 选定模型写回 set_current
   - 左/右切换提供商重建问题
   - 取消返回 None（不写回）
 """
@@ -67,19 +67,15 @@ class TestChooseModel:
         assert ms.choose_model() is None
         assert "尚未配置" in capsys.readouterr().out
 
-    def test_select_writes_back_and_refresh(self, monkeypatch):
+    def test_select_writes_back(self, monkeypatch):
         monkeypatch.setattr(ms, "load_providers",
                             lambda: {"a": _pconf("a", "A", ["m1", "m2"])})
         monkeypatch.setattr(ms, "get_current", lambda: ("a", "m1"))
-        refreshed = []
-        monkeypatch.setattr(ms, "refresh_client",
-                            lambda: refreshed.append(1))
         # ask_ui 返回选定 m2
         monkeypatch.setattr(ms, "ask_ui", _fake_ask(selected="m2"))
         result = ms.choose_model()
         assert result == ("a", "m2")
         assert pv.get_current() == ("a", "m2")
-        assert refreshed == [1]
 
     def test_cancel_no_write(self, monkeypatch):
         monkeypatch.setattr(ms, "load_providers",
@@ -128,7 +124,6 @@ class TestChooseModel:
         }
         monkeypatch.setattr(ms, "load_providers", lambda: providers)
         monkeypatch.setattr(ms, "get_current", lambda: ("a", "a1"))
-        monkeypatch.setattr(ms, "refresh_client", lambda: None)
 
         # 模拟真实 ask_ui 的导航行为：第一次调用先触发 on_navigate(+1)
         # （按键右切提供商）再以空答案退出；第二次选定 b1。

@@ -48,7 +48,6 @@ def choose_model() -> tuple[str, str] | None:
   ask_ui（初始 cursor_index 用该 provider 上次记忆的 cursor）。
 - Enter 选定后：
   - ``providers.set_current(pid, model)``；
-  - ``cli.get_client(refresh=True)`` 重建 OpenAI client（切换生效）；
   - 返回 (pid, model)。
 
 ## cli 集成
@@ -56,6 +55,10 @@ def choose_model() -> tuple[str, str] | None:
 - ``client`` 改为懒构建：``get_client(refresh=False)`` 按当前
   ``model_provider`` / ``model`` 从 providers 读 base_url/api_key
   构建 OpenAI 实例；``refresh=True`` 关闭旧实例并重建。
+- ``/model`` 以内任一写回路径均以 ``_dispatch_model_change`` 收口，
+  该函数在 ``set_current`` 后调用 ``get_client(refresh=True)`` 重建
+  client，让切换立即生效（覆盖 ``/model`` 命令、发送前失效检测、添加
+  提供商后自动设当前三条路径）。
 - ``/model`` 命令命中时：``choose_model()``；成功返回后派发
   ``ModelChangeEvent(model=model_id, provider=pid, provider_name=名称,
   model_name=模型显示名)``（显示名分别取 providers 配置与模型库缓存，

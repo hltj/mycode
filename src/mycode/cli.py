@@ -748,8 +748,13 @@ def _ask_confirm(title: str, description: str, action_label: str) -> bool:
 def _dispatch_model_change(
     bus: AgentEventBus, provider_id: str, model_id: str
 ) -> None:
-    """切换模型：写回 current 并派发 ModelChangeEvent（渲染 + 持久化）。"""
+    """切换模型：写回 current、刷新 client 并派发 ModelChangeEvent。
+
+    ``get_client(refresh=True)`` 重建 OpenAI 客户端，让后续请求立即走
+    新 base_url/api_key。
+    """
     _pv.set_current(provider_id, model_id)
+    get_client(refresh=True)
     providers = _pv.load_providers()
     provider_name = providers[provider_id].name \
         if provider_id in providers else ""
