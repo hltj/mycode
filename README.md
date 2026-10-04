@@ -18,6 +18,7 @@
   并对 `bash`/`write`/`patch`/`edit` 工具调用做特化展示）/ classic（无 emoji +
   `myc[模式] >` 提示符，保持完整 YAML 参数围栏）
 - **会话管理**：完整的对话上下文管理，支持多轮交互与断点续接
+- **思考过程**：思考类模型返回的 `reasoning_content` 持久化到会话并渲染展示
 - **命令历史**：持久化保存输入历史，支持上下键翻阅
 - **自动补全**：内置命令补全功能
 
@@ -238,6 +239,22 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 控制码时原样输出、不二次高亮/解析。
 模式切换（shift-tab 或 `/ask` `/auto` `/yolo`）与确认界面在两种风格下均可用。
 
+### 思考过程
+
+思考类模型的响应里带非标准字段 `reasoning_content`，mycode 在它存在且非空时
+做两件事：
+
+- **记录到会话**：随 assistant 消息一起写入会话 JSONL（`message.reasoning_content`），
+  续接会话（`-r` / `-c`）重放时同样能看到；
+- **渲染展示**：位于 AI 标题之下、正文之上，前后各留一个空行——classic 用蓝色标题
+  `思考过程`（与工具调用/工具输出标题同色）加原样文本，并以灰色 `---` 分隔线
+  收尾；default 为深灰背景、外带边框的面板，边框标题 `🤔 思考过程`，内容按
+  markdown 渲染（列表/表格/代码块等）。内容自带 ANSI 控制码时退化为无边框纯文本，
+  并补上灰色 `---` 分隔线。
+
+该字段**不会回传给模型**（非标准字段，部分提供商会报错）：发进 messages 的版本
+与 `SessionHistory.get_messages()` 的结果都已剥离，仅保留 content 与 tool_calls。
+
 ## 内置工具一览
 
 所有工具均在 `ToolsRegistry` 中注册，启动后即可被智能体调用。除 `bash` 外
@@ -361,8 +378,8 @@ uv run pytest
 - 各内置工具的注册、参数、基础与边界行为（`test_tools.py`）
 - 路径安全检查（`test_safe_path.py`）
 - 行数/KiB 联合截断（`test_truncate.py`）
-- 会话历史与 ADT 序列化往返（`test_session.py`）
-- 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染，`test_renderer.py`）
+- 会话历史与 ADT 序列化往返（`test_session.py`，含 reasoning_content 的附加/剥离/持久化）
+- 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染与思考过程面板，`test_renderer.py`）
 - 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示/多问题键绑定与提示行（`test_ask_ui.py`）
 - 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
 - 交互询问 ask_user：多问题选项构建、JSON 返回值与 abort 退出集成（`test_ask_user.py`）

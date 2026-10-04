@@ -2353,3 +2353,117 @@ class _FakeProviders:
 
     def set_current(self, pid, model):
         pass
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content（思考内容）：记录到会话 + 渲染，不回传给模型
+# ---------------------------------------------------------------------------
+
+class _FakeReasoningMessage(_FakeMessage):
+    """模拟带 reasoning_content 的模型响应消息。
+
+    真实响应中该字段是 openai 非标准字段，落在 pydantic 的 model_extra 中；
+    这里用 ``model_extra`` 模拟（``extract_reasoning`` 优先读它）。
+    """
+
+    def __init__(self, content, reasoning=None, tool_calls=None):
+        super().__init__(content, tool_calls)
+        self.model_extra = {"reasoning_content": reasoning}
+
+
+def _run_loop_with_message(message):
+    """跑一次 agent_loop（模型直接返回 message，finish_reason=stop）。"""
+    messages: list = []
+    bus = cli.AgentEventBus()
+    captured: list = []
+    bus.register(lambda msg: captured.append(msg))
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(
+        side_effect=[_FakeResponse(message, finish_reason="stop")])
+    with patch.object(cli, "client", fake_client), \
+         patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+        cli.agent_loop(messages, bus, model="test-model")
+    return messages, captured
+
+
+class TestAgentLoopReasoningContent:
+    """agent_loop：assistant 响应的 reasoning_content 记录到事件与渲染。"""
+
+    def test_reasoning_attached_to_dispatched_event(self):
+        """非空 reasoning_content：派发的 AssistantMessage 带上该字段。"""
+        from mycode.session import AssistantMessage
+        messages, captured = _run_loop_with_message(
+            _FakeReasoningMessage(content="完成", reasoning="先看目录再改文件"))
+        assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
+        assert assistant.message.get("reasoning_content") == "先看目录再改文件"
+
+    def test_reasoning_not_in_messages_sent_to_model(self):
+        """发给模型的消息不带 reasoning_content（非标准字段会报错）。"""
+        messages, _ = _run_loop_with_message(
+            _FakeReasoningMessage(content="完成", reasoning="思考"))
+        assert messages[-1] == {"role": "assistant", "content": "完成"}
+
+    def test_empty_reasoning_not_attached(self):
+        """空串 / None：不附加 reasoning_content 字段。"""
+        from mycode.session import AssistantMessage
+        for reasoning in ("", None, "   "):
+            messages, captured = _run_loop_with_message(
+                _FakeReasoningMessage(content="完成", reasoning=reasoning))
+            assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
+            assert "reasoning_content" not in assistant.message
+            assert messages[-1] == {"role": "assistant", "content": "完成"}
+
+    def test_missing_reasoning_field(self):
+        """模型未返回 reasoning_content：行为与之前一致（不附加字段）。"""
+        from mycode.session import AssistantMessage
+        messages, captured = _run_loop_with_message(
+            _FakeMessage(content="完成", tool_calls=[]))
+        assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
+        assert "reasoning_content" not in assistant.message
+        assert messages[-1] == {"role": "assistant", "content": "完成"}
+
+    def test_reasoning_with_tool_calls_kept(self):
+        """带 tool_calls 的回复：reasoning_content 保留，tool_calls 完整。"""
+        from mycode.session import AssistantMessage
+        tc = _make_tool_call(call_id="c1", name="bash", args='{"command": "ls"}')
+        message = _FakeReasoningMessage(
+            content="", reasoning="先列目录", tool_calls=[_FakeTC(tc)])
+
+        messages: list = []
+        bus = cli.AgentEventBus()
+        captured: list = []
+        bus.register(lambda msg: captured.append(msg))
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=[
+            _FakeResponse(message),
+            _FakeResponse(_FakeMessage(content="done"), finish_reason="stop"),
+        ])
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_handler", return_value=lambda **_: "ok"), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+            cli.agent_loop(messages, bus, model="test-model")
+
+        assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
+        assert assistant.message.get("reasoning_content") == "先列目录"
+        assert assistant.message.get("tool_calls") is not None
+        # 发给模型的版本仍不带 reasoning_content
+        assert "reasoning_content" not in messages[0]
+
+    def test_reasoning_rendered_to_terminal(self, capsys):
+        """渲染：AssistantMessage 带 reasoning 时输出「思考过程」区块。"""
+        from mycode.renderer import render_terminal, set_render_style
+        from mycode.session import AssistantMessage, attach_reasoning
+        from openai.types.chat import ChatCompletionAssistantMessageParam
+
+        for style, expect in (("classic", "思考过程"), ("default", "🤔 思考过程")):
+            set_render_style(style)
+            render_terminal(AssistantMessage(
+                model="m", provider="p",
+                message=attach_reasoning(
+                    ChatCompletionAssistantMessageParam(
+                        role="assistant", content="完成"),
+                    "可见的思考内容")))
+            out = capsys.readouterr().out
+            assert expect in out
+            assert "可见的思考内容" in out

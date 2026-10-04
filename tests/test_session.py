@@ -1,5 +1,6 @@
 """会话历史模块测试"""
 import json
+from typing import Any
 from datetime import datetime
 from unittest.mock import patch
 
@@ -17,6 +18,10 @@ from mycode.session import (
     InterruptEvent,
     _dict_to_agent_message,
     _msg_to_dict,
+    _strip_reasoning,
+    get_reasoning,
+    attach_reasoning,
+    extract_reasoning,
     get_session_file,
     find_latest_session_file,
     is_dir_trusted,
@@ -1077,3 +1082,151 @@ class TestProviderField:
         )
         history.inject_meta(msg)
         assert msg.provider == "openai"
+
+
+# ===================================================================
+# 思考内容 reasoning_content：附加 / 读取 / 剥离 / 持久化
+# ===================================================================
+
+class TestReasoningContent:
+    """assistant 消息的 reasoning_content：仅持久化 + 渲染，发回模型前剥离。"""
+
+    @pytest.fixture
+    def session_history(self, temp_home):
+        """创建会话历史实例（SESSIONS_DIR 指向临时目录）"""
+        sessions_dir = temp_home / "sessions"
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            return SessionHistory("/test/project", model="test-model")
+
+    @staticmethod
+    def _msg(**kw):
+        return ChatCompletionAssistantMessageParam(role="assistant", **kw)
+
+    # ---- attach_reasoning ----
+
+    def test_attach_reasoning_non_empty_adds_field(self):
+        msg = self._msg(content="done")
+        out = attach_reasoning(msg, "先看看目录")
+        assert out["reasoning_content"] == "先看看目录"
+        assert out["content"] == "done"
+
+    def test_attach_reasoning_empty_returns_same_object(self):
+        """空串 / 纯空白 / 非字符串：不附加字段，原样返回。"""
+        msg = self._msg(content="done")
+        assert attach_reasoning(msg, "") is msg
+        assert attach_reasoning(msg, "   \n ") is msg
+        assert attach_reasoning(msg, None) is msg  # type: ignore[arg-type]
+
+    def test_attach_reasoning_does_not_mutate_input(self):
+        """不修改传入的 message（原 dict 保持不变）。"""
+        msg = self._msg(content="done")
+        attach_reasoning(msg, "思考")
+        assert "reasoning_content" not in msg
+
+    def test_attach_reasoning_keeps_tool_calls(self):
+        """带 tool_calls 的消息附加思考内容后字段完整保留。"""
+        from openai.types.chat import ChatCompletionMessageFunctionToolCallParam
+        from openai.types.chat.chat_completion_message_function_tool_call_param import Function
+        msg = ChatCompletionAssistantMessageParam(
+            role="assistant", content=None,
+            tool_calls=[ChatCompletionMessageFunctionToolCallParam(
+                id="c1", type="function",
+                function=Function(name="bash", arguments="{}"))],
+        )
+        out = attach_reasoning(msg, "决定跑一下")
+        assert out["reasoning_content"] == "决定跑一下"
+        assert out["tool_calls"] is not None
+
+    # ---- get_reasoning ----
+
+    def test_get_reasoning_present(self):
+        msg = attach_reasoning(self._msg(content="x"), "思考")
+        assert get_reasoning(msg) == "思考"
+
+    def test_get_reasoning_missing_returns_empty(self):
+        assert get_reasoning(self._msg(content="x")) == ""
+
+    def test_get_reasoning_non_string_returns_empty(self):
+        msg: Any = {"role": "assistant", "reasoning_content": None}
+        assert get_reasoning(msg) == ""
+
+    # ---- extract_reasoning ----
+
+    def test_extract_reasoning_from_model_extra(self):
+        """真实响应：非标准字段落在 pydantic model_extra 中。"""
+        class _Msg:
+            model_extra = {"reasoning_content": "来自 model_extra"}
+        assert extract_reasoning(_Msg()) == "来自 model_extra"
+
+    def test_extract_reasoning_from_attribute(self):
+        """部分实现直接挂在消息对象属性上。"""
+        class _Msg:
+            reasoning_content = "来自属性"
+        assert extract_reasoning(_Msg()) == "来自属性"
+
+    def test_extract_reasoning_from_dict(self):
+        assert extract_reasoning({"reasoning_content": "来自 dict"}) == "来自 dict"
+
+    def test_extract_reasoning_missing_returns_empty(self):
+        class _Msg:
+            model_extra = None
+        assert extract_reasoning(_Msg()) == ""
+        assert extract_reasoning({}) == ""
+
+    def test_extract_reasoning_non_string_returns_empty(self):
+        class _Msg:
+            model_extra = {"reasoning_content": None}
+        assert extract_reasoning(_Msg()) == ""
+
+    # ---- _strip_reasoning ----
+
+    def test_strip_reasoning_removes_field(self):
+        msg = attach_reasoning(self._msg(content="x"), "思考")
+        out = _strip_reasoning(msg)
+        assert "reasoning_content" not in out
+        assert out["content"] == "x"
+
+    def test_strip_reasoning_no_field_returns_same(self):
+        msg = self._msg(content="x")
+        assert _strip_reasoning(msg) is msg
+
+    # ---- 持久化 + get_messages ----
+
+    def test_reasoning_persisted_to_jsonl(self, session_history):
+        """带 reasoning_content 的 assistant 消息落盘保留该字段。"""
+        session_history.append(AssistantMessage(
+            model="test-model",
+            message=attach_reasoning(self._msg(content="done"), "持久化的思考"),
+        ))
+        lines = [json.loads(line) for line in
+                 session_history.file_path.read_text(encoding="utf-8").splitlines() if line]
+        msg_lines = [d for d in lines if d["type"] == "message"]
+        assert msg_lines[-1]["message"]["reasoning_content"] == "持久化的思考"
+
+    def test_reasoning_roundtrip_after_load(self, session_history):
+        """从 JSONL 重新加载后 reasoning_content 仍在 entries 中。"""
+        session_history.append(AssistantMessage(
+            model="test-model",
+            message=attach_reasoning(self._msg(content="done"), "重放的思考"),
+        ))
+        loaded = SessionHistory.load(session_history.file_path)
+        assistant = [e for e in loaded.entries if isinstance(e, AssistantMessage)][0]
+        assert get_reasoning(assistant.message) == "重放的思考"
+
+    def test_get_messages_strips_reasoning(self, session_history):
+        """发回模型的消息不带 reasoning_content（非标准字段会报错）。"""
+        session_history.append(AssistantMessage(
+            model="test-model",
+            message=attach_reasoning(self._msg(content="done"), "思考"),
+        ))
+        msgs = session_history.get_messages()
+        assert msgs[-1] == {"role": "assistant", "content": "done"}
+
+    def test_get_messages_user_message_unchanged(self, session_history):
+        """用户消息不做处理（无该字段，原样返回）。"""
+        session_history.append(UserMessage(
+            model="test-model",
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+        ))
+        msgs = session_history.get_messages()
+        assert msgs[-1] == {"role": "user", "content": "hi"}

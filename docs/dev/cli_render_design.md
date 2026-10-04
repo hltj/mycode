@@ -31,10 +31,10 @@ default 风格下，所有「方块」——每个代码块、user message 背�
 
 `main()` 从命令行参数 `-s/--style` 读取风格，调用 `set_render_style(style)` 设置模块级 `RENDER_STYLE`，`_get_renderer()` 按需惰性实例化并缓存到 `_RENDERERS`。
 
-| 风格 | 类 | AI 标题 | 工具调用标题 | 工具输出标题 | 待办符号 | 提示符 |
-|------|----|---------|--------------|--------------|----------|--------|
-| `default` | `_DefaultRenderer` | `🤖 {provider}/{model}` | `🔧 调用工具 - x` | `📤 工具输出` | emoji（🔳/🟧/✅️） | `│` / `│?` / `│!` |
-| `classic` | `_ClassicRenderer` | `AI【{provider}/{model}】` | `调用工具 - x` | `工具输出` | 复选框（`- [ ]:` 等） | `myc[模式] >` |
+| 风格 | 类 | AI 标题 | 工具调用标题 | 工具输出标题 | 思考过程 | 待办符号 | 提示符 |
+|------|----|---------|--------------|--------------|---------|----------|--------|
+| `default` | `_DefaultRenderer` | `🤖 {provider}/{model}` | `🔧 调用工具 - x` | `📤 工具输出` | `🤔 思考过程` 边框面板 | emoji（🔳/🟧/✅️） | `│` / `│?` / `│!` |
+| `classic` | `_ClassicRenderer` | `AI【{provider}/{model}】` | `调用工具 - x` | `工具输出` | `思考过程` 蓝色标题 | 复选框（`- [ ]:` 等） | `myc[模式] >` |
 
 模块级 `RENDER_STYLE` 是全局状态；测试通过 `monkeypatch.setattr(renderer, "RENDER_STYLE", ...)` 切换。
 
@@ -47,7 +47,8 @@ default 风格下，所有「方块」——每个代码块、user message 背�
 | 方法 | 说明 |
 |------|------|
 | `format_todos(state)` | 用子类 `symbols` + 共用 `formats` 模板渲染待办列表 |
-| `render_assistant(message, model)` | AI 标题（紫）+ 正文（正文经 `render_assistant_body`，default 为 rich Markdown）；无正文（纯 tool_calls）仅标题 |
+| `render_assistant(message, model)` | AI 标题（紫）+ 思考过程（`reasoning_content` 存在且非空时，经 `render_reasoning`）+ 正文（正文经 `render_assistant_body`，default 为 rich Markdown）；无正文（纯 tool_calls）时仅标题 + 思考过程 |
+| `render_reasoning(reasoning)` | 思考过程渲染（default：带边框的深灰背景面板 / classic：蓝色标题 + 原样输出 + 灰色 `---` 分隔线收尾） |
 | `render_assistant_body(body)` | 渲染 assistant 正文：default 用 rich Markdown / classic 原样输出 |
 | `render_tool_call(tool_call)` | 工具名标题（蓝）+ YAML 参数（default 语法高亮 / classic 围栏） |
 | `render_tool_result(tool_result)` | 工具输出标题（蓝）；`todo_write` 特化：先输出 TODO 列表再输出结果；`read` 特化：带行号渲染 |
@@ -72,7 +73,9 @@ default 风格下，所有「方块」——每个代码块、user message 背�
 |------|------|
 | `render_code_block` / `render_tool_call_params` / `render_read_output` / `render_notice_additional` | 代码块 / 工具调用参数 / read 返回 / 提醒附加内容渲染（default 语法高亮与特化 / classic 围栏） |
 | `render_assistant_body` | assistant 正文渲染（default rich Markdown / classic 原样） |
+| `render_reasoning` | 思考过程渲染（default 边框面板 / classic 蓝色标题 + 原样） |
 | `ai_title` / `tool_call_title` / `tool_result_title` | 标题文本（emoji 与否） |
+| `reasoning_title` | 思考过程标题文本（default `🤔 思考过程` / classic `思考过程`） |
 | `notice_text` / `exception_title` | 提醒 / 异常标题文本 |
 | `render_user_message(text, mode)` | 用户消息渲染（default 灰色背景块 / classic 单行前缀） |
 | `prompt_prefix(mode)` | 提示符文本（不含尾随空格） |
@@ -133,6 +136,8 @@ ANSI 转义常量集中在 renderer 顶部，统一由 `mycode.mode.MODE_COLOR` 
 |------|------|
 | AI 标题 | 紫 `\x1B[35m` |
 | 工具调用 / 输出标题 | 蓝 `\x1B[1;34m` |
+| 思考过程标题（classic） | 蓝 `\x1B[1;34m` |
+| 思考过程面板边框（default） | `rgb(88,110,140)`（蓝灰 `_REASONING_BORDER`） |
 | 提醒 | 黄 `\x1B[1;33m` |
 | 异常 | 红 `\x1B[1;31m` |
 | 模式切换提示 | 灰 `\x1B[90m` |
@@ -179,7 +184,7 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 `_markdown_plain(markup)`（`renderer.py`）把 assistant 正文字体交给
 `rich.markdown.Markdown` 渲染，替代原来的纯文本输出：
 
-- 段落 / 标题 / 列表 / 表格 / 引用 / 分割线 / 内联样式（**加粗**、*斜体*、
+- 段落 / 标题 / 列表 / 表格 / 引用 / 分隔线 / 内联样式（**加粗**、*斜体*、
   `code`、~~删除线~~）等按 rich 默认主题渲染（富文本着色）；
 - 代码块（`fence` / `code_block`）用 **覆写版 `CodeBlock` 子类**：与工具输出
   一致取 `_CODE_BG` 背景色与 `_CODE_THEME` 主题（`Syntax(word_wrap=True,
@@ -196,6 +201,33 @@ default 风格用 `rich.syntax.Syntax` 渲染代码块，替代代码围栏：
 注意：`render_assistant` 的公共流程在基类（标题 + 正文 + 尾部空行），
 正文渲染委托给 `render_assistant_body`；default 覆写为 `_markdown_plain`，
 classic 沿用基类的原样输出（不引入 rich 解析，与代码围栏策略一致）。
+
+### 3.4.1 思考过程（reasoning_content）
+
+思考类模型会在 assistant 消息里返回非标准字段 `reasoning_content`。
+`render_assistant` 输出标题后先检查该字段：**存在且非空**（`strip()` 后
+仍有内容）才渲染，空串 / 纯空白 / 缺失一律跳过。渲染委托给
+`render_reasoning`（风格差异点）。渲染顺序为 **AI 标题 → 思考过程 → 正文**
+（思考过程属于 AI 标题之下、正文之上的内容区）。思考过程块**前后各留 1 个
+空行**与相邻内容分隔（与工具调用 / 工具输出块的留白节奏一致）。尾空行
+**总是输出**——纯 tool_calls 的回复里思考过程之后紧跟「调用工具」标题，
+没有空行会与工具块贴在一起。空行由 `render_assistant` 统一输出（风格无关），
+`render_reasoning` 只负责块本身：
+
+| 风格 | 标题 | 内容 | 收尾 |
+|------|------|------|------|
+| `default` | `🤔 思考过程` | 圆角边框面板（`Panel`），铺深灰背景 `rgb(30,30,30)`，边框色 `_REASONING_BORDER = rgb(88,110,140)`（蓝灰），标题左对齐 | 面板正常渲染时无分隔线（边框已承担视觉分隔）；回退纯文本时输出灰色 `---` 分隔线 |
+| `classic` | `思考过程` | 蓝色标题 `\x1B[1;34m`（与工具调用 / 工具输出标题同色）+ 原样输出 | 灰色 `---` 分隔线（`_REASONING_SEPARATOR`），与思考内容、后续内容之间各留 1 个空行 |
+
+- default 的面板内容复用 `_build_markdown()`（与 assistant 正文同一套
+  markdown 渲染，代码块同样走 `_CodeBlockBg` 深灰背景 + 主题高亮），
+  因此思考内容里的 **列表 / 表格 / 引用 / 行内样式 / 代码块**都会被渲染；
+- 兜底：思考内容自带 ANSI 控制码时富文本无法安全着色（会被面板再次装箱
+  导致转义序列泄漏），退化为「灰色标题 + 纯文本」不带边框；rich 渲染抛
+  异常时同样兜底为纯文本。**两条回退路径都补上 `---` 分隔线**——面板的边框
+  已承担视觉分隔，纯文本则需要它（与 classic 一致，上下各留 1 个空行）；
+- 该字段只用于持久化与渲染，**发回模型前剥离**（见
+  [会话管理设计](./session_design.md)）。
 
 ### 3.5 YAML 参数展示（render_tool_call）
 
@@ -417,7 +449,8 @@ bus.register(render_terminal)                     # 再渲染
 **渲染顺序**（`agent_loop`）：
 
 1. `bus.dispatch(NoticeEvent)`（陈旧待办提醒 / 编辑命令已更新提醒，如有）
-2. `bus.dispatch(AssistantMessage)` → AI 标题 + 正文
+2. `bus.dispatch(AssistantMessage)` → AI 标题 + 思考过程（`reasoning_content`
+   非空时）+ 正文
 3. 每个 pending tool_call：`bus.dispatch(ToolCallEvent)` → 渲染「🔧 调用工具」
    与 YAML 参数；执行后 `bus.dispatch(ToolResultEvent)` → 渲染「📤 工具输出」
    （todo_write 先渲染 TODO 列表）
@@ -434,4 +467,4 @@ bus.register(render_terminal)                     # 再渲染
 4. **新增模式标记**：在 `mode.MODE_COLOR`、`renderer._MODE_PROMPT_STYLES` /
    `_DEFAULT_PROMPT_PREFIXES` 同步更新。
 5. **测试**：见 `tests/test_renderer.py`（标题、emoji、TODO 符号、代码围栏、
-   显示宽度分行、灰色背景填充、提示符片段等）。
+   显示宽度分行、灰色背景填充、提示符片段、思考过程面板等）。

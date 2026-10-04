@@ -25,7 +25,26 @@ class SessionHistory:
 
 - `inject_meta()` — 注入元数据（id/parent_id/time）
 - `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
-- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception）
+- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception；assistant 消息会剥离 `reasoning_content`）
+
+### 思考内容 reasoning_content
+
+思考类模型会在 assistant 消息里返回非标准字段 `reasoning_content`
+（真实响应中落在 pydantic 的 `model_extra` 里）。该字段**只用于持久化与
+终端渲染**，发回模型前必须去掉（部分提供商收到未知字段会直接报错）。
+
+```python
+def extract_reasoning(message: Any) -> str: ...   # 从模型响应对象取思考内容（缺失/非字符串→""）
+def attach_reasoning(message, reasoning) -> ...  # 给消息附加 reasoning_content（空值原样返回，不修改入参）
+def get_reasoning(message) -> str               # 从已构造的消息 dict 取思考内容（渲染用）
+def _strip_reasoning(message) -> ...            # 发回模型前移除该字段
+```
+
+- `agent_loop` 从响应取出思考内容后：发进 `messages` 的版本**不带**该字段，
+  派发 `AssistantMessage`（持久化 + 渲染）的版本**带上**；
+- `get_messages()` 在返回给模型前统一剥离，恢复会话（`-r` / `-c`）后的
+  上下文因此也不含该字段；
+- 渲染规则见 [CLI 渲染设计](./cli_render_design.md)。
 
 ### 内存结构
 
@@ -47,6 +66,7 @@ entries[4] = ToolResultEvent   # 工具结果
 ```json
 {"time":"...","type":"session","id":"a1b2c3d4","parent_id":null,"model":"gpt-4o","session":{"id":"full-uuid...","cwd":"/path"}}
 {"time":"...","type":"message","id":"e5f6g7h8","parent_id":"a1b2c3d4","model":"gpt-4o","message":{"role":"user","content":"hello"}}
+{"time":"...","type":"message","id":"...","parent_id":"...","model":"gpt-4o","message":{"role":"assistant","content":"done","reasoning_content":"思考内容（可选，仅持久化，不发回模型）"}}
 {"time":"...","type":"interrupt","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","interrupt":{"abort":true}}
 {"time":"...","type":"notice","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","notice":{"content":"...","tag_name":"notice","display_content":"...","additional_content":"..."}}
 {"time":"...","type":"tool_result","id":"...","parent_id":"...","model":"gpt-4o","provider":"openai","tool_result":{"tool_call_id":"...","content":"...","tool_name":"bash"}}
@@ -98,3 +118,4 @@ mycode 启动时通过 `_check_dir_trust()`（定义在 `cli.py`）检查当前�
 3. **JSONL 序列化**：公共字段平铺在 JSON 顶层，扩展字段聚合在 `type` 值对应的 key 下（key 名与 type 值一致）
 4. **ID 生成**：仅比对内存 entries，不读文件；短 ID 冲突时降级为完整 36 位 UUID
 5. **信任状态**：`is_dir_trusted()` / `trust_dir()` 是幂等的，重复调用不会产生副作用；信任状态存储在 `.dirs` 文件，每行一个目录绝对路径
+6. **reasoning_content**：只持久化 + 渲染，任何发回模型的路径（`get_messages()` 与 `agent_loop` 的 `messages`）都必须剥离该字段

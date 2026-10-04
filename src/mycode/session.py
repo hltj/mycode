@@ -65,6 +65,58 @@ class ToolResultData(TypedDict):
     tool_name: str
 
 
+def attach_reasoning(message: ChatCompletionAssistantMessageParam,
+                     reasoning: str) -> ChatCompletionAssistantMessageParam:
+    r"""给 assistant 消息附加思考内容 ``reasoning_content``。
+
+    ``reasoning_content`` 不是 openai 标准字段，部分模型提供商（思考类模型）
+    会在 assistant 消息里返回。它只用于**持久化与渲染**，发回模型前会被
+    :func:`_strip_reasoning` 去掉。``reasoning`` 为空 / 非字符串（缺失或
+    空串）时原样返回，不附加任何字段。
+    """
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        return message
+    return cast(ChatCompletionAssistantMessageParam,
+                {**message, "reasoning_content": reasoning})
+
+
+def get_reasoning(message: ChatCompletionAssistantMessageParam) -> str:
+    """取 assistant 消息中的思考内容；缺失 / 非字符串返回空串。"""
+    value = cast(Dict[str, Any], message).get("reasoning_content")
+    return value if isinstance(value, str) else ""
+
+
+def extract_reasoning(message: Any) -> str:
+    """从模型响应消息对象中取思考内容 ``reasoning_content``。
+
+    ``reasoning_content`` 不是 openai 标准字段：真实响应里它落在 pydantic
+    的 ``model_extra`` 中，但也可能是消息对象（或普通 dict）的直接属性。
+    三处都取一遍以兼容不同实现；缺失 / 非字符串（部分模型返回 null）统一
+    返回空串（渲染时视为「无思考过程」）。
+    """
+    if isinstance(message, dict):
+        value = message.get("reasoning_content")
+    else:
+        extra = getattr(message, "model_extra", None)
+        if isinstance(extra, dict) and extra.get("reasoning_content"):
+            value = extra["reasoning_content"]
+        else:
+            value = getattr(message, "reasoning_content", None)
+    return value if isinstance(value, str) else ""
+
+
+def _strip_reasoning(message: ChatCompletionAssistantMessageParam
+                     ) -> ChatCompletionAssistantMessageParam:
+    r"""发回模型前移除 ``reasoning_content``（非标准字段，部分提供商会报错）。
+
+    没有该字段时原样返回（不复制 dict）。
+    """
+    if "reasoning_content" not in message:
+        return message
+    return cast(ChatCompletionAssistantMessageParam,
+                {k: v for k, v in message.items() if k != "reasoning_content"})
+
+
 def sanitize_path(path: str) -> str:
     r"""将路径中的元字符替换为减号：/ : ? * " < > |（路径分隔符、Windows盘符分隔符及非法文件名字符）"""
     if not path:
@@ -572,11 +624,18 @@ class SessionHistory:
         ``NoticeEvent`` 经 ``to_user_msg()``、``ToolResultEvent`` 经
         ``to_tool_msg()`` 转成对应 ``ChatCompletion...Param`` 加入列表，
         确保会话恢复后提醒与工具结果仍能进入模型上下文。
+
+        assistant 消息里的 ``reasoning_content``（思考内容，仅供持久化与
+        渲染）在发回模型前由 ``_strip_reasoning`` 去掉——它不是 openai 标准
+        字段，部分提供商收到会直接报错。
         """
         result: List[ChatCompletionMessageParam] = []
         for e in self.entries:
             if isinstance(e, (UserMessage, AssistantMessage)):
-                result.append(e.message)
+                if isinstance(e, AssistantMessage):
+                    result.append(_strip_reasoning(e.message))
+                else:
+                    result.append(e.message)
             elif isinstance(e, ToolResultEvent):
                 result.append(e.to_tool_msg())
             elif isinstance(e, NoticeEvent):

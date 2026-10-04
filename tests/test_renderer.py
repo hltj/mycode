@@ -1721,3 +1721,230 @@ class TestRenderModelChange:
                                          provider="deepseek"))
         out = capsys.readouterr().out
         assert "已切换模型：deepseek/deepseek-chat" in out
+
+
+# ===================================================================
+# reasoning_content（思考过程）渲染
+# ===================================================================
+
+class TestRenderReasoning:
+    """思考过程渲染：default 边框面板 / classic 蓝色标题。"""
+
+    def _capture(self, fn):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn()
+        return buf.getvalue()
+
+    def _event(self, reasoning, content="好的"):
+        from mycode.session import attach_reasoning
+        return AssistantMessage(
+            model="m", provider="p",
+            message=attach_reasoning(
+                ChatCompletionAssistantMessageParam(
+                    role="assistant", content=content),
+                reasoning),
+        )
+
+    # ---- classic ----
+
+    def test_classic_blue_title_and_plain_body(self, monkeypatch):
+        """classic：蓝色标题「思考过程」+ 原样输出内容（与工具标题同色）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(
+            lambda: _render_common(self._event("先看 src 目录\n再改文件")))
+        plain = _strip_ansi(out)
+        assert "\x1B[1;34m思考过程\x1B[0m" in out
+        assert "先看 src 目录\n再改文件" in plain
+        assert "🤔" not in plain
+        # 无边框（classic 不套面板）
+        assert "╭" not in out and "╰" not in out
+
+    def test_classic_reasoning_after_title_before_body(self, monkeypatch):
+        """classic：顺序为 AI 标题 → 思考过程 → 正文。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        plain = _strip_ansi(out)
+        assert plain.index("AI【p/m】") < plain.index("思考过程")
+        assert plain.index("思考过程") < plain.index("好的")
+
+    def test_classic_blank_lines_around_reasoning(self, monkeypatch):
+        """classic：思考内容与分隔线之间、分隔线与正文之间各留 1 个空行。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        assert out == ("\x1B[35mAI【p/m】\x1B[0m\n"
+                       "\n"
+                       "\x1B[1;34m思考过程\x1B[0m\n"
+                       "思考中\n"
+                       "\n"
+                       "\x1B[90m---\x1B[0m\n"
+                       "\n"
+                       "好的\n\n")
+
+    def test_classic_separator_is_gray(self, monkeypatch):
+        """classic：分隔线为灰色 ---。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        assert "\x1B[90m---\x1B[0m" in out
+
+    def test_classic_separator_before_following_tool_call(self, monkeypatch):
+        """classic：纯 tool_calls 后紧跟工具调用时，--- 与工具标题间有空行。"""
+        from mycode.session import attach_reasoning
+        from tests._helpers import make_assistant_with_tool_calls, make_tool_call
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        out = self._capture(lambda: _render_common(AssistantMessage(
+            model="m", provider="p",
+            message=attach_reasoning(
+                make_assistant_with_tool_calls(make_tool_call()), "先列目录"))))
+        assert out == ("\x1B[35mAI【p/m】\x1B[0m\n"
+                       "\n"
+                       "\x1B[1;34m思考过程\x1B[0m\n"
+                       "先列目录\n"
+                       "\n"
+                       "\x1B[90m---\x1B[0m\n"
+                       "\n")
+
+    def test_classic_reasoning_title_method(self, monkeypatch):
+        """classic：reasoning_title 无 emoji。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        assert _get_renderer().reasoning_title() == "思考过程"
+
+    # ---- default ----
+
+    def test_default_panel_title_with_border(self, monkeypatch):
+        """default：边框标题为「🤔 思考过程」，四周有圆角边框。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("先看目录")))
+        plain = _strip_ansi(out)
+        assert "🤔 思考过程" in plain
+        assert "╭" in plain and "╮" in plain
+        assert "╰" in plain and "╯" in plain
+
+    def test_default_panel_dark_background(self, monkeypatch):
+        """default：面板铺深灰背景（与代码块背景一致）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("思考内容")))
+        assert ansi_bg(_CODE_BG_RGB) in out
+
+    def test_default_content_is_markdown_rich_text(self, monkeypatch):
+        """default：内容按 markdown 渲染（加粗有富文本着色）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("这是**重点**")))
+        plain = _strip_ansi(out)
+        assert "这是" in plain and "重点" in plain
+        # 加粗（bold=1 出现在内容行的样式里）
+        assert "\x1b[1;" in out or "\x1b[1m" in out
+
+    def test_default_content_list_markdown(self, monkeypatch):
+        """default：markdown 列表渲染成项目符号。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("- 第一步\n- 第二步")))
+        plain = _strip_ansi(out)
+        assert "第一步" in plain and "第二步" in plain
+        assert "•" in plain
+
+    def test_default_reasoning_title_method(self, monkeypatch):
+        """default：reasoning_title 带 emoji。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        assert _get_renderer().reasoning_title() == "🤔 思考过程"
+
+    def test_default_reasoning_after_title_before_body(self, monkeypatch):
+        """default：顺序为 AI 标题 → 思考过程面板 → 正文。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        plain = _strip_ansi(out)
+        assert plain.index("🤖 p/m") < plain.index("思考过程")
+        assert plain.index("思考过程") < plain.index("好的")
+
+    def test_default_blank_lines_around_panel(self, monkeypatch):
+        """default：面板前留 1 个空行、面板后留 1 个空行再接正文。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        assert "\x1B[35m🤖 p/m\x1B[0m\n\n" in out
+        assert "╯\x1B[0m\n\n好的" in out
+
+    def test_default_panel_ends_with_blank_line(self, monkeypatch):
+        """default：纯 tool_calls 时面板后仍留 1 个空行（衔接后续工具调用）。"""
+        from mycode.session import attach_reasoning
+        from tests._helpers import make_assistant_with_tool_calls, make_tool_call
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(AssistantMessage(
+            model="m", provider="p",
+            message=attach_reasoning(
+                make_assistant_with_tool_calls(make_tool_call()), "先列目录"))))
+        assert out.endswith("╯\x1b[0m\n\n")
+        assert "╭" not in out.split("🤖 p/m")[0]  # 标题前无多余内容
+
+    def test_default_no_separator_line(self, monkeypatch):
+        """default：无 --- 分隔线（面板边框已承担视觉分隔）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("思考中")))
+        assert "\x1B[90m---\x1B[0m" not in out
+
+    def test_default_ansi_content_fallback_no_border(self, monkeypatch):
+        """default：内容自带 ANSI 控制码时退化为纯文本（不套边框）。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("\x1b[31m红色\x1b[0m 思考")))
+        plain = _strip_ansi(out)
+        assert "🤔 思考过程" in plain
+        assert "红色" in plain
+        assert "╭" not in out and "╰" not in out
+
+    def test_default_ansi_fallback_has_separator(self, monkeypatch):
+        """default 回退为纯文本时同样输出 --- 分隔线。"""
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        out = self._capture(lambda: _render_common(self._event("\x1b[31m红色\x1b[0m 思考")))
+        assert "\x1B[90m---\x1B[0m" in out
+        # 思考内容与分隔线之间、分隔线与正文之间各留 1 个空行
+        assert "红色\x1B[0m 思考\n\n\x1B[90m---\x1B[0m\n\n好的" in out
+
+    # ---- 无思考内容时不渲染 ----
+
+    def test_no_reasoning_field_renders_nothing(self, monkeypatch):
+        """无 reasoning_content：不输出标题、不输出面板。"""
+        for style in ("classic", "default"):
+            monkeypatch.setattr(renderer, "RENDER_STYLE", style)
+            out = self._capture(lambda: _render_common(AssistantMessage(
+                model="m", provider="p",
+                message=ChatCompletionAssistantMessageParam(
+                    role="assistant", content="普通回复"))))
+            plain = _strip_ansi(out)
+            assert "思考过程" not in plain
+            assert "╭" not in out
+
+    def test_empty_reasoning_renders_nothing(self, monkeypatch):
+        """reasoning_content 为空串 / 纯空白：视为无思考过程。"""
+        for style in ("classic", "default"):
+            monkeypatch.setattr(renderer, "RENDER_STYLE", style)
+            out = self._capture(lambda: _render_common(self._event("   \n  ")))
+            plain = _strip_ansi(out)
+            assert "思考过程" not in plain
+
+    def test_reasoning_with_null_content_still_renders(self, monkeypatch):
+        """content 为 None（纯 tool_calls）但有思考内容：仍渲染思考过程。"""
+        from mycode.session import attach_reasoning
+        from tests._helpers import make_assistant_with_tool_calls, make_tool_call
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "classic")
+        ev = AssistantMessage(
+            model="m", provider="p",
+            message=attach_reasoning(
+                make_assistant_with_tool_calls(make_tool_call()), "先读文件再改"))
+        out = self._capture(lambda: _render_common(ev))
+        plain = _strip_ansi(out)
+        assert "思考过程" in plain
+        assert "先读文件再改" in plain
+        assert "AI【p/m】" in plain
+
+    def test_reasoning_last_block_has_trailing_blank(self, monkeypatch):
+        """纯 tool_calls：思考过程仍留尾空行，分隔后续工具调用块。"""
+        from mycode.session import attach_reasoning
+        from tests._helpers import make_assistant_with_tool_calls, make_tool_call
+        monkeypatch.setattr(renderer, "RENDER_STYLE", "default")
+        ev = AssistantMessage(
+            model="m", provider="p",
+            message=attach_reasoning(
+                make_assistant_with_tool_calls(make_tool_call()), "先读文件再改"))
+        out = self._capture(lambda: _render_common(ev))
+        assert out.endswith("\n\n")

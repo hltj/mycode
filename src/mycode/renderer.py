@@ -44,6 +44,7 @@ from mycode.session import (
     ExceptionData,
     NoticeData,
     ToolResultData,
+    get_reasoning,
 )
 from mycode.mode import Mode, MODE_STATE, MODE_COLOR
 
@@ -260,6 +261,12 @@ def _tool_call_args(tool_call_id: str) -> dict:
 
 # 默认风格带行号语法高亮渲染：与输入区一致的深灰背景区分代码块区域
 _CODE_BG_RGB = "rgb(30,30,30)"
+# 思考过程面板边框色（default 风格）：蓝灰，与 nord 主题低饱和度呼应，
+# 不抢正文与代码块的视觉重心
+_REASONING_BORDER = "rgb(88,110,140)"
+# 思考过程收尾分隔线（classic 风格用；default 由面板边框充当视觉分隔）：
+# 灰色 ---，与思考内容、后续内容之间各留 1 个空行
+_REASONING_SEPARATOR = f"{_GRAY}---{_RESET}"
 # 语法高亮主题，可用配置项 syntax_theme 覆盖（如 nord / gruvbox-dark / zenburn）
 _CODE_THEME = config.get("syntax_theme", "nord")
 
@@ -410,10 +417,47 @@ def _syntax_plain(code: str, language: str | None = None,
     return buf.getvalue()
 
 
+class _CodeBlockBg(CodeBlock):
+    """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。
+
+    代码块上下各绘制 1 行纯背景留白（``top_padding`` / ``bottom_padding``），
+    与代码块正文行同背景色、视觉连成一体。
+    """
+
+    def __rich_console__(self, console: Console, options: Any) -> Any:
+        code = str(self.text).rstrip(chr(0x0A))
+        try:
+            yield Syntax(code, self.lexer_name, theme=_CODE_THEME,
+                         word_wrap=True, padding=(1, 0, 1, 0),
+                         background_color=_CODE_BG_RGB)
+        except Exception:
+            yield Syntax(code, "text", theme=_CODE_THEME,
+                         word_wrap=True, padding=(1, 0, 1, 0),
+                         background_color=_CODE_BG_RGB)
+
+
+def _build_markdown(markup: str) -> Markdown:
+    """构造 Markdown 对象（代码块走覆写版 ``_CodeBlockBg``）。
+
+    实例级覆写 ``elements`` 映射：仅影响本次渲染，不改 rich.markdown 全局
+    映射，避免污染其他使用方（``_CodeBlockBg`` 定义在模块级，但
+    ``elements`` 是每个 Markdown 实例自己的字典）。
+    """
+    # 实例级覆写 elements：仅影响本次渲染，不改 rich.markdown 全局映射，
+    # 避免污染其他使用方。
+    elements = dict(Markdown.elements)
+    elements["fence"] = _CodeBlockBg
+    elements["code_block"] = _CodeBlockBg
+
+    md = Markdown(markup, code_theme=_CODE_THEME)
+    md.elements = elements  # type: ignore[misc]  # 实例级覆写 ClassVar 映射
+    return md
+
+
 def _markdown_ansi(markup: str, soft_wrap: bool = False) -> str:
     """用 rich Markdown 把文本渲染成带 ANSI 转义的字符串（default 风格）。
 
-    - 段落 / 标题 / 列表 / 表格 / 引用 / 分割线等按 rich 默认样式渲染，
+    - 段落 / 标题 / 列表 / 表格 / 引用 / 分隔线等按 rich 默认样式渲染，
       字体、行数继承默认主题（markdown.code 等内联样式即富文本着色）；
     - 代码块交给覆写版 ``CodeBlock``：与工具输出/read 一致用深灰背景
       ``_CODE_BG_RGB``、``_CODE_THEME``，避免富文本对 ``` 围栏做二次上色；
@@ -434,32 +478,6 @@ def _markdown_ansi(markup: str, soft_wrap: bool = False) -> str:
     if _has_ansi_control(markup):
         return markup.rstrip(chr(0x0A)) + chr(0x0A)
 
-    class _CodeBlockBg(CodeBlock):
-        """代码块子类：背景色/主题与工具输出一致，替换 rich 默认内联上色。
-
-        代码块上下各绘制 1 行纯背景留白（``top_padding`` / ``bottom_padding``），
-        与代码块正文行同背景色、视觉连成一体。
-        """
-
-        def __rich_console__(self, console: Console, options: Any) -> Any:
-            code = str(self.text).rstrip(chr(0x0A))
-            try:
-                yield Syntax(code, self.lexer_name, theme=_CODE_THEME,
-                             word_wrap=True, padding=(1, 0, 1, 0),
-                             background_color=_CODE_BG_RGB)
-            except Exception:
-                yield Syntax(code, "text", theme=_CODE_THEME,
-                             word_wrap=True, padding=(1, 0, 1, 0),
-                             background_color=_CODE_BG_RGB)
-
-    # 实例级覆写 elements：仅影响本次渲染，不改 rich.markdown 全局映射，
-    # 避免污染其他使用方（_CodeBlockBg 定义在函数内，每次调用新建）。
-    elements = dict(Markdown.elements)
-    elements["fence"] = _CodeBlockBg
-    elements["code_block"] = _CodeBlockBg
-
-    md = Markdown(markup, code_theme=_CODE_THEME)
-    md.elements = elements  # type: ignore[misc]  # 实例级覆写 ClassVar 映射
     buf = io.StringIO()
     console = Console(
         file=buf,
@@ -468,7 +486,7 @@ def _markdown_ansi(markup: str, soft_wrap: bool = False) -> str:
         soft_wrap=soft_wrap,
     )
     try:
-        console.print(md)
+        console.print(_build_markdown(markup))
     except Exception:
         # 极端输入导致 rich 解析/渲染失败时兜底为纯文本
         return markup.rstrip(chr(0x0A)) + chr(0x0A)
@@ -481,6 +499,44 @@ def _markdown_plain(markup: str) -> None:
     复用 ``_markdown_ansi`` 生成 ANSI 字符串后直接输出。
     """
     print(_markdown_ansi(markup), end="")
+
+
+def _reasoning_panel_ansi(markup: str) -> str:
+    """思考过程渲染（default 风格）：深灰背景 + 边框的 markdown 面板。
+
+    用 rich ``Panel`` 承载 markdown：内容走与 assistant 正文一致的
+    ``_build_markdown``（代码块同为深灰背景 + 主题高亮），面板本身铺深灰
+    背景色 ``_CODE_BG_RGB``、边框标题为 ``🤔 思考过程``。
+
+    内容自带 ANSI 控制码时富文本无法安全着色，回退为不带边框的纯文本
+    （仅标题）；rich 渲染抛异常时同样兜底为纯文本。两条回退路径都补上
+    ``---`` 分隔线——面板的边框已承担视觉分隔，纯文本则需要它。
+    """
+    from rich.box import ROUNDED
+    from rich.panel import Panel
+
+    title = "🤔 思考过程"
+    plain = f"\x1B[90m{title}\x1B[0m\n{markup.rstrip(chr(0x0A))}\n"
+    if _has_ansi_control(markup):
+        # 富文本不可用：退化为纯文本（仅标题），不套边框
+        return plain + f"\n{_REASONING_SEPARATOR}\n"
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=True, width=_terminal_columns())
+    try:
+        console.print(Panel(
+            _build_markdown(markup.rstrip(chr(0x0A))),
+            title=title,
+            title_align="left",
+            border_style=_REASONING_BORDER,
+            style=f"on {_CODE_BG_RGB}",
+            box=ROUNDED,
+            padding=(0, 1),
+            expand=True,
+        ))
+        return buf.getvalue()
+    except Exception:
+        # 极端输入导致 rich 解析/渲染失败时兜底为纯文本
+        return plain + f"\n{_REASONING_SEPARATOR}\n"
 
 
 def _spacer_text(bg: str) -> str:
@@ -580,6 +636,10 @@ class _Renderer:
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         raise NotImplementedError
 
+    def reasoning_title(self) -> str:
+        """思考过程标题文本（风格差异点）。"""
+        raise NotImplementedError
+
     # ---- 代码块渲染 ----
     def render_code_block(self, body: str, language: str | None = None) -> None:
         """渲染一块代码/文本（无行号）。
@@ -615,16 +675,38 @@ class _Renderer:
     # ---- 渲染（公共流程在基类） ----
     def render_assistant(self, message: ChatCompletionAssistantMessageParam,
                          model: str, provider: str = "") -> None:
-        # AI 回复：标题（风格差异）+ 正文；无正文（纯 tool_calls）时仅标题。
+        # AI 回复：标题（风格差异）+ 思考过程（reasoning_content 非空时）
+        # + 正文；无正文（纯 tool_calls）时仅标题 + 思考过程。
+        # 思考过程块前后各留 1 个空行与相邻内容分隔（与工具调用/工具输出块
+        # 的留白节奏一致），尾空行总是输出。
         # 标题展示 provider/model（提供商 id / 模型 id）；无 provider 时退化为模型 id。
         content = message.get("content")
         title = self.ai_title(f"{provider}/{model}" if provider else model)
-        if content and str(content).strip():
-            print(f"\x1B[35m{title}\x1B[0m")
+        has_content = bool(content and str(content).strip())
+        print(f"\x1B[35m{title}\x1B[0m")
+        reasoning = get_reasoning(message)
+        if reasoning.strip():
+            print()
+            self.render_reasoning(reasoning)
+            print()
+        if has_content:
             self.render_assistant_body(str(content))
             print()
-        else:
-            print(f"\x1B[35m{title}\x1B[0m")
+
+    def render_reasoning(self, reasoning: str) -> None:
+        """渲染 assistant 的思考过程。
+
+        基类与 classic 风格沿用「蓝色标题 + 原样输出」（与工具调用/输出标题
+        同色，同属蓝），并以 ``---`` 分隔线收尾区分思考与后续内容；default
+        子类覆写为带边框的深灰背景 markdown 面板。
+
+        块前后的空行由 ``render_assistant`` 统一输出，本方法只负责块本身
+        （含 classic 的分隔线）。
+        """
+        print(f"\x1B[1;34m{self.reasoning_title()}\x1B[0m")
+        print(reasoning.strip(chr(0x0A)))
+        print()
+        print(_REASONING_SEPARATOR)
 
     def render_assistant_body(self, body: str) -> None:
         """渲染 assistant 正文。
@@ -818,6 +900,19 @@ class _DefaultRenderer(_Renderer):
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"❌ 异常 - {exc_type} - {exc_message}"
+
+    def reasoning_title(self) -> str:
+        """default：思考过程边框标题（emoji 前缀）。"""
+        return "🤔 思考过程"
+
+    def render_reasoning(self, reasoning: str) -> None:
+        """default：思考过程用「深灰背景 + 边框」的 markdown 面板渲染。
+
+        边框标题为 ``🤔 思考过程``，内容走与 assistant 正文一致的 markdown
+        渲染（代码块同为深灰背景 + 主题高亮）。内容自带 ANSI 控制码时
+        富文本无法安全着色，由 ``_reasoning_panel_ansi`` 退化为纯文本。
+        """
+        print(_reasoning_panel_ansi(reasoning), end="")
 
     def render_assistant_body(self, body: str) -> None:
         """default：assistant 正文用 rich Markdown 渲染（标题/列表/表格/代码块等）。"""
@@ -1138,6 +1233,10 @@ class _ClassicRenderer(_Renderer):
 
     def exception_title(self, exc_type: str, exc_message: str) -> str:
         return f"异常 - {exc_type} - {exc_message}"
+
+    def reasoning_title(self) -> str:
+        """classic：思考过程标题无 emoji（与工具调用/输出标题同风格）。"""
+        return "思考过程"
 
     def render_resume_cmd(self, cmd: str) -> None:
         print(cmd)

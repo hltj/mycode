@@ -146,6 +146,8 @@ from mycode.session import (
     AgentMessage,
     SessionHistory,
     AbortLoop,
+    attach_reasoning,
+    extract_reasoning,
 )
 from mycode.mode import (
     MODE_STATE,
@@ -450,6 +452,11 @@ def agent_loop(
         message = choice.message
         content = message.content
 
+        # 思考内容：部分思考类模型会返回 reasoning_content（非 openai 标准
+        # 字段，通常落在 pydantic 的 model_extra 里）。存在且非空时记录到
+        # 会话并渲染，但发回模型前要去掉（部分提供商收到该字段会报错）。
+        reasoning_str = extract_reasoning(message)
+
         # 将 Pydantic tool_calls 转为 list[ChatCompletionMessageToolCallUnionParam]
         serialized_tool_calls = cast(
             list[ChatCompletionMessageToolCallUnionParam],
@@ -464,11 +471,14 @@ def agent_loop(
         }
         if serialized_tool_calls:
             assistant_msg['tool_calls'] = serialized_tool_calls
+        # 发给模型的版本去掉 reasoning_content（非标准字段）
         messages.append(assistant_msg)
 
-        # dispatch AI 回复
-        bus.dispatch(AssistantMessage(model=model, provider=provider,
-                                      message=assistant_msg))
+        # dispatch AI 回复（持久化 + 渲染的版本带上 reasoning_content）
+        bus.dispatch(AssistantMessage(
+            model=model, provider=provider,
+            message=attach_reasoning(assistant_msg, reasoning_str),
+        ))
 
         # 非工具调用结束循环
         if choice.finish_reason != 'tool_calls':
