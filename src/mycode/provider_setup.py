@@ -322,7 +322,12 @@ def _host_of(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 def edit_settings(pid: str) -> str:
-    """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表。
+    """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表 /
+    回传 reasoning_content / extra_body。
+
+    后两项是**提供商级**的请求设置，模型级「模型配置」里的同名项优先
+    于它们（见 ``providers.resolve_send_reasoning`` /
+    ``resolve_extra_body``）。
 
     自定义提供商额外可编辑 id 后缀（提供商 id 为 ``udf-<后缀>``）；
     若该提供商是当前提供商，改后缀后同步顶层 ``model_provider``（config
@@ -346,6 +351,23 @@ def edit_settings(pid: str) -> str:
                   password=True),
         FormField(name="models", label="模型列表",
                   initial=",".join(existing.models)),
+        # 提供商级默认请求设置：模型级同名配置优先于它们
+        FormField(name="send_reasoning_content",
+                  label="回传 reasoning_content",
+                  initial=("" if existing.send_reasoning_content is None
+                           else str(existing.send_reasoning_content).lower()),
+                  placeholder=("true/false，留空=按模型库默认"
+                                if not is_udf else
+                                "true/false，留空=不回传（false）"),
+                  hint="本提供商默认；模型配置可覆盖",
+                  validator=lambda t: _parse_bool(t)[1]),
+        # form_ui 是单行输入，JSON 必须压成一行回显
+        FormField(name="extra_body", label="extra_body",
+                  initial=(json.dumps(existing.extra_body, ensure_ascii=False)
+                           if existing.extra_body else ""),
+                  placeholder='如 DeepSeek 配置 {"thinking": {"type": "enabled"}}',
+                  hint="本提供商默认；模型配置可覆盖",
+                  validator=_json_validator("extra_body")),
     ])
     form = form_ui(fields, title=f"编辑：{existing.name}（{pid}）",
                    style=_current_style())
@@ -355,10 +377,13 @@ def edit_settings(pid: str) -> str:
     base_url = form.values.get("base_url", "").strip()
     if not base_url or not models:
         return pid
+    flag, _ = _parse_bool(form.values.get("send_reasoning_content", ""))
     existing.name = form.values.get("name", "").strip() or existing.name
     existing.base_url = base_url
     existing.api_key = form.values.get("api_key", "")
     existing.models = models
+    existing.send_reasoning_content = flag
+    existing.extra_body = _split_extra_body(form.values.get("extra_body", ""))
     new_id = pid
     if is_udf:
         suffix = form.values.get("id_suffix", "").strip()
@@ -522,6 +547,16 @@ def _edit_model(pid: str, model: str) -> None:
     # 自定义提供商在模型库里没有数据：显示名只能回退模型 id、开关推导值
     # 恒为 false
     is_udf = pv.is_user_defined(pid)
+    # 开关留空时的回退来源：提供商级配置优先，其次模型库的 interleaved 推导
+    provider = pv.load_providers().get(pid)
+    has_provider_flag = (provider is not None
+                         and provider.send_reasoning_content is not None)
+    if has_provider_flag:
+        inherited = f"true/false，留空=按本提供商默认（{'true' if current_flag else 'false'}）"
+    elif is_udf:
+        inherited = "true/false，留空=不回传（false）"
+    else:
+        inherited = f"true/false，留空=按模型库默认（{'true' if current_flag else 'false'}）"
     fields = [
         FormField(name="name", label="显示名",
                   initial=cfg.name,
@@ -530,10 +565,7 @@ def _edit_model(pid: str, model: str) -> None:
         FormField(name="send_reasoning_content",
                   label="回传 reasoning_content",
                   initial="",
-                  placeholder=("true/false，留空=按模型库默认"
-                                f"（{'true' if current_flag else 'false'}）"
-                                if not is_udf else
-                                "true/false，留空=不回传（false）"),
+                  placeholder=inherited,
                   hint="历史思考随历史消息发回模型",
                   validator=lambda t: _parse_bool(t)[1]),
         # form_ui 是单行输入，JSON 必须压成一行回显（多行只会显示末行）

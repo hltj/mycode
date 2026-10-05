@@ -413,6 +413,69 @@ class TestEdit:
         assert ps.EDIT_MODELS in values
         assert values[0] == ps.EDIT_VARS
 
+    def test_edit_settings_has_provider_level_fields(self, monkeypatch):
+        """「修改设定值」表单含提供商级的开关与 extra_body。"""
+        pv.save_provider(_provider_config())
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(fields=fields),
+            ps.FormResult(values={f.name: f.initial for f in fields}))[1])
+        ps.edit_settings("deepseek")
+        names = [f.name for f in seen["fields"]]
+        assert "send_reasoning_content" in names
+        assert "extra_body" in names
+
+    def test_edit_settings_placeholder_by_provider_kind(self, monkeypatch):
+        """占位文字按提供商区分：自定义提供商不在模型库中，不提模型库。"""
+        texts = {}
+        for pid in ("deepseek", "udf-provider-1"):
+            pv.save_provider(_provider_config(id=pid, name=pid,
+                                              models=["m1"]))
+            seen = {}
+            monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+                seen.update(f={x.name: x for x in fields}),
+                ps.FormResult(values={x.name: x.initial for x in fields}))[1])
+            ps.edit_settings(pid)
+            texts[pid] = seen["f"]["send_reasoning_content"].placeholder
+        assert texts["deepseek"] == "true/false，留空=按模型库默认"
+        assert texts["udf-provider-1"] == "true/false，留空=不回传（false）"
+
+    def test_edit_settings_saves_provider_level(self, monkeypatch):
+        """提交后写入提供商级开关与 extra_body。"""
+        pv.save_provider(_provider_config())
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: ps.FormResult(
+            values={**{f.name: f.initial for f in fields},
+                    "send_reasoning_content": "true",
+                    "extra_body": '{"a": 1}'}))
+        ps.edit_settings("deepseek")
+        p = pv.load_providers()["deepseek"]
+        assert p.send_reasoning_content is True
+        assert p.extra_body == {"a": 1}
+
+    def test_edit_settings_blank_clears_provider_level(self, monkeypatch):
+        """留空清除提供商级设置（回到后续回退）。"""
+        pv.save_provider(_provider_config(send_reasoning_content=True,
+                                          extra_body={"a": 1}))
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: ps.FormResult(
+            values={**{f.name: f.initial for f in fields},
+                    "send_reasoning_content": "", "extra_body": ""}))
+        ps.edit_settings("deepseek")
+        p = pv.load_providers()["deepseek"]
+        assert p.send_reasoning_content is None
+        assert p.extra_body is None
+
+    def test_edit_settings_echoes_provider_level(self, monkeypatch):
+        """已配置的提供商级设置回显到表单。"""
+        pv.save_provider(_provider_config(send_reasoning_content=False,
+                                          extra_body={"a": 1}))
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(fields={f.name: f for f in fields}),
+            ps.FormResult(values={f.name: f.initial for f in fields}))[1])
+        ps.edit_settings("deepseek")
+        assert seen["fields"]["send_reasoning_content"].initial == "false"
+        assert '"a": 1' in seen["fields"]["extra_body"].initial
+
     def test_edit_loop_routes_vars(self, monkeypatch):
         """二级菜单选「修改设定值」走 edit_settings 分支（含改名）。"""
         pv.save_provider(_provider_config(id="udf-provider-1", name="X"))
@@ -876,6 +939,19 @@ class TestEditModelForm:
         assert fields[2].placeholder == \
             '如 DeepSeek 配置 {"thinking": {"type": "enabled"}}' 
         assert fields[2].hint == "JSON 对象"
+
+    def test_switch_placeholder_follows_provider_level(self, monkeypatch):
+        """提供商级配了开关时，占位文字提示「按本提供商默认」。"""
+        pv.save_provider(_provider_config(send_reasoning_content=True))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert fields[1].placeholder == "true/false，留空=按本提供商默认（true）"
+
+    def test_switch_placeholder_model_library_when_no_provider_flag(self, monkeypatch):
+        """提供商级未配开关时，仍提示「按模型库默认」。"""
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert "按模型库默认" in fields[1].placeholder
 
     def test_udf_wording_falls_back_to_model_id(self, monkeypatch):
         """自定义提供商：显示名提示改用模型 id，开关措辞与目录一致。"""

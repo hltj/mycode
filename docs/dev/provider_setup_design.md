@@ -17,6 +17,8 @@
   （`[providers.<id>.models.<model>]`）：显示名 / 回传
   `reasoning_content` 布尔 / `extra_body`（JSON 字符串）；提供商启用的
   模型 id 列表存于同级的 `enabled_models` 键。
+- 「修改设定值」可配提供商级的 `send_reasoning_content` / `extra_body`，
+  作为该提供商所有模型的默认请求设置。
 - 模型库状态（更新于 … · N 家可用 / 更新失败 / 尚未就绪）来自
   `models_registry.load_meta()` 与 `candidate_providers` 数量。
 
@@ -105,7 +107,8 @@ udf-provider-1 · 1 模型
 ```
 
 - **修改设定值**：`form_ui` 字段 id 后缀（仅自定义提供商） / 显示名 /
-  Base URL / API Key / 模型列表；自定义提供商（`udf-` 前缀）改后缀即
+  Base URL / API Key / 模型列表 / 回传 reasoning_content / extra_body
+  （后两项是**提供商级**的默认请求设置，模型级同名配置优先于它们）；自定义提供商（`udf-` 前缀）改后缀即
   重命名提供商 id：section 键更新；若是当前 `model_provider`，顶层键
   同步为新 id。显示名留空回退现有名称；后缀留空保持原 id，重名经
   校验器阻止提交。改后缀后编辑循环跟随新 id 继续。models.dev 提供商
@@ -145,7 +148,7 @@ deepseek · 2 模型
 | 字段 | 说明 |
 |------|------|
 | 显示名 | models.dev 提供商留空回退模型库名称，自定义提供商留空回退模型 id。占位文字提示当前生效值 |
-| 回传 reasoning_content | 布尔值 `true` / `false`（大小写不敏感），非布尔字面量经校验器报错；留空表示交给模型库推导。占位文字按提供商区分：models.dev 提供商 `true/false，留空=按模型库默认（true/false）`；自定义提供商无模型库数据，`true/false，留空=不回传（false）` |
+| 回传 reasoning_content | 布尔值 `true` / `false`（大小写不敏感），非布尔字面量经校验器报错；留空表示继承。占位文字按生效来源区分：`true/false，留空=按本提供商默认（true/false）`（提供商级已配）、`true/false，留空=按模型库默认（true/false）`（models.dev 提供商且提供商级未配）、`true/false，留空=不回传（false）`（自定义提供商） |
 | extra_body | JSON 对象，留空不传；非 JSON 或顶层非对象经校验器报错。占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
 
 > **回显必须单行**：`form_ui` 的输入是单行 `Buffer`，多行文本只会显示最后

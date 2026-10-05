@@ -269,9 +269,9 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 | 回传 reasoning_content | 布尔值 `true` / `false`；留空按模型库默认值 |
 | extra_body | JSON 对象，作为请求的 `extra_body` 原样透传给服务端，占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
 
-回传开关的默认值来自 models.dev 模型信息：仅当模型的
-`"interleaved": { "field": "reasoning_content" }` 时**默认开启**；显式配置
-后以配置为准。
+这两项也可在「修改设定值」里按**提供商级**配置，作为该提供商所有模型的
+默认值。生效顺序为**模型级 → 提供商级 → 模型库推导**：模型库中仅当
+`"interleaved": { "field": "reasoning_content" }` 时默认开启回传。
 
 配置写入 `~/.mycode/config.toml` 的 `[providers.<id>.models.<model>]`
 （`send_reasoning_content` 为布尔、`extra_body` 为 JSON 字符串）；该提供商

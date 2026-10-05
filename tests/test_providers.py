@@ -495,6 +495,97 @@ class TestResolveModelSettings:
         save_model_config("acme", ModelConfig(id="m-r1", extra_body={"x": 1}))
         assert resolve_extra_body("acme", "m-r1") == {"x": 1}
 
+    def test_provider_level_flag_fallback(self, env, provider):
+        """模型级未配置时回退到提供商级开关。"""
+        from mycode.providers import (ProviderConfig, resolve_send_reasoning,
+                                      save_provider)
+        self._write_cache(env, self._api())
+        save_provider(ProviderConfig(id="acme", name="Acme", base_url="u",
+                                     api_key="k",
+                                     models=["m-r1", "m-none"],
+                                     send_reasoning_content=False))
+        # 模型库推导为 True 的 m-r1 也被提供商级 False 覆盖
+        assert resolve_send_reasoning("acme", "m-r1") is False
+        assert resolve_send_reasoning("acme", "m-none") is False
+
+    def test_provider_level_flag_true_for_non_interleaved(self, env, provider):
+        """提供商级 True 可为不交错思考内容的模型开启回传。"""
+        from mycode.providers import (ProviderConfig, resolve_send_reasoning,
+                                      save_provider)
+        self._write_cache(env, self._api())
+        save_provider(ProviderConfig(id="acme", name="Acme", base_url="u",
+                                     api_key="k", models=["m-none"],
+                                     send_reasoning_content=True))
+        assert resolve_send_reasoning("acme", "m-none") is True
+
+    def test_model_level_overrides_provider_level(self, env, provider):
+        """模型级配置优先于提供商级（两个方向）。"""
+        from mycode.providers import (ModelConfig, ProviderConfig,
+                                      resolve_send_reasoning, save_model_config,
+                                      save_provider)
+        self._write_cache(env, self._api())
+        save_provider(ProviderConfig(id="acme", name="Acme", base_url="u",
+                                     api_key="k", models=["m-r1", "m-none"],
+                                     send_reasoning_content=False))
+        save_model_config("acme", ModelConfig(id="m-r1",
+                                              send_reasoning_content=True))
+        assert resolve_send_reasoning("acme", "m-r1") is True
+        assert resolve_send_reasoning("acme", "m-none") is False
+
+    def test_extra_body_falls_back_to_provider(self, provider):
+        """extra_body 同样逐级回退：模型级 → 提供商级。"""
+        from mycode.providers import (ModelConfig, ProviderConfig,
+                                      resolve_extra_body, save_model_config,
+                                      save_provider)
+        save_provider(ProviderConfig(id="acme", name="Acme", base_url="u",
+                                     api_key="k", models=["m-r1", "m-none"],
+                                     extra_body={"pv": 1}))
+        assert resolve_extra_body("acme", "m-r1") == {"pv": 1}
+        save_model_config("acme", ModelConfig(id="m-r1", extra_body={"m": 2}))
+        assert resolve_extra_body("acme", "m-r1") == {"m": 2}
+        assert resolve_extra_body("acme", "m-none") == {"pv": 1}
+
+    def test_provider_level_persisted(self, env, provider):
+        """提供商级两项写入 TOML。"""
+        from mycode import config
+        from mycode.providers import (ProviderConfig, load_providers,
+                                      save_provider)
+        save_provider(ProviderConfig(id="acme", name="A", base_url="u",
+                                     api_key="k", models=["m-r1"],
+                                     send_reasoning_content=False,
+                                     extra_body={"a": 1}))
+        body = open(config.CONFIG_FILE, encoding="utf-8").read()
+        assert "send_reasoning_content = false" in body
+        assert "extra_body = " in body
+        p = load_providers()["acme"]
+        assert p.send_reasoning_content is False
+        assert p.extra_body == {"a": 1}
+
+    def test_provider_level_absent_defaults_none(self, provider):
+        """未配置的提供商级两项为 None（走后续回退）。"""
+        from mycode.providers import load_providers
+        p = load_providers()[provider]
+        assert p.send_reasoning_content is None
+        assert p.extra_body is None
+
+    def test_save_provider_preserves_provider_level(self, env, provider):
+        """再次保存（值未变）不会丢掉提供商级配置。"""
+        from mycode.providers import (ModelConfig, ProviderConfig, load_providers,
+                                      save_model_config, save_provider)
+        save_provider(ProviderConfig(id=provider, name="P", base_url="u",
+                                     api_key="k", models=["m1"],
+                                     send_reasoning_content=True,
+                                     extra_body={"a": 1}))
+        save_model_config(provider, ModelConfig(id="m1", name="x"))
+        save_provider(ProviderConfig(id=provider, name="P2", base_url="u",
+                                     api_key="k", models=["m1"],
+                                     send_reasoning_content=True,
+                                     extra_body={"a": 1}))
+        p = load_providers()[provider]
+        assert p.name == "P2"
+        assert p.send_reasoning_content is True
+        assert p.extra_body == {"a": 1}
+
     def test_resolve_model_name(self, env, provider):
         """显示名：配置 > models.dev 缓存 > 模型 id。"""
         from mycode.providers import ModelConfig, resolve_model_name, save_model_config

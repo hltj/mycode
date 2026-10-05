@@ -9,8 +9,17 @@
 
 - 用 ``tomlkit`` 读写，保留用户手写配置的注释与格式；只增删改目标
   section 与顶层两个键。
-- 提供商已启用的模型 id 列表存于 ``enabled_models``（如
-  ``enabled_models = ["gpt-4o", "gpt-4o-mini"]``）。
+- 提供商 section 的字段：
+
+  - ``name`` / ``base_url`` / ``api_key``：显示名与连接信息；
+  - ``enabled_models``：已启用的模型 id 列表（如
+    ``["gpt-4o", "gpt-4o-mini"]``）；
+  - ``send_reasoning_content`` / ``extra_body``：**提供商级**的默认请求
+    设置（``/provider`` 的「修改设定值」维护），键缺失表示未配置。
+
+  后两项与模型级同名配置的**回退顺序**是：模型级 → 提供商级 → models.dev
+  缓存推导（仅 ``interleaved.field == "reasoning_content"`` 视为开启），
+  见 ``resolve_send_reasoning`` / ``resolve_extra_body``。
 - 模型级配置（``/provider`` 的「模型配置」菜单）存在
   ``[providers.<id>.models.<model_id>]`` 子表中：
 
@@ -36,6 +45,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from typing import Any, Optional
@@ -47,13 +57,20 @@ from mycode import config
 
 @dataclass
 class ProviderConfig:
-    """单个提供商配置。"""
+    """单个提供商配置。
+
+    ``send_reasoning_content`` / ``extra_body`` 为该提供商的**默认**请求
+    设置，模型级同名配置优先于它们（见 ``resolve_send_reasoning`` /
+    ``resolve_extra_body``）。``None`` 表示未配置。
+    """
 
     id: str
     name: str = ""
     base_url: str = ""
     api_key: str = ""
     models: list[str] = field(default_factory=list)
+    send_reasoning_content: Optional[bool] = None
+    extra_body: Optional[dict] = None
 
 
 @dataclass
@@ -99,7 +116,8 @@ def _write_document(doc: tomlkit.TOMLDocument) -> None:
 
 
 # 提供商 section 的 4 个固定字段；其余键（models 模型级配置）在 save 时保留
-_PROVIDER_FIELDS = ("name", "base_url", "api_key", "enabled_models")
+_PROVIDER_FIELDS = ("name", "base_url", "api_key", "enabled_models",
+                    "send_reasoning_content", "extra_body")
 
 
 def _provider_table(id_: str) -> tomlkit.items.Table:
@@ -136,20 +154,28 @@ def save_provider(p: ProviderConfig) -> None:
     section["base_url"] = p.base_url
     section["api_key"] = p.api_key
     section["enabled_models"] = p.models
+    if p.send_reasoning_content is not None:
+        section["send_reasoning_content"] = p.send_reasoning_content
+    if p.extra_body:
+        section["extra_body"] = json.dumps(
+            p.extra_body, ensure_ascii=False, sort_keys=True)
     section.update(keep)
 
     _write_document(doc)
 
 
 def _to_provider_config(pid: str, section: Any) -> ProviderConfig:
-    """提供商 section → ProviderConfig（启用模型列表缺省为空）。"""
+    """提供商 section → ProviderConfig（未配置的键取缺省值）。"""
     enabled = section.get("enabled_models", [])
+    flag = section.get("send_reasoning_content")
     return ProviderConfig(
         id=pid,
         name=str(section.get("name", "")),
         base_url=str(section.get("base_url", "")),
         api_key=str(section.get("api_key", "")),
         models=[str(x) for x in enabled] if isinstance(enabled, list) else [],
+        send_reasoning_content=flag if isinstance(flag, bool) else None,
+        extra_body=_parse_extra_body(section.get("extra_body")),
     )
 
 
@@ -184,8 +210,6 @@ def _parse_extra_body(raw: object) -> Optional[dict]:
         return dict(raw)
     if not isinstance(raw, str) or not raw.strip():
         return None
-    import json
-
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
@@ -267,8 +291,6 @@ def save_model_config(pid: str, mc: ModelConfig) -> None:
         if mc.send_reasoning_content is not None:
             sub["send_reasoning_content"] = mc.send_reasoning_content
         if mc.extra_body:
-            import json
-
             sub["extra_body"] = json.dumps(
                 mc.extra_body, ensure_ascii=False, sort_keys=True)
         cfgs[mc.id] = sub
@@ -278,14 +300,17 @@ def save_model_config(pid: str, mc: ModelConfig) -> None:
 def resolve_send_reasoning(pid: str, model: str) -> bool:
     """该模型是否应把 ``reasoning_content`` 回传给模型。
 
-    优先取 ``/provider`` 显式配置的开关；未配置时回退到 models.dev
-    缓存里该模型的 ``interleaved`` 推导值（仅
-    ``{"field": "reasoning_content"}`` 为真）。缓存缺失 / 模型不在缓存
-    中时默认 False。
+    逐级回退：模型级配置 → 提供商级配置 → models.dev 缓存里该模型的
+    ``interleaved`` 推导值（仅 ``{"field": "reasoning_content"}`` 为真）。
+    三处都未配置时为 False。
     """
     explicit = load_model_configs(pid).get(model)
     if explicit is not None and explicit.send_reasoning_content is not None:
         return explicit.send_reasoning_content
+    provider_flag = load_providers().get(pid)
+    if provider_flag is not None \
+            and provider_flag.send_reasoning_content is not None:
+        return provider_flag.send_reasoning_content
     return default_send_reasoning(pid, model)
 
 
@@ -307,9 +332,12 @@ def default_send_reasoning(pid: str, model: str) -> bool:
 
 
 def resolve_extra_body(pid: str, model: str) -> Optional[dict]:
-    """取该模型配置的 extra_body（未配置/非法返回 None）。"""
+    """取该模型的 extra_body：模型级配置优先，其次提供商级（都无则 None）。"""
     cfg = load_model_configs(pid).get(model)
-    return cfg.extra_body if cfg is not None else None
+    if cfg is not None and cfg.extra_body:
+        return cfg.extra_body
+    provider = load_providers().get(pid)
+    return provider.extra_body if provider is not None else None
 
 
 def resolve_model_name(pid: str, model: str) -> str:
