@@ -25,13 +25,19 @@ class SessionHistory:
 
 - `inject_meta()` — 注入元数据（id/parent_id/time）
 - `append()` — 写入文件并追加到内存 entries（**调用前必须已注入元数据**）
-- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception；assistant 消息会剥离 `reasoning_content`）
+- `get_messages()` — 过滤出可发的消息（含 ToolResultEvent.to_tool_msg / NoticeEvent.to_user_msg，排除 session/interrupt/tool_call/exception；assistant 消息统一剥离 `reasoning_content`）
 
 ### 思考内容 reasoning_content
 
 思考类模型会在 assistant 消息里返回非标准字段 `reasoning_content`
-（真实响应中落在 pydantic 的 `model_extra` 里）。该字段**只用于持久化与
-终端渲染**，发回模型前必须去掉（部分提供商收到未知字段会直接报错）。
+（真实响应中落在 pydantic 的 `model_extra` 里）。该字段始终**持久化并
+渲染**，并随 `messages` / `get_messages()` 原样保留。是否回传由**当前
+模型**的回传开关决定（`/provider` 的「模型配置」维护，未配置时按
+models.dev 的 `interleaved` 推导）：开关开启则原样回传；关闭则在**请求发出
+前**由 `strip_reasoning_all()` 统一剥离——该字段不是 openai 标准字段，
+部分提供商收到会直接报错。剥离只发生在 `cli.agent_loop` 调用
+`chat.completions.create` 的传参处（请求离开进程的唯一出口），会话与内存
+里的思考内容不受影响，之后切回支持回传的模型仍能带上。
 
 ```python
 def extract_reasoning(message: Any) -> str: ...   # 从模型响应对象取思考内容（缺失/非字符串→""）
@@ -40,10 +46,11 @@ def get_reasoning(message) -> str               # 从已构造的消息 dict 取
 def _strip_reasoning(message) -> ...            # 发回模型前移除该字段
 ```
 
-- `agent_loop` 从响应取出思考内容后：发进 `messages` 的版本**不带**该字段，
-  派发 `AssistantMessage`（持久化 + 渲染）的版本**带上**；
-- `get_messages()` 在返回给模型前统一剥离，恢复会话（`-r` / `-c`）后的
-  上下文因此也不含该字段；
+- `agent_loop` 从响应取出思考内容后：`messages` 与派发的 `AssistantMessage`
+  （持久化 + 渲染）都**带上**该字段，不在此处按开关剥离；
+- 回传开关在 `create` 传参处统一生效：开启时传原列表，关闭时传
+  `strip_reasoning_all(messages)`（新列表，不改内存里的消息对象），
+  历史与本轮消息一并按**当前模型**判断；
 - 渲染规则见 [CLI 渲染设计](./cli_render_design.md)。
 
 ### 内存结构
@@ -118,4 +125,4 @@ mycode 启动时通过 `_check_dir_trust()`（定义在 `cli.py`）检查当前�
 3. **JSONL 序列化**：公共字段平铺在 JSON 顶层，扩展字段聚合在 `type` 值对应的 key 下（key 名与 type 值一致）
 4. **ID 生成**：仅比对内存 entries，不读文件；短 ID 冲突时降级为完整 36 位 UUID
 5. **信任状态**：`is_dir_trusted()` / `trust_dir()` 是幂等的，重复调用不会产生副作用；信任状态存储在 `.dirs` 文件，每行一个目录绝对路径
-6. **reasoning_content**：只持久化 + 渲染，任何发回模型的路径（`get_messages()` 与 `agent_loop` 的 `messages`）都必须剥离该字段
+6. **reasoning_content**：始终持久化 + 渲染；`messages` / `get_messages()` 原样保留该字段，剥离只发生在 `cli.agent_loop` 的 `create` 传参处，按**当前模型**的回传开关决定

@@ -92,7 +92,7 @@ syntax_theme = "nord"
 name = "DeepSeek"
 base_url = "https://api.deepseek.com"
 api_key = "sk-1"
-models = ["deepseek-chat"]
+enabled_models = ["deepseek-chat"]
 """
 
 
@@ -279,3 +279,228 @@ class TestConfigInvalidation:
         config.get("model")  # 触发一次缓存
         pv.set_current("deepseek", "b")
         assert config.get("model") == "b"
+
+# ===================================================================
+# 模型级配置（[providers.<id>.model_config.<model>]）
+# ===================================================================
+
+class TestModelConfig:
+    """模型级配置：显示名 / 回传 reasoning_content / extra_body。"""
+
+    @pytest.fixture
+    def cfg_file(self, tmp_path, monkeypatch):
+        """指向临时 config.toml。"""
+        from mycode import config
+        path = tmp_path / "config.toml"
+        monkeypatch.setattr(config, "CONFIG_FILE", str(path))
+        return path
+
+    @pytest.fixture
+    def provider(self, cfg_file):
+        from mycode.providers import ProviderConfig, save_provider
+        save_provider(ProviderConfig(
+            id="p1", name="P1", base_url="https://x/v1", api_key="k",
+            models=["m1", "vendor/model-2"],
+        ))
+        return "p1"
+
+    def test_save_and_load_roundtrip(self, provider):
+        """模型配置写入后可读回（含 extra_body dict）。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(
+            id="m1", name="我的模型", send_reasoning_content=True,
+            extra_body={"a": 1, "b": {"c": 2}}))
+        got = load_model_configs(provider)
+        assert got["m1"] == ModelConfig(
+            id="m1", name="我的模型", send_reasoning_content=True,
+            extra_body={"a": 1, "b": {"c": 2}})
+
+    def test_model_id_with_slash_and_dot(self, cfg_file, provider):
+        """模型 id 含 / 与 . 时键能正确加引号写入并读回。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(id="vendor/model-2", name="带斜杠"))
+        assert load_model_configs(provider)["vendor/model-2"].name == "带斜杠"
+        assert '[providers.p1.models."vendor/model-2"]' in \
+            open(cfg_file, encoding="utf-8").read()
+
+    def test_flag_omitted_means_unset(self, provider):
+        """未设置开关时为 None（由 models.dev 推导，而非 False）。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(id="m1", name="只有名字"))
+        assert load_model_configs(provider)["m1"].send_reasoning_content is None
+
+    def test_flag_false_persisted(self, provider):
+        """显式 False 与「未配置」不同，能持久化。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(id="m1", send_reasoning_content=False))
+        assert load_model_configs(provider)["m1"].send_reasoning_content is False
+
+    def test_empty_name_not_written(self, cfg_file, provider):
+        """显示名为空时不写 name 键（不留 name = "" 噪音）。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(id="m1", name="",
+                                                send_reasoning_content=True))
+        body = open(cfg_file, encoding="utf-8").read()
+        assert "name =" not in body.split("models.m1]")[1]
+        assert load_model_configs(provider)["m1"].name == ""
+
+    def test_only_written_fields_present(self, cfg_file, provider):
+        """只写实际配置的字段：设 name 不写开关 / extra_body。"""
+        from mycode.providers import ModelConfig, save_model_config
+        save_model_config(provider, ModelConfig(id="m1", name="只有名字"))
+        section = open(cfg_file, encoding="utf-8").read().split("models.m1]")[1]
+        assert 'name = "只有名字"' in section
+        assert "send_reasoning_content" not in section
+        assert "extra_body" not in section
+
+    def test_all_empty_removes_entry(self, provider):
+        """三字段全空时删除该模型子表，不留空配置。"""
+        from mycode.providers import ModelConfig, load_model_configs, save_model_config
+        save_model_config(provider, ModelConfig(id="m1", name="x"))
+        assert "m1" in load_model_configs(provider)
+        save_model_config(provider, ModelConfig(id="m1"))
+        assert "m1" not in load_model_configs(provider)
+
+    def test_invalid_extra_body_json_dropped(self, provider, cfg_file):
+        """extra_body 非法 JSON 时读回为 None（写入侧已校验，此处模拟脏数据）。"""
+        cfg_file.write_text(
+            '[providers.p1.models.m1]\nextra_body = "{bad json"\n',
+            encoding="utf-8")
+        from mycode.providers import load_model_configs
+        assert load_model_configs(provider)["m1"].extra_body is None
+
+    def test_enabled_models_key_used(self, cfg_file, provider):
+        """模型 id 列表写在 enabled_models 键下（models 已被模型级配置占用）。"""
+        body = open(cfg_file, encoding="utf-8").read()
+        assert 'enabled_models = ["m1", "vendor/model-2"]' in body
+        assert pv.load_providers()["p1"].models == ["m1", "vendor/model-2"]
+
+    def test_save_provider_writes_enabled_models(self, cfg_file, provider):
+        """save_provider 写 enabled_models，且不覆盖 models 子表。"""
+        pv.save_model_config("p1", pv.ModelConfig(id="m1", send_reasoning_content=True))
+        pv.save_provider(pv.ProviderConfig(id="p1", name="P", base_url="u",
+                                           api_key="k", models=["m1"]))
+        body = open(cfg_file, encoding="utf-8").read()
+        assert "enabled_models = [\"m1\"]" in body
+        assert "send_reasoning_content = true" in body
+
+    def test_load_unknown_provider(self, cfg_file):
+        """提供商不存在时返回空 dict。"""
+        from mycode.providers import load_model_configs
+        assert load_model_configs("nope") == {}
+
+    def test_save_unknown_provider_noop(self, cfg_file):
+        """提供商不存在时 save 不写盘。"""
+        from mycode.providers import ModelConfig, save_model_config
+        save_model_config("nope", ModelConfig(id="m1", name="x"))
+        assert not cfg_file.exists() or "nope" not in cfg_file.read_text(encoding="utf-8")
+
+    def test_save_provider_preserves_model_config(self, provider):
+        """编辑提供商设定值不清掉模型级配置。"""
+        from mycode.providers import (ModelConfig, ProviderConfig, load_model_configs,
+                                      load_providers, save_model_config, save_provider)
+        save_model_config(provider, ModelConfig(id="m1", name="保留我",
+                                                send_reasoning_content=True))
+        save_provider(ProviderConfig(id="p1", name="改名", base_url="https://y/v1",
+                                     api_key="k2", models=["m1"]))
+        assert load_providers()["p1"].name == "改名"
+        cfg = load_model_configs(provider)["m1"]
+        assert cfg.name == "保留我" and cfg.send_reasoning_content is True
+
+    def test_delete_provider_removes_model_config(self, provider):
+        """删除提供商时其模型配置一并消失。"""
+        from mycode.providers import (ModelConfig, delete_provider, load_model_configs,
+                                      save_model_config)
+        save_model_config(provider, ModelConfig(id="m1", name="x"))
+        delete_provider(provider)
+        assert load_model_configs(provider) == {}
+
+
+class TestResolveModelSettings:
+    """回传开关 / extra_body / 显示名的解析优先级。"""
+
+    @pytest.fixture
+    def env(self, tmp_path, monkeypatch):
+        """临时 home：config.toml 与 models.dev 缓存都落在这里。
+
+        models_registry 的缓存目录按 ``MYCODE_HOME_DIR`` 环境变量在调用时
+        解析（不在导入时固定），因此两个来源都要指向同一个 home。
+        """
+        from mycode import config
+        home = tmp_path / ".mycode"
+        monkeypatch.setenv("MYCODE_HOME_DIR", str(home))
+        monkeypatch.setattr(config, "CONFIG_FILE", str(home / "config.toml"))
+        (home / "models_cache").mkdir(parents=True)
+        return home
+
+    @staticmethod
+    def _write_cache(home, api: dict) -> None:
+        import json
+        (home / "models_cache" / "api.json").write_text(
+            json.dumps(api), encoding="utf-8")
+
+    @staticmethod
+    def _api() -> dict:
+        return {"acme": {"npm": "@ai-sdk/openai-compatible", "name": "Acme",
+                         "api": "https://a/v1", "env": ["API_KEY"], "models": {
+            "m-r1": {"id": "m-r1", "name": "R1",
+                     "interleaved": {"field": "reasoning_content"}},
+            "m-true": {"id": "m-true", "name": "T", "interleaved": True},
+            "m-det": {"id": "m-det", "name": "D",
+                      "interleaved": {"field": "reasoning_details"}},
+            "m-none": {"id": "m-none", "name": "N"},
+        }}}
+
+    @pytest.fixture
+    def provider(self, env):
+        from mycode.providers import ProviderConfig, save_provider
+        save_provider(ProviderConfig(id="acme", name="Acme", base_url="u",
+                                     api_key="k",
+                                     models=["m-r1", "m-true", "m-det", "m-none"]))
+        return "acme"
+
+    def test_default_from_interleaved_field(self, env, provider):
+        """interleaved.field == reasoning_content → 默认回传。"""
+        from mycode.providers import resolve_send_reasoning
+        self._write_cache(env, self._api())
+        assert resolve_send_reasoning("acme", "m-r1") is True
+
+    def test_default_other_interleaved_forms(self, env, provider):
+        """interleaved 为 true / 其他字段 / 缺失 → 默认不回传。"""
+        from mycode.providers import resolve_send_reasoning
+        self._write_cache(env, self._api())
+        for m in ("m-true", "m-det", "m-none"):
+            assert resolve_send_reasoning("acme", m) is False
+
+    def test_no_cache_defaults_false(self, env, provider):
+        """缓存缺失时默认不回传（避免向不支持的模型发非标准字段）。"""
+        from mycode.providers import resolve_send_reasoning
+        assert resolve_send_reasoning("acme", "m-r1") is False
+
+    def test_explicit_overrides_default(self, env, provider):
+        """显式配置优先于 models.dev 推导（两个方向都覆盖）。"""
+        from mycode.providers import (ModelConfig, resolve_send_reasoning,
+                                      save_model_config)
+        self._write_cache(env, self._api())
+        save_model_config("acme", ModelConfig(id="m-r1", send_reasoning_content=False))
+        save_model_config("acme", ModelConfig(id="m-none", send_reasoning_content=True))
+        assert resolve_send_reasoning("acme", "m-r1") is False
+        assert resolve_send_reasoning("acme", "m-none") is True
+
+    def test_resolve_extra_body(self, provider):
+        """extra_body 解析：已配置返回 dict，未配置返回 None。"""
+        from mycode.providers import (ModelConfig, resolve_extra_body,
+                                      save_model_config)
+        assert resolve_extra_body("acme", "m-r1") is None
+        save_model_config("acme", ModelConfig(id="m-r1", extra_body={"x": 1}))
+        assert resolve_extra_body("acme", "m-r1") == {"x": 1}
+
+    def test_resolve_model_name(self, env, provider):
+        """显示名：配置 > models.dev 缓存 > 模型 id。"""
+        from mycode.providers import ModelConfig, resolve_model_name, save_model_config
+        self._write_cache(env, self._api())
+        assert resolve_model_name("acme", "m-r1") == "R1"
+        save_model_config("acme", ModelConfig(id="m-r1", name="自定义"))
+        assert resolve_model_name("acme", "m-r1") == "自定义"
+        # 缓存里没有的模型回退 id
+        assert resolve_model_name("acme", "unknown-model") == "unknown-model"

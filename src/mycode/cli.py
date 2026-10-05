@@ -148,6 +148,7 @@ from mycode.session import (
     AbortLoop,
     attach_reasoning,
     extract_reasoning,
+    strip_reasoning_all,
 )
 from mycode.mode import (
     MODE_STATE,
@@ -410,13 +411,25 @@ def agent_loop(
             reset_todo_stale()
 
         # 调用模型
+        # extra_body：/provider 的「模型配置」可为模型配额外的请求体字段，
+        # 原样透传给服务端（如 {"thinking": {"type": "enabled"}}）。
+        extra_body = _pv.resolve_extra_body(provider, model)
+        create_kwargs: dict[str, Any] = {}
+        if extra_body:
+            create_kwargs["extra_body"] = extra_body
+        # reasoning_content 回传开关（/provider「模型配置」）：关闭时在这里
+        # 统一剥离——这里是请求离开进程的唯一出口，会话里存的思考内容
+        # 不受影响，下次切回支持回传的模型仍能带上。
+        out_messages = messages if _pv.resolve_send_reasoning(provider, model) \
+            else strip_reasoning_all(messages)
         try:
             # noinspection PyTypeChecker
             response = get_client().chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=out_messages,
                 tools=tools,
                 tool_choice="auto",
+                **create_kwargs,
             )
         except KeyboardInterrupt:
             # Ctrl-C 中断大模型等待：分发 InterruptEvent，然后跳出循环、
@@ -454,7 +467,8 @@ def agent_loop(
 
         # 思考内容：部分思考类模型会返回 reasoning_content（非 openai 标准
         # 字段，通常落在 pydantic 的 model_extra 里）。存在且非空时记录到
-        # 会话并渲染，但发回模型前要去掉（部分提供商收到该字段会报错）。
+        # 会话并渲染；回传与否由模型配置决定，但剥离统一在 create 传参处
+        # 按当前模型处理，这里始终把思考内容放进 messages。
         reasoning_str = extract_reasoning(message)
 
         # 将 Pydantic tool_calls 转为 list[ChatCompletionMessageToolCallUnionParam]
@@ -471,10 +485,12 @@ def agent_loop(
         }
         if serialized_tool_calls:
             assistant_msg['tool_calls'] = serialized_tool_calls
-        # 发给模型的版本去掉 reasoning_content（非标准字段）
+        # 思考内容随消息一起保留（开关关闭时由 create 传参处统一剥离）
+        if reasoning_str.strip():
+            assistant_msg = attach_reasoning(assistant_msg, reasoning_str)
         messages.append(assistant_msg)
 
-        # dispatch AI 回复（持久化 + 渲染的版本带上 reasoning_content）
+        # dispatch AI 回复（持久化 + 渲染的版本始终带上 reasoning_content）
         bus.dispatch(AssistantMessage(
             model=model, provider=provider,
             message=attach_reasoning(assistant_msg, reasoning_str),

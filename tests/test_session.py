@@ -19,6 +19,7 @@ from mycode.session import (
     _dict_to_agent_message,
     _msg_to_dict,
     _strip_reasoning,
+    strip_reasoning_all,
     get_reasoning,
     attach_reasoning,
     extract_reasoning,
@@ -1213,14 +1214,37 @@ class TestReasoningContent:
         assistant = [e for e in loaded.entries if isinstance(e, AssistantMessage)][0]
         assert get_reasoning(assistant.message) == "重放的思考"
 
-    def test_get_messages_strips_reasoning(self, session_history):
-        """发回模型的消息不带 reasoning_content（非标准字段会报错）。"""
+    def test_get_messages_keeps_reasoning(self, session_history):
+        """get_messages 原样返回思考内容（剥离在请求发出前统一做）。"""
         session_history.append(AssistantMessage(
             model="test-model",
             message=attach_reasoning(self._msg(content="done"), "思考"),
         ))
-        msgs = session_history.get_messages()
-        assert msgs[-1] == {"role": "assistant", "content": "done"}
+        assert session_history.get_messages()[-1] == {
+            "role": "assistant", "content": "done", "reasoning_content": "思考"}
+
+    def test_strip_reasoning_all_only_touches_assistant(self):
+        """只剥离 assistant 消息的该字段，其他角色原样。"""
+        msgs: list = [
+            {"role": "user", "content": "问"},
+            {"role": "assistant", "content": "答", "reasoning_content": "想"},
+            {"role": "tool", "tool_call_id": "t1", "content": "结果",
+             "reasoning_content": "不该被动"},
+            {"role": "assistant", "content": "无思考"},
+        ]
+        out = strip_reasoning_all(msgs)
+        assert out[0] == {"role": "user", "content": "问"}
+        assert out[1] == {"role": "assistant", "content": "答"}
+        assert out[2] is msgs[2]
+        assert out[3] is msgs[3]
+
+    def test_strip_reasoning_all_does_not_mutate_input(self):
+        """不修改入参里的消息对象（会话中的思考内容保留）。"""
+        msg = attach_reasoning(self._msg(content="答"), "想")
+        msgs: list = [msg]
+        strip_reasoning_all(msgs)
+        assert msgs[0] is msg
+        assert get_reasoning(msg) == "想"
 
     def test_get_messages_user_message_unchanged(self, session_history):
         """用户消息不做处理（无该字段，原样返回）。"""

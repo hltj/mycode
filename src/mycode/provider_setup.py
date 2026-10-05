@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Callable, Optional
 
@@ -30,8 +31,13 @@ EDIT_PREFIX = "edit:"
 
 EDIT_VARS = "edit_vars"
 EDIT_MODELS = "edit_models"
+EDIT_MODEL_CONFIG = "edit_model_config"
 EDIT_DELETE = "edit_delete"
 EDIT_BACK = "edit_back"
+
+# 模型配置三级菜单
+MODEL_CONFIG_PREFIX = "model_config:"
+MODEL_CONFIG_BACK = "model_config_back"
 
 # 删除确认
 CONFIRM_DELETE = "confirm_delete"
@@ -427,22 +433,176 @@ def delete_provider(pid: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# 模型配置（显示名 / 回传 reasoning_content / extra_body）
+# ---------------------------------------------------------------------------
+
+def _is_model_configured(cfg: pv.ModelConfig | None) -> bool:
+    """该模型是否已自定义过开关或 extra_body。"""
+    return cfg is not None and bool(
+        cfg.send_reasoning_content is not None or cfg.extra_body)
+
+
+def _model_config_option(pid: str, model: str,
+                         cfg: pv.ModelConfig | None) -> AskOption:
+    """单个模型的菜单项：label「模型名（模型id）」，已配置则标注。"""
+    name = pv.resolve_model_name(pid, model)
+    return AskOption(
+        label=f"{name}（{model}）",
+        value=f"{MODEL_CONFIG_PREFIX}{model}",
+        description="已配置" if _is_model_configured(cfg) else "",
+    )
+
+
+def _model_config_options(existing: pv.ProviderConfig,
+                          configs: dict[str, pv.ModelConfig]) -> list[AskOption]:
+    """模型配置三级菜单选项：label 为「模型名（模型id）」。
+
+    「模型名」用已配置的显示名，其次用 models.dev 缓存里的名字，都没有
+    时用模型 id。description 标注是否已自定义配置。
+    """
+    return [
+        _model_config_option(existing.id, m, configs.get(m))
+        for m in existing.models
+    ] + [AskOption(label="返回", value=MODEL_CONFIG_BACK)]
+
+
+def _parse_bool(text: str) -> tuple[Optional[bool], Optional[str]]:
+    """文本 → 布尔；空串返回 (None, None)，非法值返回 (None, 错误串)。"""
+    s = (text or "").strip().lower()
+    if not s:
+        return None, None
+    if s == "true":
+        return True, None
+    if s == "false":
+        return False, None
+    return None, "请填 true 或 false"
+
+
+def _json_validator(label: str) -> Callable[[str], Optional[str]]:
+    """JSON 对象校验器：空串合法；非 JSON 或顶层非对象返回错误串。"""
+    def _validate(text: str) -> Optional[str]:
+        s = (text or "").strip()
+        if not s:
+            return None
+        try:
+            parsed = json.loads(s)
+        except (json.JSONDecodeError, ValueError):
+            return f"{label}不是合法 JSON"
+        if not isinstance(parsed, dict):
+            return f"{label}必须是 JSON 对象"
+        return None
+    return _validate
+
+
+def _split_extra_body(text: str) -> Optional[dict]:
+    """extra_body 文本 → dict（空串/非法返回 None；调用前已由校验器拦截非法）。"""
+    s = (text or "").strip()
+    if not s:
+        return None
+    try:
+        parsed = json.loads(s)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _edit_model(pid: str, model: str) -> None:
+    """配置单个模型：显示名 / 回传 reasoning_content / extra_body。
+
+    回传开关的初始值取 ``providers.resolve_send_reasoning``（已显式配置的
+    用配置值，否则用 models.dev 的 interleaved 推导值）。留空表示回到
+    「由 models.dev 推导」——``send_reasoning_content`` 键被删除。
+    """
+    existing = pv.load_providers().get(pid)
+    if existing is None or model not in existing.models:
+        return
+    cfg = pv.load_model_configs(pid).get(model) or pv.ModelConfig(id=model)
+    current_flag = pv.resolve_send_reasoning(pid, model)
+    # 自定义提供商在模型库里没有数据：显示名只能回退模型 id、开关推导值
+    # 恒为 false
+    is_udf = pv.is_user_defined(pid)
+    fields = [
+        FormField(name="name", label="显示名",
+                  initial=cfg.name,
+                  placeholder=pv.resolve_model_name(pid, model),
+                  hint="留空则用模型 id" if is_udf else "留空则用模型库名称"),
+        FormField(name="send_reasoning_content",
+                  label="回传 reasoning_content",
+                  initial="",
+                  placeholder=("true/false，留空=按模型库默认"
+                                f"（{'true' if current_flag else 'false'}）"
+                                if not is_udf else
+                                "true/false，留空=不回传（false）"),
+                  hint="历史思考随历史消息发回模型",
+                  validator=lambda t: _parse_bool(t)[1]),
+        # form_ui 是单行输入，JSON 必须压成一行回显（多行只会显示末行）
+        FormField(name="extra_body", label="extra_body",
+                  initial=(json.dumps(cfg.extra_body, ensure_ascii=False)
+                           if cfg.extra_body else ""),
+                  placeholder='如 DeepSeek 配置 {"thinking": {"type": "enabled"}}',
+                  hint="JSON 对象",
+                  validator=_json_validator("extra_body")),
+    ]
+    if cfg.send_reasoning_content is not None:
+        # 显式配置过：回显当前值；未配置则留空，placeholder 提示推导值
+        fields[1].initial = "true" if cfg.send_reasoning_content else "false"
+    # 显示名（未配置时 resolve_model_name 回退模型库名称 / 模型 id）
+    display = pv.resolve_model_name(pid, model)
+    form = form_ui(
+        fields,
+        title=f"模型配置：{display}（{model}）",
+        description="配置该模型的显示名、是否回传思考内容与额外请求体",
+        style=_current_style(),
+    )
+    if form.aborted:
+        return
+    flag, _ = _parse_bool(form.values.get("send_reasoning_content", ""))
+    pv.save_model_config(pid, pv.ModelConfig(
+        id=model,
+        name=form.values.get("name", "").strip(),
+        send_reasoning_content=flag,
+        extra_body=_split_extra_body(form.values.get("extra_body", "")),
+    ))
+
+
+def _run_model_config_loop(pid: str) -> None:
+    """模型配置三级菜单循环：列出该提供商的模型，进入单个模型配置。"""
+    while True:
+        existing = pv.load_providers().get(pid)
+        if existing is None:
+            return
+        if not existing.models:
+            # 没有模型可配置：直接返回，不弹空菜单
+            return
+        q = AskQuestion(
+            title=f"模型配置：{existing.name}",
+            description=f"{pid} · {len(existing.models)} 模型",
+            options=_model_config_options(existing, pv.load_model_configs(pid)),
+        )
+        result = ask_ui([q], style=_current_style())
+        if result.aborted:
+            return
+        value = result.answers[0].selected[0] if result.answers[0].selected \
+            else MODEL_CONFIG_BACK
+        if value == MODEL_CONFIG_BACK:
+            return
+        if value.startswith(MODEL_CONFIG_PREFIX):
+            _edit_model(pid, value[len(MODEL_CONFIG_PREFIX):])
+
+
 def _edit_menu_question(pid: str, existing: pv.ProviderConfig) -> AskQuestion:
     """构造编辑二级菜单（models.dev 与自定义提供商选项不同）。"""
-    if pv.is_user_defined(pid):
-        # 自定义提供商：模型列表在「修改设定值」表单中编辑，无「重选模型」
-        opts = [
-            AskOption(label="修改设定值", value=EDIT_VARS),
-            AskOption(label="删除模型提供商", value=EDIT_DELETE),
-            AskOption(label="返回", value=EDIT_BACK),
-        ]
-    else:
-        opts = [
-            AskOption(label="修改设定值", value=EDIT_VARS),
-            AskOption(label="重选模型", value=EDIT_MODELS),
-            AskOption(label="删除模型提供商", value=EDIT_DELETE),
-            AskOption(label="返回", value=EDIT_BACK),
-        ]
+    opts = [AskOption(label="修改设定值", value=EDIT_VARS)]
+    # 自定义提供商的模型列表在「修改设定值」表单中编辑，无「重选模型」
+    if not pv.is_user_defined(pid):
+        opts.append(AskOption(label="重选模型", value=EDIT_MODELS))
+    opts.extend([
+        AskOption(label="模型配置", value=EDIT_MODEL_CONFIG,
+                  description=f"{len(existing.models)} 个模型可配置"),
+        AskOption(label="删除模型提供商", value=EDIT_DELETE),
+        AskOption(label="返回", value=EDIT_BACK),
+    ])
     return AskQuestion(
         title=f"编辑：{existing.name}",
         description=f"{pid} · {len(existing.models)} 模型",
@@ -491,6 +651,8 @@ def _run_edit_loop(pid: str) -> None:
             pid = edit_settings(pid)
         elif value == EDIT_MODELS:
             edit_reselect_models(pid)
+        elif value == EDIT_MODEL_CONFIG:
+            _run_model_config_loop(pid)
         elif value == EDIT_DELETE:
             delete_provider(pid)
             return

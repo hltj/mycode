@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import os
 import sys
+import json
+import tempfile
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -2398,11 +2400,15 @@ class TestAgentLoopReasoningContent:
         assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
         assert assistant.message.get("reasoning_content") == "先看目录再改文件"
 
-    def test_reasoning_not_in_messages_sent_to_model(self):
-        """发给模型的消息不带 reasoning_content（非标准字段会报错）。"""
+    def test_reasoning_kept_in_messages_by_default(self):
+        """内存里的 messages 保留 reasoning_content。
+
+        剥离不在这里做，而是统一在 create 传参处按当前模型的开关处理。
+        """
         messages, _ = _run_loop_with_message(
             _FakeReasoningMessage(content="完成", reasoning="思考"))
-        assert messages[-1] == {"role": "assistant", "content": "完成"}
+        assert messages[-1] == {
+            "role": "assistant", "content": "完成", "reasoning_content": "思考"}
 
     def test_empty_reasoning_not_attached(self):
         """空串 / None：不附加 reasoning_content 字段。"""
@@ -2447,8 +2453,8 @@ class TestAgentLoopReasoningContent:
         assistant = [m for m in captured if isinstance(m, AssistantMessage)][0]
         assert assistant.message.get("reasoning_content") == "先列目录"
         assert assistant.message.get("tool_calls") is not None
-        # 发给模型的版本仍不带 reasoning_content
-        assert "reasoning_content" not in messages[0]
+        # 内存里的 assistant 消息保留思考内容（剥离在 create 传参处按开关做）
+        assert messages[0]["reasoning_content"] == "先列目录"
 
     def test_reasoning_rendered_to_terminal(self, capsys):
         """渲染：AssistantMessage 带 reasoning 时输出「思考过程」区块。"""
@@ -2467,3 +2473,173 @@ class TestAgentLoopReasoningContent:
             out = capsys.readouterr().out
             assert expect in out
             assert "可见的思考内容" in out
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content 回传开关 + extra_body
+# ---------------------------------------------------------------------------
+
+class _FakeReasoningMsg(_FakeMessage):
+    def __init__(self, content, reasoning=None, tool_calls=None):
+        super().__init__(content, tool_calls)
+        self.model_extra = {"reasoning_content": reasoning}
+
+
+def _loop_with_provider_config(pid, model, **model_cfg):
+    """配置提供商与模型级配置，跑一次 agent_loop。
+
+    返回 (发给模型的消息列表, 事件列表, create 调用对象)。config.toml 与
+    models.dev 缓存都隔离到临时 home，避免用例之间串配置。
+    """
+    from mycode import config, providers as pv
+
+    home = tempfile.mkdtemp()
+    config.CONFIG_FILE = os.path.join(home, "config.toml")
+    os.makedirs(os.path.join(home, "models_cache"), exist_ok=True)
+    pv.save_provider(pv.ProviderConfig(id=pid, name="P", base_url="https://x/v1",
+                                        api_key="k", models=[model]))
+    if model_cfg:
+        pv.save_model_config(pid, pv.ModelConfig(id=model, **model_cfg))
+
+    messages: list = []
+    bus = cli.AgentEventBus()
+    events: list = []
+    bus.register(lambda m: events.append(m))
+    msg = _FakeReasoningMsg(content="完成", reasoning="思考内容")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create = MagicMock(
+        side_effect=[_FakeResponse(msg, finish_reason="stop")])
+    with patch.object(cli, "client", fake_client), \
+         patch.object(cli.ToolsRegistry, "get_tools", return_value=[]):
+        cli.agent_loop(messages, bus, model=model, provider=pid)
+    return messages, events, fake_client.chat.completions.create
+
+
+class TestAgentLoopSendReasoning:
+    """回传开关：在 create 传参处决定是否剥离 reasoning_content。"""
+
+    @staticmethod
+    def _sent(create, call: int = -1):
+        """取第 call 次实际发给 create 的消息列表。"""
+        return create.call_args_list[call].kwargs["messages"]
+
+    @staticmethod
+    def _first_assistant(messages):
+        """取消息列表中的第一条 assistant 消息。"""
+        return next(m for m in messages if m.get("role") == "assistant")
+
+    def _two_rounds(self, monkeypatch, flag, history=None):
+        """跑两轮：第一轮带思考内容 + 工具调用，第二轮收尾 stop。
+
+        返回 (内存 messages, create mock)。第二轮请求的 messages 里含第一轮
+        的 assistant 消息，可用来观察剥离行为。
+        """
+        tc = _make_tool_call(call_id="c1", name="bash",
+                             args='{"command": "ls"}')
+        create = MagicMock(side_effect=[
+            _FakeResponse(_FakeReasoningMsg(
+                content="完成", reasoning="思考内容",
+                tool_calls=[_FakeTC(tc)]), finish_reason="tool_calls"),
+            _FakeResponse(_FakeMessage(content="收尾"), finish_reason="stop"),
+        ])
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = create
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]), \
+             patch.object(cli.ToolsRegistry, "get_handler",
+                          return_value=lambda **kw: "结果"), \
+             patch.object(cli._pv, "resolve_send_reasoning",
+                          lambda p, m: flag):
+            messages = list(history or [])
+            cli.agent_loop(messages, cli.AgentEventBus(),
+                           model="m1", provider="p1")
+        return messages, create
+
+    def test_switch_on_sends_reasoning(self, monkeypatch):
+        """开关开启：发给模型的消息带 reasoning_content。"""
+        _, create = self._two_rounds(monkeypatch, True)
+        assert self._first_assistant(
+            self._sent(create))["reasoning_content"] == "思考内容"
+
+    def test_switch_off_strips_reasoning(self, monkeypatch):
+        """开关关闭：发给模型的消息不带 reasoning_content。"""
+        _, create = self._two_rounds(monkeypatch, False)
+        assert "reasoning_content" not in self._first_assistant(
+            self._sent(create))
+
+    def test_in_memory_messages_keep_reasoning(self, monkeypatch):
+        """剥离只作用于传参，内存里的 messages 保留思考内容。"""
+        messages, create = self._two_rounds(monkeypatch, False)
+        assert self._first_assistant(messages)["reasoning_content"] == "思考内容"
+        assert "reasoning_content" not in self._first_assistant(
+            self._sent(create))
+
+    def test_strips_history_messages_too(self, monkeypatch):
+        """历史消息里的思考内容同样按当前模型统一剥离，其他角色原样。"""
+        history: list = [
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "旧回答",
+             "reasoning_content": "旧思考"},
+            {"role": "tool", "tool_call_id": "t1", "content": "结果"},
+        ]
+        _, create = self._two_rounds(monkeypatch, False, history)
+        sent = self._sent(create)
+        assert sent[1] == {"role": "assistant", "content": "旧回答"}
+        assert sent[0] == {"role": "user", "content": "问题"}
+        assert sent[2] == {"role": "tool", "tool_call_id": "t1", "content": "结果"}
+
+    def test_history_kept_when_switch_on(self, monkeypatch):
+        """开关开启：历史消息的思考内容原样回传。"""
+        history: list = [
+            {"role": "assistant", "content": "旧回答",
+             "reasoning_content": "旧思考"},
+        ]
+        _, create = self._two_rounds(monkeypatch, True, history)
+        assert self._sent(create)[0]["reasoning_content"] == "旧思考"
+
+    def test_event_always_records_reasoning(self):
+        """无论开关如何，持久化/渲染的事件都带 reasoning_content。"""
+        from mycode.session import get_reasoning
+        for flag in (True, False):
+            _, events, _ = _loop_with_provider_config(
+                "p1", "m1", send_reasoning_content=flag)
+            assistant = [e for e in events
+                         if isinstance(e, cli.AssistantMessage)][0]
+            assert get_reasoning(assistant.message) == "思考内容"
+
+    def test_empty_reasoning_not_attached(self):
+        """思考内容为空时即使开关开启也不附加该字段。"""
+        messages: list = []
+        bus = cli.AgentEventBus()
+        fake_client = MagicMock()
+        fake_client.chat.completions.create = MagicMock(side_effect=[
+            _FakeResponse(_FakeReasoningMsg(content="完成", reasoning="  "),
+                          finish_reason="stop")])
+        with patch.object(cli, "client", fake_client), \
+             patch.object(cli.ToolsRegistry, "get_tools", return_value=[]), \
+             patch.object(cli._pv, "resolve_send_reasoning", return_value=True):
+            cli.agent_loop(messages, bus, model="m1", provider="p1")
+        assert messages[-1] == {"role": "assistant", "content": "完成"}
+
+
+class TestAgentLoopExtraBody:
+    """extra_body：模型配置的额外请求体透传给 create()。"""
+
+    def test_extra_body_passed_through(self):
+        """配置了 extra_body：作为 create 的 extra_body 关键字传入。"""
+        _, _, create = _loop_with_provider_config(
+            "p1", "m1", extra_body={"chat_template_kwargs": {"thinking": True}})
+        assert create.call_args.kwargs["extra_body"] == {
+            "chat_template_kwargs": {"thinking": True}}
+
+    def test_no_extra_body_omits_kwarg(self):
+        """未配置 extra_body：调用里不出现该关键字。"""
+        _, _, create = _loop_with_provider_config("p1", "m1")
+        assert "extra_body" not in create.call_args.kwargs
+
+    def test_extra_body_and_reasoning_combined(self):
+        """两个配置可同时生效。"""
+        messages, _, create = _loop_with_provider_config(
+            "p1", "m1", send_reasoning_content=True, extra_body={"k": 1})
+        assert messages[-1]["reasoning_content"] == "思考内容"
+        assert create.call_args.kwargs["extra_body"] == {"k": 1}

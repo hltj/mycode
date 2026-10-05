@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import pytest
@@ -627,3 +628,327 @@ class TestEdit:
     def test_delete_nonexistent(self, monkeypatch):
         """提供商不存在：不询问直接返回。"""
         assert ps.delete_provider("nope") is False
+
+# ===================================================================
+# 模型配置（三级菜单 + form_ui）
+# ===================================================================
+
+class TestModelConfigMenu:
+    """「模型配置」菜单：位置、模型项 label、进入单个模型配置。"""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path, monkeypatch):
+        config.CONFIG_FILE = str(tmp_path / "config.toml")
+        monkeypatch.setenv("MYCODE_HOME_DIR", str(tmp_path / ".mycode"))
+        monkeypatch.setattr(ps, "candidate_providers", lambda: {})
+        config.invalidate()
+
+    def test_edit_menu_catalog(self):
+        """models.dev 提供商的二级菜单项与顺序。"""
+        pv.save_provider(_provider_config())
+        q = ps._edit_menu_question("deepseek", _providers()["deepseek"])
+        values = [o.effective_value() for o in q.options or []]
+        assert values == [ps.EDIT_VARS, ps.EDIT_MODELS, ps.EDIT_MODEL_CONFIG,
+                          ps.EDIT_DELETE, ps.EDIT_BACK]
+
+    def test_edit_menu_user_defined(self):
+        """自定义提供商的二级菜单项与顺序（无「重选模型」）。"""
+        pv.save_provider(_provider_config(id="udf-provider-1", name="X"))
+        q = ps._edit_menu_question("udf-provider-1", _providers()["udf-provider-1"])
+        values = [o.effective_value() for o in q.options or []]
+        assert values == [ps.EDIT_VARS, ps.EDIT_MODEL_CONFIG,
+                          ps.EDIT_DELETE, ps.EDIT_BACK]
+
+    def test_model_options_label_name_and_id(self):
+        """模型项 label 为「模型名（模型id）」，末项为「返回」。"""
+        pv.save_provider(_provider_config())
+        existing = _providers()["deepseek"]
+        monkey_info = {"deepseek": _provider_info()}
+        original = ps.pv.resolve_model_name
+        ps.pv.resolve_model_name = lambda pid, m: monkey_info[pid].models[m].name
+        try:
+            opts = ps._model_config_options(existing, {})
+        finally:
+            ps.pv.resolve_model_name = original
+        labels = [o.label for o in opts]
+        assert labels[0] == "DeepSeek Chat（deepseek-chat）"
+        assert labels[-1] == "返回"
+        assert opts[0].effective_value() == f"{ps.MODEL_CONFIG_PREFIX}deepseek-chat"
+
+    def test_model_options_marks_configured(self):
+        """已配置开关/extra_body 的模型在描述里标注「已配置」。"""
+        pv.save_provider(_provider_config())
+        pv.save_model_config("deepseek",
+                             pv.ModelConfig(id="deepseek-chat",
+                                            send_reasoning_content=True))
+        opts = ps._model_config_options(_providers()["deepseek"],
+                                        pv.load_model_configs("deepseek"))
+        assert opts[0].description == "已配置"
+        assert opts[1].description == ""
+
+    def test_loop_no_models_returns_without_prompt(self, monkeypatch):
+        """提供商没有模型时直接返回，不弹空菜单。"""
+        pv.save_provider(_provider_config(models=[]))
+        called = []
+        monkeypatch.setattr(ps, "ask_ui",
+                            lambda qs, **kw: called.append(qs) or None)
+        ps._run_model_config_loop("deepseek")
+        assert called == []
+
+    def test_loop_back_exits(self, monkeypatch):
+        """选「返回」退出三级菜单。"""
+        pv.save_provider(_provider_config())
+        monkeypatch.setattr(ps, "ask_ui", lambda qs, **kw: AskResult(
+            answers=[AskAnswer(selected=[ps.MODEL_CONFIG_BACK])]))
+        ps._run_model_config_loop("deepseek")
+
+    def test_loop_opens_single_model_form(self, monkeypatch):
+        """选某个模型进入该模型的 form_ui 配置，随后回到菜单。"""
+        pv.save_provider(_provider_config())
+        seen = {"forms": 0}
+        # 先选模型进表单，再选「返回」退出循环
+        answers = iter([
+            AskResult(answers=[AskAnswer(
+                selected=[f"{ps.MODEL_CONFIG_PREFIX}deepseek-reasoner"])]),
+            AskResult(answers=[AskAnswer(selected=[ps.MODEL_CONFIG_BACK])]),
+        ])
+
+        def fake_ask(qs, **kw):
+            seen["question"] = qs[0]
+            return next(answers)
+
+        def fake_form(fields, **kw):
+            seen["fields"] = fields
+            seen["title"] = kw.get("title")
+            seen["forms"] += 1
+            return ps.FormResult(values={f.name: "" for f in fields})
+
+        monkeypatch.setattr(ps, "ask_ui", fake_ask)
+        monkeypatch.setattr(ps, "form_ui", fake_form)
+        ps._run_model_config_loop("deepseek")
+        assert seen["forms"] == 1
+        assert [f.name for f in seen["fields"]] == [
+            "name", "send_reasoning_content", "extra_body"]
+        assert "deepseek-reasoner" in seen["title"]
+
+
+class TestEditModelForm:
+    """单个模型配置表单：初始值、校验、保存。"""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path, monkeypatch):
+        config.CONFIG_FILE = str(tmp_path / "config.toml")
+        monkeypatch.setenv("MYCODE_HOME_DIR", str(tmp_path / ".mycode"))
+        monkeypatch.setattr(ps, "candidate_providers", lambda: {})
+        config.invalidate()
+        pv.save_provider(_provider_config())
+
+    def _run(self, monkeypatch, values, pid="deepseek", model="deepseek-chat"):
+        seen = {}
+
+        def fake_form(fields, **kw):
+            seen["fields"] = fields
+            return ps.FormResult(values=dict(values))
+
+        monkeypatch.setattr(ps, "form_ui", fake_form)
+        ps._edit_model(pid, model)
+        return seen["fields"]
+
+    def test_saves_all_three_fields(self, monkeypatch):
+        """三项配置写入模型级配置。"""
+        self._run(monkeypatch, {
+            "name": "我的 DeepSeek",
+            "send_reasoning_content": "true",
+            "extra_body": '{"chat_template_kwargs": {"thinking": true}}',
+        })
+        cfg = pv.load_model_configs("deepseek")["deepseek-chat"]
+        assert cfg.name == "我的 DeepSeek"
+        assert cfg.send_reasoning_content is True
+        assert cfg.extra_body == {"chat_template_kwargs": {"thinking": True}}
+
+    def test_form_title_uses_display_name(self, monkeypatch):
+        """表单标题为「模型配置：{显式名}（模型id）」。"""
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", name="我的 DeepSeek"))
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(title=kw.get("title")),
+            ps.FormResult(values={f.name: "" for f in fields}))[1])
+        ps._edit_model("deepseek", "deepseek-chat")
+        assert seen["title"] == "模型配置：我的 DeepSeek（deepseek-chat）"
+
+    def test_form_title_falls_back_when_unnamed(self, monkeypatch):
+        """未配置显示名时标题用模型库名称。"""
+        seen = {}
+        monkeypatch.setattr(ps.pv, "resolve_model_name",
+                            lambda pid, m: "DeepSeek Chat")
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(title=kw.get("title")),
+            ps.FormResult(values={f.name: "" for f in fields}))[1])
+        ps._edit_model("deepseek", "deepseek-chat")
+        assert seen["title"] == "模型配置：DeepSeek Chat（deepseek-chat）"
+
+    def test_flag_true_false_parsing(self, monkeypatch):
+        """开关按布尔解析 true/false（大小写不敏感）。"""
+        for text, expected in (("true", True), ("TRUE", True), ("True", True),
+                               ("false", False), ("FALSE", False),
+                               ("  true  ", True)):
+            self._run(monkeypatch, {"name": "", "send_reasoning_content": text,
+                                    "extra_body": ""})
+            cfg = pv.load_model_configs("deepseek")["deepseek-chat"]
+            assert cfg.send_reasoning_content is expected
+
+    def test_blank_flag_removes_override(self, monkeypatch):
+        """留空表示回到「按模型库推导」，该键被删除。"""
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", send_reasoning_content=True, name="留着名字"))
+        self._run(monkeypatch, {"name": "留着名字", "send_reasoning_content": "",
+                                "extra_body": ""})
+        cfg = pv.load_model_configs("deepseek")["deepseek-chat"]
+        assert cfg.send_reasoning_content is None
+        assert cfg.name == "留着名字"
+
+    def test_all_blank_removes_entry(self, monkeypatch):
+        """三项全留空：模型配置项整体删除。"""
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", send_reasoning_content=True))
+        self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                "extra_body": ""})
+        assert "deepseek-chat" not in pv.load_model_configs("deepseek")
+
+    def test_explicit_flag_echoed_back(self, monkeypatch):
+        """已显式配置的开关在表单里回显。"""
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", send_reasoning_content=True))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert fields[1].initial == "true"
+
+    def test_unset_flag_blank_with_placeholder_hint(self, monkeypatch):
+        """未配置时初始值留空，placeholder 提示按模型库推导的结果。"""
+        monkeypatch.setattr(ps, "pv", ps.pv)
+        monkeypatch.setattr(ps.pv, "resolve_send_reasoning",
+                            lambda pid, m: True)
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert fields[1].initial == ""
+        assert "留空=按模型库默认（true）" in fields[1].placeholder
+
+    def test_extra_body_echoed_single_line(self, monkeypatch):
+        """已配置的 extra_body 回显为单行 JSON。
+
+        form_ui 是单行输入，多行 JSON 只会显示末行（曾导致回显只剩 `}`），
+        因此这里断言不含换行且能原样解析回原对象。
+        """
+        raw = '{"enable_thinking": true, "preserve_thinking": true}'
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", extra_body=json.loads(raw)))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": raw})
+        initial = fields[2].initial
+        assert chr(0x0A) not in initial
+        assert initial == raw
+        assert json.loads(initial) == {"enable_thinking": True,
+                                       "preserve_thinking": True}
+
+    def test_aborted_form_no_write(self, monkeypatch):
+        """取消（aborted）时不写任何配置。"""
+        pv.save_model_config("deepseek", pv.ModelConfig(
+            id="deepseek-chat", name="原有"))
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: ps.FormResult(
+            aborted=True))
+        ps._edit_model("deepseek", "deepseek-chat")
+        assert pv.load_model_configs("deepseek")["deepseek-chat"].name == "原有"
+
+    def test_unknown_model_no_form(self, monkeypatch):
+        """模型不在该提供商的模型列表里：不弹表单。"""
+        called = []
+        monkeypatch.setattr(ps, "form_ui",
+                            lambda fields, **kw: called.append(fields))
+        ps._edit_model("deepseek", "not-configured")
+        assert called == []
+
+    def test_field_hints_and_placeholder(self, monkeypatch):
+        """字段说明文案：开关说明与 extra_body 占位/提示。"""
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert fields[1].hint == "历史思考随历史消息发回模型"
+        assert fields[2].placeholder == \
+            '如 DeepSeek 配置 {"thinking": {"type": "enabled"}}' 
+        assert fields[2].hint == "JSON 对象"
+
+    def test_udf_wording_falls_back_to_model_id(self, monkeypatch):
+        """自定义提供商：显示名提示改用模型 id，开关措辞与目录一致。"""
+        pv.save_provider(_provider_config(id="udf-provider-1", name="Local",
+                                          models=["my-model"]))
+        seen = {}
+
+        def fake_form(fields, **kw):
+            seen["fields"] = fields
+            return ps.FormResult(values={f.name: "" for f in fields})
+
+        monkeypatch.setattr(ps, "form_ui", fake_form)
+        ps._edit_model("udf-provider-1", "my-model")
+        name_f, flag_f = seen["fields"][0], seen["fields"][1]
+        assert name_f.hint == "留空则用模型 id"
+        assert name_f.placeholder == "my-model"
+        # 无模型库数据 → 推导值恒为 false，在「不回传」措辞后追加（false）
+        assert flag_f.placeholder == "true/false，留空=不回传（false）"
+        assert flag_f.hint == "历史思考随历史消息发回模型"
+
+    def test_switch_placeholder_keeps_own_wording(self, monkeypatch):
+        """两种提供商的开关占位措辞各自不同，但都带推导值。"""
+        pv.save_provider(_provider_config(id="udf-provider-1", name="Local",
+                                          models=["my-model"]))
+        catalog = self._run(monkeypatch, {
+            "name": "", "send_reasoning_content": "", "extra_body": ""},
+            pid="deepseek", model="deepseek-chat")[1].placeholder
+        udf = self._run(monkeypatch, {
+            "name": "", "send_reasoning_content": "", "extra_body": ""},
+            pid="udf-provider-1", model="my-model")[1].placeholder
+        assert catalog == "true/false，留空=按模型库默认（false）"
+        assert udf == "true/false，留空=不回传（false）"
+
+    def test_catalog_wording_mentions_model_library(self, monkeypatch):
+        """models.dev 提供商：显示名提示模型库名称。"""
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        assert fields[0].hint == "留空则用模型库名称"
+        assert "按模型库默认" in fields[1].placeholder
+
+    def test_field_validators(self, monkeypatch):
+        """开关与 extra_body 字段的校验器行为。"""
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""})
+        flag_v = fields[1].validator
+        assert flag_v("true") is None
+        assert flag_v("false") is None
+        assert flag_v("") is None
+        assert flag_v("是") == "请填 true 或 false"
+        body_v = fields[2].validator
+        assert body_v('{"a":1}') is None
+        assert body_v("") is None
+        assert "不是合法 JSON" in body_v("{bad")
+        assert "必须是 JSON 对象" in body_v("[1]")
+
+
+class TestParseBoolHelper:
+    @pytest.mark.parametrize("text", ["true", "TRUE", "True", " true "])
+    def test_true(self, text):
+        assert ps._parse_bool(text) == (True, None)
+
+    @pytest.mark.parametrize("text", ["false", "FALSE", "False", " false "])
+    def test_false(self, text):
+        assert ps._parse_bool(text) == (False, None)
+
+    @pytest.mark.parametrize("text", ["", "   "])
+    def test_blank_is_none(self, text):
+        """留空表示回到「按模型库推导」。"""
+        assert ps._parse_bool(text) == (None, None)
+
+    @pytest.mark.parametrize("text", ["是", "yes", "1", "瞎写"])
+    def test_invalid_reports_error(self, text):
+        """非 TOML 布尔字面量一律报错（不做宽松匹配）。"""
+        flag, err = ps._parse_bool(text)
+        assert flag is None
+        assert err == "请填 true 或 false"

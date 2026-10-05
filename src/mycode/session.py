@@ -107,7 +107,7 @@ def extract_reasoning(message: Any) -> str:
 
 def _strip_reasoning(message: ChatCompletionAssistantMessageParam
                      ) -> ChatCompletionAssistantMessageParam:
-    r"""发回模型前移除 ``reasoning_content``（非标准字段，部分提供商会报错）。
+    r"""移除单条 assistant 消息的 ``reasoning_content``。
 
     没有该字段时原样返回（不复制 dict）。
     """
@@ -115,6 +115,22 @@ def _strip_reasoning(message: ChatCompletionAssistantMessageParam
         return message
     return cast(ChatCompletionAssistantMessageParam,
                 {k: v for k, v in message.items() if k != "reasoning_content"})
+
+
+def strip_reasoning_all(messages: List[ChatCompletionMessageParam]
+                        ) -> List[ChatCompletionMessageParam]:
+    r"""移除消息列表里所有 assistant 消息的 ``reasoning_content``。
+
+    ``reasoning_content`` 不是 openai 标准字段，部分提供商收到会直接报错，
+    因此回传开关关闭时，在请求发出前统一剥离。列表内的消息对象不被修改
+    （只对带该字段的 assistant 消息生成新 dict），会话里保存的思考内容
+    不受影响。
+    """
+    return [
+        _strip_reasoning(cast(ChatCompletionAssistantMessageParam, m))
+        if m.get("role") == "assistant" else m
+        for m in messages
+    ]
 
 
 def sanitize_path(path: str) -> str:
@@ -625,17 +641,17 @@ class SessionHistory:
         ``to_tool_msg()`` 转成对应 ``ChatCompletion...Param`` 加入列表，
         确保会话恢复后提醒与工具结果仍能进入模型上下文。
 
-        assistant 消息里的 ``reasoning_content``（思考内容，仅供持久化与
-        渲染）在发回模型前由 ``_strip_reasoning`` 去掉——它不是 openai 标准
-        字段，部分提供商收到会直接报错。
+        assistant 消息里的 ``reasoning_content``（思考内容）随历史一起
+        原样返回，不在此处剥离：是否回传由**当前模型**的回传开关
+        （``providers.resolve_send_reasoning``，见 /provider「模型配置」）
+        决定，而剥离统一发生在 ``cli.agent_loop`` 调用
+        ``chat.completions.create`` 的传参处——那是请求离开进程的唯一
+        出口。
         """
         result: List[ChatCompletionMessageParam] = []
         for e in self.entries:
             if isinstance(e, (UserMessage, AssistantMessage)):
-                if isinstance(e, AssistantMessage):
-                    result.append(_strip_reasoning(e.message))
-                else:
-                    result.append(e.message)
+                result.append(e.message)
             elif isinstance(e, ToolResultEvent):
                 result.append(e.to_tool_msg())
             elif isinstance(e, NoticeEvent):

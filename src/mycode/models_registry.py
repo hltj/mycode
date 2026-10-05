@@ -22,7 +22,8 @@
   httpx 默认协商，安装 ``httpx[zstd]`` 后优先 zstd）。
 - 候选解析：只保留 npm 为 ``@ai-sdk/openai-compatible`` 的提供商；
   每个 model 缺 ``tool_call`` 或为 true 才保留（agent 必须工具调用），
-  ``ProviderInfo.models`` 为模型 id → ``ModelInfo``（目前含 id/name）。
+  ``ProviderInfo.models`` 为模型 id → ``ModelInfo``（含 id/name，以及
+  ``interleaved`` 是否指定思考字段为 ``reasoning_content``）。
 - 提供商 ``api`` 字段是 `${VAR}` 模板，``resolve_base_url`` 负责插值渲染；
   ``is_secret_env_var`` 识别 env 列表里的密钥类变量（含 KEY/TOKEN/PAT）。
 """
@@ -70,6 +71,10 @@ class ModelInfo:
 
     id: str
     name: str = ""
+    # models.dev 的 ``interleaved`` 是否指定思考内容字段为
+    # ``reasoning_content``（仅此形态默认回传思考内容；``interleaved`` 为
+    # true / 指向 ``reasoning_details`` 等其他字段时不默认回传）
+    interleaves_reasoning: bool = False
 
 
 @dataclass
@@ -295,6 +300,25 @@ def _model_name(obj: object) -> str:
     return raw if isinstance(raw, str) else ""
 
 
+_REASONING_FIELD = "reasoning_content"
+
+
+def interleaves_reasoning(obj: object) -> bool:
+    """模型是否在响应里交错返回 ``reasoning_content`` 字段。
+
+    models.dev 的 ``interleaved`` 有多种形态，只认「显式指定 field 为
+    ``reasoning_content``」这一种（``{"field": "reasoning_content"}``）。
+
+    该默认值只在模型未在 ``/provider`` 显式配置过开关时生效。
+    """
+    if not isinstance(obj, dict):
+        return False
+    inter = obj.get("interleaved")
+    if not isinstance(inter, dict):
+        return False
+    return inter.get("field") == _REASONING_FIELD
+
+
 def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
     """解析 api.json 为候选提供商映射（id → ProviderInfo）。
 
@@ -319,7 +343,11 @@ def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
 
         models_raw = raw.get("models")
         models = {
-            mid: ModelInfo(id=mid, name=_model_name(m))
+            mid: ModelInfo(
+                id=mid,
+                name=_model_name(m),
+                interleaves_reasoning=interleaves_reasoning(m),
+            )
             for m in (models_raw.values() if isinstance(models_raw, dict) else ())
             if (mid := _model_id(m)) and _model_supports_tool_call(m)
         }

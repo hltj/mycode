@@ -414,3 +414,51 @@ class TestIsSecretEnvVar:
         assert mr.is_secret_env_var("DATABRICKS_HOST") is False
         assert mr.is_secret_env_var("CLOUDFLARE_ACCOUNT_ID") is False
         assert mr.is_secret_env_var("NEON_AI_GATEWAY_BASE_URL") is False
+
+# ===================================================================
+# interleaved → interleaves_reasoning（回传 reasoning_content 的默认值来源）
+# ===================================================================
+
+class TestInterleavesReasoning:
+    """``interleaved`` 字段只认 ``{"field": "reasoning_content"}`` 一种形态。"""
+
+    @pytest.mark.parametrize("interleaved", [
+        {"field": "reasoning_content"},
+        pytest.param({"field": "reasoning_content", "extra": 1}, id="带多余键"),
+    ])
+    def test_field_reasoning_content_true(self, interleaved):
+        assert mr.interleaves_reasoning({"interleaved": interleaved}) is True
+
+    @pytest.mark.parametrize("interleaved", [
+        True,
+        False,
+        {"field": "reasoning_details"},
+        {"field": "thinking"},
+        {"field": None},
+        {},
+        "reasoning_content",
+        None,
+    ])
+    def test_other_forms_false(self, interleaved):
+        assert mr.interleaves_reasoning({"interleaved": interleaved}) is False
+
+    def test_missing_or_non_dict(self):
+        assert mr.interleaves_reasoning({}) is False
+        assert mr.interleaves_reasoning({"id": "m"}) is False
+        assert mr.interleaves_reasoning(None) is False
+        assert mr.interleaves_reasoning("x") is False
+
+    def test_candidate_providers_populates_flag(self):
+        """candidate_providers 把 interleaved 解析结果写进 ModelInfo。"""
+        api = {"acme": {"npm": "@ai-sdk/openai-compatible", "name": "Acme",
+                        "api": "https://a/v1", "models": {
+            "m-r1": {"id": "m-r1", "name": "R1",
+                     "interleaved": {"field": "reasoning_content"}},
+            "m-plain": {"id": "m-plain", "name": "P"},
+        }}}
+        models = mr.candidate_providers(api)["acme"].models
+        assert models["m-r1"].interleaves_reasoning is True
+        assert models["m-plain"].interleaves_reasoning is False
+
+    def test_model_info_default_false(self):
+        assert mr.ModelInfo(id="m").interleaves_reasoning is False

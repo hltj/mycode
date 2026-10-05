@@ -18,7 +18,8 @@
   并对 `bash`/`write`/`patch`/`edit` 工具调用做特化展示）/ classic（无 emoji +
   `myc[模式] >` 提示符，保持完整 YAML 参数围栏）
 - **会话管理**：完整的对话上下文管理，支持多轮交互与断点续接
-- **思考过程**：思考类模型返回的 `reasoning_content` 持久化到会话并渲染展示
+- **思考过程**：思考类模型返回的 `reasoning_content` 持久化到会话并渲染展示，可按模型配置是否回传
+- **模型级配置**：`/provider` 可为每个模型配置显示名、是否回传 `reasoning_content`、`extra_body`
 - **命令历史**：持久化保存输入历史，支持上下键翻阅
 - **自动补全**：内置命令补全功能
 
@@ -252,8 +253,29 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
   markdown 渲染（列表/表格/代码块等）。内容自带 ANSI 控制码时退化为无边框纯文本，
   并补上灰色 `---` 分隔线。
 
-该字段**不会回传给模型**（非标准字段，部分提供商会报错）：发进 messages 的版本
-与 `SessionHistory.get_messages()` 的结果都已剥离，仅保留 content 与 tool_calls。
+该字段默认**不回传给模型**（非标准字段，部分提供商会报错）。是否回传由
+「模型配置」中的 `send_reasoning_content` 决定（见下节）：关闭时在请求发出
+前统一从消息列表中剥离，会话与内存里的思考内容不受影响，之后切回支持回传
+的模型仍能带上。无论开关如何，会话持久化与终端渲染都保留完整思考内容。
+
+### 模型配置（extra_body 与回传思考内容）
+
+`/provider` → 选中提供商 → **模型配置**，菜单项为该提供商已配置的所有
+模型（显示为「模型名（模型id）」），进入后可配置：
+
+| 配置项 | 说明 |
+| --- | --- |
+| 显示名 | 留空则用模型库名称（自定义提供商留空则用模型 id） |
+| 回传 reasoning_content | 布尔值 `true` / `false`；留空按模型库默认值 |
+| extra_body | JSON 对象，作为请求的 `extra_body` 原样透传给服务端，占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
+
+回传开关的默认值来自 models.dev 模型信息：仅当模型的
+`"interleaved": { "field": "reasoning_content" }` 时**默认开启**；显式配置
+后以配置为准。
+
+配置写入 `~/.mycode/config.toml` 的 `[providers.<id>.models.<model>]`
+（`send_reasoning_content` 为布尔、`extra_body` 为 JSON 字符串）；该提供商
+启用的模型 id 列表存于同级的 `enabled_models` 键。
 
 ## 内置工具一览
 
@@ -387,8 +409,8 @@ uv run pytest
 - 通用表单界面 form_ui：字段切换/掩码/校验/提交取消（`test_form_ui.py`）
 - 通用筛选选择界面 filter_ui：过滤/分页/焦点/单多选/取消（`test_filter_ui.py`）
 - 模型数据源注册表：缓存/meta/etag/异步更新/候选解析（`test_models_registry.py`）
-- 模型提供商配置：读写保注释/迁移/id 分配（`test_providers.py`）
-- 模型提供商配置流程：主菜单/添加/自定义/编辑（`test_provider_setup.py`）
+- 模型提供商配置：读写保注释/迁移/id 分配/模型级配置与回传开关解析（`test_providers.py`）
+- 模型提供商配置流程：主菜单/添加/自定义/编辑/模型配置菜单与表单（`test_provider_setup.py`）
 - 模型切换：提供商轮换/选定写回/取消、ModelChangeEvent（`test_model_select.py`）
 - CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
 

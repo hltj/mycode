@@ -9,6 +9,20 @@
 
 - 用 ``tomlkit`` 读写，保留用户手写配置的注释与格式；只增删改目标
   section 与顶层两个键。
+- 提供商已启用的模型 id 列表存于 ``enabled_models``（如
+  ``enabled_models = ["gpt-4o", "gpt-4o-mini"]``）。
+- 模型级配置（``/provider`` 的「模型配置」菜单）存在
+  ``[providers.<id>.models.<model_id>]`` 子表中：
+
+  - ``name``：模型显示名（空表示用 models.dev 缓存里的名字 / 模型 id）；
+  - ``send_reasoning_content``：是否把 ``reasoning_content`` 回传给模型。
+    键缺失表示「未显式配置」，回退到 models.dev 缓存里该模型的
+    ``interleaved`` 推导值（仅 ``{"field": "reasoning_content"}`` 为真）；
+  - ``extra_body``：JSON 字符串，请求时作为 OpenAI 客户端的 ``extra_body``
+    透传给服务端。
+
+  子表名即模型 id；含 ``.`` / ``/`` 等键字符的模型 id 写入时由 ``tomlkit``
+  自动加引号，读取时按原样匹配。
 - 提供商 id 两种命名：
   - models.dev 的提供商用其原始 id（如 ``deepseek``）；
   - 自定义 / 迁移的提供商用 ``udf-provider-N``（``next_user_defined_id``
@@ -24,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
-from typing import Optional
+from typing import Any, Optional
 
 import tomlkit
 
@@ -40,6 +54,25 @@ class ProviderConfig:
     base_url: str = ""
     api_key: str = ""
     models: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ModelConfig:
+    """单个模型的配置（``/provider`` 的「模型配置」菜单维护）。
+
+    Attributes:
+        id: 模型 id。
+        name: 显示名（空串表示未覆盖，用 models.dev 名字 / 模型 id）。
+        send_reasoning_content: 是否回传 ``reasoning_content``；``None``
+            表示未显式配置，按 models.dev 缓存的 ``interleaved`` 推导。
+        extra_body: 额外请求体（JSON 对象），请求时作为 ``extra_body``
+            透传；``None`` / 空表示不传。
+    """
+
+    id: str
+    name: str = ""
+    send_reasoning_content: Optional[bool] = None
+    extra_body: Optional[dict] = None
 
 
 def _document() -> tomlkit.TOMLDocument:
@@ -65,6 +98,10 @@ def _write_document(doc: tomlkit.TOMLDocument) -> None:
     config.invalidate()
 
 
+# 提供商 section 的 4 个固定字段；其余键（models 模型级配置）在 save 时保留
+_PROVIDER_FIELDS = ("name", "base_url", "api_key", "enabled_models")
+
+
 def _provider_table(id_: str) -> tomlkit.items.Table:
     """构造空提供商 section 表。"""
     tbl = tomlkit.table()
@@ -73,7 +110,12 @@ def _provider_table(id_: str) -> tomlkit.items.Table:
 
 
 def save_provider(p: ProviderConfig) -> None:
-    """保存（新增或更新）一个提供商 section，保留文档其余注释与键。"""
+    """保存（新增或更新）一个提供商 section，保留文档其余注释与键。
+
+    ``[providers.<id>]`` 下除 4 个提供商字段外的其他键（当前是
+    ``models`` 模型级配置子表）原样保留——``section.clear()`` 前
+    先把它们取出、重建后放回，避免编辑提供商设定值时丢掉模型级配置。
+    """
     doc = _document()
     tables = doc.get("providers")
     if not isinstance(tables, tomlkit.items.Table):
@@ -85,36 +127,42 @@ def save_provider(p: ProviderConfig) -> None:
         section = tomlkit.table()
         tables[p.id] = section
 
+    # 暂存非提供商字段的子表（models 等），clear 后放回
+    keep = {k: v for k, v in section.items()
+            if k not in _PROVIDER_FIELDS}
     # 清空重建该 section 内容（保持简洁稳定）
     section.clear()
     section["name"] = p.name
     section["base_url"] = p.base_url
     section["api_key"] = p.api_key
-    section["models"] = p.models
+    section["enabled_models"] = p.models
+    section.update(keep)
 
     _write_document(doc)
 
 
+def _to_provider_config(pid: str, section: Any) -> ProviderConfig:
+    """提供商 section → ProviderConfig（启用模型列表缺省为空）。"""
+    enabled = section.get("enabled_models", [])
+    return ProviderConfig(
+        id=pid,
+        name=str(section.get("name", "")),
+        base_url=str(section.get("base_url", "")),
+        api_key=str(section.get("api_key", "")),
+        models=[str(x) for x in enabled] if isinstance(enabled, list) else [],
+    )
+
+
 def load_providers() -> dict[str, ProviderConfig]:
     """读取全部 [providers.*] section。"""
-    doc = _document()
-    tables = doc.get("providers")
-    result: dict[str, ProviderConfig] = {}
+    tables = _document().get("providers")
     if not isinstance(tables, tomlkit.items.Table):
-        return result
-    for pid, section in tables.items():
-        if not isinstance(section, tomlkit.items.Table):
-            continue
-        models_raw = section.get("models", [])
-        models = [str(x) for x in models_raw] if isinstance(models_raw, list) else []
-        result[str(pid)] = ProviderConfig(
-            id=str(pid),
-            name=str(section.get("name", "")),
-            base_url=str(section.get("base_url", "")),
-            api_key=str(section.get("api_key", "")),
-            models=models,
-        )
-    return result
+        return {}
+    return {
+        str(pid): _to_provider_config(str(pid), section)
+        for pid, section in tables.items()
+        if isinstance(section, tomlkit.items.Table)
+    }
 
 
 def delete_provider(pid: str) -> None:
@@ -124,6 +172,158 @@ def delete_provider(pid: str) -> None:
     if isinstance(tables, tomlkit.items.Table) and pid in tables:
         del tables[pid]
         _write_document(doc)
+
+
+# ---------------------------------------------------------------------------
+# 模型级配置（[providers.<id>.models.<model_id>]）
+# ---------------------------------------------------------------------------
+
+def _parse_extra_body(raw: object) -> Optional[dict]:
+    """解析 extra_body：TOML 里的 JSON 字符串 → dict；非法/空返回 None。"""
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    import json
+
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _to_model_config(mid: str, sub: Any) -> ModelConfig:
+    """模型级配置子表 → ModelConfig。
+
+    ``send_reasoning_content`` 非布尔（缺键 / 脏数据）时为 ``None``——
+    表示未显式配置，由 ``resolve_send_reasoning`` 按 models.dev 缓存推导。
+    """
+    flag = sub.get("send_reasoning_content")
+    return ModelConfig(
+        id=mid,
+        name=str(sub.get("name", "")),
+        send_reasoning_content=flag if isinstance(flag, bool) else None,
+        extra_body=_parse_extra_body(sub.get("extra_body")),
+    )
+
+
+def _model_config_table(pid: str) -> Any:
+    """取某提供商的模型级配置子表；链路任一环非表则返回 None。"""
+    tables = _document().get("providers")
+    if not isinstance(tables, tomlkit.items.Table):
+        return None
+    section = tables.get(pid)
+    if not isinstance(section, tomlkit.items.Table):
+        return None
+    return section.get("models")
+
+
+def load_model_configs(pid: str) -> dict[str, ModelConfig]:
+    """读取某提供商的模型级配置（模型 id → ModelConfig）。
+
+    ``send_reasoning_content`` 键缺失时为 ``None``（未显式配置，由
+    ``resolve_send_reasoning`` 按 models.dev 缓存推导）；``extra_body``
+    非法 JSON 时同样为 ``None``。
+    """
+    cfgs = _model_config_table(pid)
+    if not isinstance(cfgs, tomlkit.items.Table):
+        return {}
+    return {
+        str(mid): _to_model_config(str(mid), sub)
+        for mid, sub in cfgs.items()
+        if isinstance(sub, tomlkit.items.Table)
+    }
+
+
+def save_model_config(pid: str, mc: ModelConfig) -> None:
+    """保存单个模型的配置到 ``[providers.<id>.models.<model_id>]``。
+
+    三个字段全部为空（显示名空、开关未配置、extra_body 空）时删除该
+    模型子表，避免留下无意义的空配置。提供商不存在时不写入。
+
+    各字段都是**按需写入**：值为空 / 未配置时该键不落到 TOML（与
+    ``send_reasoning_content`` / ``extra_body`` 一致），读取时按缺省值
+    处理，不留 ``name = ""`` 这类空噪音。
+    """
+    doc = _document()
+    tables = doc.get("providers")
+    if not isinstance(tables, tomlkit.items.Table) or pid not in tables:
+        return
+    section = tables[pid]
+    if not isinstance(section, tomlkit.items.Table):
+        return
+    cfgs = section.get("models")
+    if not isinstance(cfgs, tomlkit.items.Table):
+        cfgs = tomlkit.table()
+        section["models"] = cfgs
+
+    if not (mc.name or mc.send_reasoning_content is not None or mc.extra_body):
+        cfgs.pop(mc.id, None)
+    else:
+        sub = tomlkit.table()
+        if mc.name:
+            sub["name"] = mc.name
+        if mc.send_reasoning_content is not None:
+            sub["send_reasoning_content"] = mc.send_reasoning_content
+        if mc.extra_body:
+            import json
+
+            sub["extra_body"] = json.dumps(
+                mc.extra_body, ensure_ascii=False, sort_keys=True)
+        cfgs[mc.id] = sub
+    _write_document(doc)
+
+
+def resolve_send_reasoning(pid: str, model: str) -> bool:
+    """该模型是否应把 ``reasoning_content`` 回传给模型。
+
+    优先取 ``/provider`` 显式配置的开关；未配置时回退到 models.dev
+    缓存里该模型的 ``interleaved`` 推导值（仅
+    ``{"field": "reasoning_content"}`` 为真）。缓存缺失 / 模型不在缓存
+    中时默认 False。
+    """
+    explicit = load_model_configs(pid).get(model)
+    if explicit is not None and explicit.send_reasoning_content is not None:
+        return explicit.send_reasoning_content
+    return default_send_reasoning(pid, model)
+
+
+def _cached_model_info(pid: str, model: str) -> Any:
+    """从 models.dev 缓存取模型信息；缓存/提供商/模型任一缺失返回 None。"""
+    from mycode import models_registry as mr
+
+    data = mr.load_cached_api()
+    if data is None:
+        return None
+    info = mr.candidate_providers(data).get(pid)
+    return info.models.get(model) if info is not None else None
+
+
+def default_send_reasoning(pid: str, model: str) -> bool:
+    """按 models.dev 缓存推导模型是否默认回传思考内容。"""
+    model_info = _cached_model_info(pid, model)
+    return bool(model_info and model_info.interleaves_reasoning)
+
+
+def resolve_extra_body(pid: str, model: str) -> Optional[dict]:
+    """取该模型配置的 extra_body（未配置/非法返回 None）。"""
+    cfg = load_model_configs(pid).get(model)
+    return cfg.extra_body if cfg is not None else None
+
+
+def resolve_model_name(pid: str, model: str) -> str:
+    """取该模型的显示名。
+
+    优先 ``/provider`` 里配置的显示名；为空时回退 models.dev 缓存中的
+    模型名；都没有则用模型 id。
+    """
+    cfg = load_model_configs(pid).get(model)
+    if cfg is not None and cfg.name:
+        return cfg.name
+    model_info = _cached_model_info(pid, model)
+    return (model_info.name if model_info is not None and model_info.name
+            else model)
 
 
 def get_current() -> tuple[str, str] | None:

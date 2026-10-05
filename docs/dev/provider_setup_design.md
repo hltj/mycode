@@ -8,9 +8,15 @@
 
 - 候选模型提供商来自 `models_registry.ProviderInfo`（api.json 中所有
   `npm == "@ai-sdk/openai-compatible"` 的条目，当前约 182 家；
-  `ProviderInfo.models` 为模型 id → `ModelInfo` 映射，目前含 id/name）。
+  `ProviderInfo.models` 为模型 id → `ModelInfo` 映射，含 id/name 与
+  `interleaves_reasoning`（由 `interleaved.field == "reasoning_content"`
+  推导，是回传开关的默认值来源））。
 - 配置写入 `providers.save_provider`（`[providers.<id>]`），当前模型经
   `providers.set_current`。
+- 模型级配置写入 `providers.save_model_config`
+  （`[providers.<id>.models.<model>]`）：显示名 / 回传
+  `reasoning_content` 布尔 / `extra_body`（JSON 字符串）；提供商启用的
+  模型 id 列表存于同级的 `enabled_models` 键。
 - 模型库状态（更新于 … · N 家可用 / 更新失败 / 尚未就绪）来自
   `models_registry.load_meta()` 与 `candidate_providers` 数量。
 
@@ -79,6 +85,7 @@ deepseek · 2 模型
 
   ❯ 🟢 修改设定值
     ⚪ 重选模型
+    ⚪ 模型配置
     ⚪ 删除提供商
     ⚪ 返回
 ```
@@ -92,6 +99,7 @@ deepseek · 2 模型
 udf-provider-1 · 1 模型
 
   ❯ 🟢 修改设定值
+    ⚪ 模型配置
     ⚪ 删除提供商
     ⚪ 返回
 ```
@@ -105,11 +113,52 @@ udf-provider-1 · 1 模型
   勾选列表：只清当前模型（提供商保留）。
 - **重选模型**：仅 models.dev 提供商 → `filter_ui` 多选（回显现有
   勾选）；勾选上限同 15。当前模型被取消勾选：只清当前模型（提供商保留）。
+- **模型配置**：两类提供商都有，进入三级菜单（见下节）。
 - **删除**：ask_ui 单问题二次确认（标题 `确认删除模型提供商`，描述
   `是否删除模型提供商：{name}（{id} · N 模型）`；`取消删除` 在前——
   光标默认停在该项，直接 Enter / Ctrl-C 均不删除；`确认删除` 才执行）。
   确认后删除 section；若该提供商是当前 `model_provider`，清空当前
   提供商与模型。
+
+## 模型配置（三级菜单）
+
+「模型配置」进入级联菜单，菜单项是该提供商已配置的所有模型
+（label 为 `模型名（模型id）`；模型名取已配置的显示名，其次
+models.dev 缓存里的名字，都没有时用模型 id），末项「返回」：
+
+```
+模型配置：DeepSeek
+
+deepseek · 2 模型
+
+  ❯ 🟢 DeepSeek Chat（deepseek-chat）
+    ⚪ DeepSeek Reasoner（deepseek-reasoner）
+    ⚪ 返回
+```
+
+- 该提供商没有已配置模型时直接返回，不弹空菜单；
+- 已配置过开关或 extra_body 的模型在 `description` 标注「已配置」。
+
+选中模型后进入该模型的配置表单（标题 `模型配置：{模型显式名}（{模型id}）`），
+三个字段：
+
+| 字段 | 说明 |
+|------|------|
+| 显示名 | models.dev 提供商留空回退模型库名称，自定义提供商留空回退模型 id。占位文字提示当前生效值 |
+| 回传 reasoning_content | 布尔值 `true` / `false`（大小写不敏感），非布尔字面量经校验器报错；留空表示交给模型库推导。占位文字按提供商区分：models.dev 提供商 `true/false，留空=按模型库默认（true/false）`；自定义提供商无模型库数据，`true/false，留空=不回传（false）` |
+| extra_body | JSON 对象，留空不传；非 JSON 或顶层非对象经校验器报错。占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
+
+> **回显必须单行**：`form_ui` 的输入是单行 `Buffer`，多行文本只会显示最后
+> 一行。因此已配置的 extra_body 用 `json.dumps(..., ensure_ascii=False)`
+> 压成单行回显，不加 `indent`。
+
+- 开关的占位文字提示推导结果（如
+  `true/false，留空=按模型库默认（true）`）；已显式配置时回显当前值
+  （`true` / `false`），未配置则初始值留空；
+- 三项全空时删除该模型的配置子表，不留空配置；
+- 写入 `providers.save_model_config`，各字段**按需写入**：显示名为空 /
+  开关未配置 / extra_body 为空时对应键不落到 TOML，读取时按缺省值处理；
+- `save_provider` 编辑提供商设定值时会保留 `models` 子表。
 
 ## 模型勾选上限
 
