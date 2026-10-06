@@ -459,6 +459,24 @@ class TestResolveModelSettings:
                                      models=["m-r1", "m-true", "m-det", "m-none"]))
         return "acme"
 
+    @pytest.fixture
+    def default_pid(self, monkeypatch) -> str:
+        """装一张只含单个提供商预置记录的表，返回该提供商 id。
+
+        生产表会随内置厂商增减，故用固定的测试表而非依赖真实条目。
+        """
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="test-def", name="测试默认",
+            for_providers=("test-def-p",),
+            config=provider_presets.PresetConfig(
+                send_reasoning_content=True,
+                extra_body={"thinking": {"type": "enabled"}}))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        return "test-def-p"
+
     def test_default_from_interleaved_field(self, env, provider):
         """interleaved.field == reasoning_content → 默认回传。"""
         from mycode.providers import resolve_send_reasoning
@@ -585,6 +603,70 @@ class TestResolveModelSettings:
         assert p.name == "P2"
         assert p.send_reasoning_content is True
         assert p.extra_body == {"a": 1}
+
+    def test_provider_presets_fallback(self, env, provider, default_pid):
+        """提供商级未配置时回退到 provider_presets 预设值表。"""
+        from mycode import provider_presets, providers as pvs
+        assert provider_presets.lookup(
+            default_pid).send_reasoning_content is True
+        pvs.save_provider(pv.ProviderConfig(id=default_pid, name="D", base_url="u",
+                                            api_key="k", models=["m1"]))
+        assert pvs.resolve_send_reasoning(default_pid, "m1") is True
+        assert pvs.resolve_extra_body(default_pid, "m1") == {
+            "thinking": {"type": "enabled"}}
+
+    def test_provider_presets_overridden_by_provider_and_model(self, env,
+                                                                 default_pid):
+        """提供商级 / 模型级配置都能覆盖预设值表。"""
+        from mycode import providers as pvs
+        pvs.save_provider(pv.ProviderConfig(
+            id=default_pid, name="D", base_url="u", api_key="k", models=["m1"],
+            send_reasoning_content=False, extra_body={"user": 1}))
+        assert pvs.resolve_send_reasoning(default_pid, "m1") is False
+        assert pvs.resolve_extra_body(default_pid, "m1") == {"user": 1}
+        pvs.save_model_config(default_pid, pv.ModelConfig(
+            id="m1", send_reasoning_content=True))
+        assert pvs.resolve_send_reasoning(default_pid, "m1") is True
+
+    def test_resolve_extra_body_returns_copy(self, env, default_pid):
+        """resolve_extra_body 返回副本，改动不影响预设值表。"""
+        from mycode import provider_presets
+        from mycode import providers as pvs
+        pvs.save_provider(pv.ProviderConfig(id=default_pid, name="D",
+                                            base_url="u", api_key="k",
+                                            models=["m1"]))
+        got = pvs.resolve_extra_body(default_pid, "m1")
+        got["thinking"]["type"] = "disabled"          # type: ignore[index]
+        again = pvs.resolve_extra_body(default_pid, "m1")
+        assert again["thinking"]["type"] == "enabled"  # type: ignore[index]
+        assert provider_presets.lookup(
+            default_pid).extra_body["thinking"][       # type: ignore[index]
+            "type"] == "enabled"
+
+    def test_provider_presets_not_applied_to_other_providers(self, env,
+                                                               provider):
+        """未命中 for_providers 的提供商不受预设影响。"""
+        from mycode import providers as pvs
+        self._write_cache(env, self._api())
+        pvs.save_provider(pv.ProviderConfig(id="other", name="X", base_url="u",
+                                           api_key="k", models=["m-none"]))
+        assert pvs.resolve_send_reasoning("other", "m-none") is False
+        assert pvs.resolve_extra_body("other", "m-none") is None
+
+    def test_provider_presets_beats_models_dev(self, env, default_pid):
+        """预设值表优先于 models.dev 的 interleaved 推导。"""
+        from mycode import provider_presets
+        from mycode import providers as pvs
+        self._write_cache(env, {default_pid: {
+            "npm": "@ai-sdk/openai-compatible", "name": "D", "api": "u",
+            "models": {"m1": {"id": "m1", "name": "M1"}}}})
+        pvs.save_provider(pv.ProviderConfig(id=default_pid, name="D",
+                                            base_url="u", api_key="k",
+                                            models=["m1"]))
+        # 表里开关为 True，而模型库缓存推导为 False
+        assert provider_presets.lookup(
+            default_pid).send_reasoning_content is True
+        assert pvs.resolve_send_reasoning(default_pid, "m1") is True
 
     def test_resolve_model_name(self, env, provider):
         """显示名：配置 > models.dev 缓存 > 模型 id。"""

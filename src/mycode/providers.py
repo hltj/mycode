@@ -17,9 +17,10 @@
   - ``send_reasoning_content`` / ``extra_body``：**提供商级**的默认请求
     设置（``/provider`` 的「修改设定值」维护），键缺失表示未配置。
 
-  后两项与模型级同名配置的**回退顺序**是：模型级 → 提供商级 → models.dev
-  缓存推导（仅 ``interleaved.field == "reasoning_content"`` 视为开启），
-  见 ``resolve_send_reasoning`` / ``resolve_extra_body``。
+  后两项与模型级同名配置的**回退顺序**是：模型级 → 提供商级 →
+  ``provider_presets`` 预设值表 → models.dev 缓存推导（仅
+  ``interleaved.field == "reasoning_content"`` 视为开启），见
+  ``resolve_send_reasoning`` / ``resolve_extra_body``。
 - 模型级配置（``/provider`` 的「模型配置」菜单）存在
   ``[providers.<id>.models.<model_id>]`` 子表中：
 
@@ -46,6 +47,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 from typing import Any, Optional
@@ -53,6 +55,7 @@ from typing import Any, Optional
 import tomlkit
 
 from mycode import config
+from mycode import provider_presets
 
 
 @dataclass
@@ -300,9 +303,9 @@ def save_model_config(pid: str, mc: ModelConfig) -> None:
 def resolve_send_reasoning(pid: str, model: str) -> bool:
     """该模型是否应把 ``reasoning_content`` 回传给模型。
 
-    逐级回退：模型级配置 → 提供商级配置 → models.dev 缓存里该模型的
-    ``interleaved`` 推导值（仅 ``{"field": "reasoning_content"}`` 为真）。
-    三处都未配置时为 False。
+    逐级回退：模型级配置 → 提供商级配置 → ``provider_presets`` 预设值表
+    → models.dev 缓存里该模型的 ``interleaved`` 推导值（仅
+    ``{"field": "reasoning_content"}`` 为真）。全都未配置时为 False。
     """
     explicit = load_model_configs(pid).get(model)
     if explicit is not None and explicit.send_reasoning_content is not None:
@@ -326,18 +329,33 @@ def _cached_model_info(pid: str, model: str) -> Any:
 
 
 def default_send_reasoning(pid: str, model: str) -> bool:
-    """按 models.dev 缓存推导模型是否默认回传思考内容。"""
+    """未配置时的回传开关默认值。
+
+    先查 ``provider_presets`` 的提供商预设值表，再退到 models.dev 缓存
+    里该模型的 ``interleaved`` 推导（仅 ``{"field": "reasoning_content"}``
+    视为开启）。
+    """
+    flag = provider_presets.lookup(pid).send_reasoning_content
+    if isinstance(flag, bool):
+        return flag
     model_info = _cached_model_info(pid, model)
     return bool(model_info and model_info.interleaves_reasoning)
 
 
 def resolve_extra_body(pid: str, model: str) -> Optional[dict]:
-    """取该模型的 extra_body：模型级配置优先，其次提供商级（都无则 None）。"""
+    """取该模型的 extra_body。
+
+    逐级回退：模型级配置 → 提供商级配置 → ``provider_presets`` 预设值表
+    （都无则 None）。返回值一律是副本，调用方改动不影响配置。
+    """
     cfg = load_model_configs(pid).get(model)
     if cfg is not None and cfg.extra_body:
-        return cfg.extra_body
+        return dict(cfg.extra_body)
     provider = load_providers().get(pid)
-    return provider.extra_body if provider is not None else None
+    if provider is not None and provider.extra_body:
+        return dict(provider.extra_body)
+    body = provider_presets.lookup(pid).extra_body
+    return deepcopy(body) if body else None
 
 
 def resolve_model_name(pid: str, model: str) -> str:

@@ -46,8 +46,9 @@ myc/
 │   ├── form_ui.py          # 通用表单界面（多字段输入）
 │   ├── filter_ui.py        # 通用筛选选择界面（关键词过滤 + 分页）
 │   ├── models_registry.py  # models.dev 模型库缓存与更新
-│   ├── providers.py        # 模型提供商配置读写（[providers.*]）与旧配置迁移
+│   ├── provider_presets.py # 提供商级请求设置的预设值表（回退用）
 │   ├── provider_setup.py   # /provider 模型提供商配置流程
+│   ├── providers.py        # 模型提供商配置读写（[providers.*]）与旧配置迁移
 │   ├── model_select.py     # /model 模型切换流程
 │   ├── confirm.py          # 确认交互（基于 ask_ui：同意/编辑/拒绝）
 │   ├── mode.py             # 模式与权限系统
@@ -82,6 +83,7 @@ myc/
 │   ├── test_mode.py
 │   ├── test_model_select.py
 │   ├── test_models_registry.py
+│   ├── test_provider_presets.py
 │   ├── test_provider_setup.py
 │   ├── test_providers.py
 │   ├── test_renderer.py
@@ -266,16 +268,32 @@ diff（文件可读时基于文件真实内容展示整文件 diff，行号为�
 | 配置项 | 说明 |
 | --- | --- |
 | 显示名 | 留空则用模型库名称（自定义提供商留空则用模型 id） |
-| 回传 reasoning_content | 布尔值 `true` / `false`；留空按模型库默认值 |
-| extra_body | JSON 对象，作为请求的 `extra_body` 原样透传给服务端，占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
+| 回传 reasoning_content | 布尔值 `true` / `false`；留空按下一级生效 |
+| extra_body | JSON 对象，作为请求的 `extra_body` 原样透传给服务端 |
 
 这两项也可在「修改设定值」里按**提供商级**配置，作为该提供商所有模型的
-默认值。生效顺序为**模型级 → 提供商级 → 模型库推导**：模型库中仅当
-`"interleaved": { "field": "reasoning_content" }` 时默认开启回传。
+默认值。生效顺序为**模型级 → 提供商级 → 内置预置 → 模型库推导**：模型库中
+仅当 `"interleaved": { "field": "reasoning_content" }` 时默认开启回传。
 
 配置写入 `~/.mycode/config.toml` 的 `[providers.<id>.models.<model>]`
 （`send_reasoning_content` 为布尔、`extra_body` 为 JSON 字符串）；该提供商
-启用的模型 id 列表存于同级的 `enabled_models` 键。
+启用的模型 id 列表存于同级的 `enabled_models` 键，提供商级配置写在
+`[providers.<id>]` 下的同名键。
+
+内置预置写在 `src/mycode/provider_presets.py`（无需在 `/provider` 里重复
+填写），每条按 `for_providers` 匹配多家提供商，用 frozen dataclass 定义：
+
+```python
+ProviderPreset(
+    id="z-ai",
+    name="智谱",
+    for_providers=("zhipuai", "zhipuai-coding-plan", "zai", "zai-coding-plan"),
+    config=PresetConfig(
+        send_reasoning_content=True,
+        extra_body={"thinking": {"type": "enabled", "clear_thinking": False}},
+    ),
+)
+```
 
 ## 内置工具一览
 
@@ -400,8 +418,8 @@ uv run pytest
 - 各内置工具的注册、参数、基础与边界行为（`test_tools.py`）
 - 路径安全检查（`test_safe_path.py`）
 - 行数/KiB 联合截断（`test_truncate.py`）
-- 会话历史与 ADT 序列化往返（`test_session.py`，含 reasoning_content 的附加/剥离/持久化）
-- 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染与思考过程面板，`test_renderer.py`）
+- 会话历史与 ADT 序列化往返（`test_session.py`，含 reasoning_content 的附加/剥离/持久化、strip_reasoning_all）
+- 渲染器 default/classic 风格输出（含 bash/write/patch/edit 工具调用特化渲染、思考过程渲染与分隔线，`test_renderer.py`）
 - 通用询问界面 ask_ui：选项数据/单选多选/自定义输入/状态持久化/布局/前缀展示/多问题键绑定与提示行（`test_ask_ui.py`）
 - 确认交互：confirm_tool 动作映射与多行编辑视图（`test_confirm.py`）
 - 交互询问 ask_user：多问题选项构建、JSON 返回值与 abort 退出集成（`test_ask_user.py`）
@@ -409,10 +427,11 @@ uv run pytest
 - 通用表单界面 form_ui：字段切换/掩码/校验/提交取消（`test_form_ui.py`）
 - 通用筛选选择界面 filter_ui：过滤/分页/焦点/单多选/取消（`test_filter_ui.py`）
 - 模型数据源注册表：缓存/meta/etag/异步更新/候选解析（`test_models_registry.py`）
-- 模型提供商配置：读写保注释/迁移/id 分配/模型级配置与回传开关解析（`test_providers.py`）
-- 模型提供商配置流程：主菜单/添加/自定义/编辑/模型配置菜单与表单（`test_provider_setup.py`）
+- 模型提供商配置：读写保注释/迁移/id 分配、模型级与提供商级配置、四级回退链（`test_providers.py`）
+- 提供商预设值表：记录结构约定、索引构建与 lookup（`test_provider_presets.py`）
+- 模型提供商配置流程：主菜单/添加/自定义/编辑/模型配置三级菜单与表单（`test_provider_setup.py`）
 - 模型切换：提供商轮换/选定写回/取消、ModelChangeEvent（`test_model_select.py`）
-- CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒等集成行为（`test_cli.py`）
+- CLI 输入、agent_loop 消息补齐、`replay` 同步、陈旧提醒、reasoning_content 回传与 extra_body 透传（`test_cli.py`）
 
 ### 类型检查
 

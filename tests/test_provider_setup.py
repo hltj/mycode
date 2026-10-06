@@ -427,6 +427,9 @@ class TestEdit:
 
     def test_edit_settings_placeholder_by_provider_kind(self, monkeypatch):
         """占位文字按提供商区分：自定义提供商不在模型库中，不提模型库。"""
+        from mycode import provider_presets
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
         texts = {}
         for pid in ("deepseek", "udf-provider-1"):
             pv.save_provider(_provider_config(id=pid, name=pid,
@@ -438,7 +441,59 @@ class TestEdit:
             ps.edit_settings(pid)
             texts[pid] = seen["f"]["send_reasoning_content"].placeholder
         assert texts["deepseek"] == "true/false，留空=按模型库默认"
-        assert texts["udf-provider-1"] == "true/false，留空=不回传（false）"
+        assert texts["udf-provider-1"] == "true/false，留空=不回传：false"
+
+    def test_edit_settings_placeholder_uses_provider_preset(self, monkeypatch):
+        """命中 provider_presets 时，占位文字提示提供商预置。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(
+                send_reasoning_content=True))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(f={x.name: x for x in fields}),
+            ps.FormResult(values={x.name: x.initial for x in fields}))[1])
+        ps.edit_settings("dp")
+        assert seen["f"]["send_reasoning_content"].placeholder == \
+            "true/false，留空=按提供商预置：true"
+
+    def test_edit_settings_extra_body_placeholder_preset(self, monkeypatch):
+        """extra_body 命中提供商预置时，占位直接展示该预设配置。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(
+                extra_body={"thinking": {"type": "enabled"}}))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(f={x.name: x for x in fields}),
+            ps.FormResult(values={x.name: x.initial for x in fields}))[1])
+        ps.edit_settings("dp")
+        assert seen["f"]["extra_body"].placeholder == \
+            '留空=按提供商预置：{"thinking": {"type": "enabled"}}'
+
+    def test_edit_settings_extra_body_placeholder_generic(self, monkeypatch):
+        """未命中提供商预置时，占位给通用示例。"""
+        from mycode import provider_presets
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
+        pv.save_provider(_provider_config(id="none-hit", name="N", models=["m1"]))
+        seen = {}
+        monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
+            seen.update(f={x.name: x for x in fields}),
+            ps.FormResult(values={x.name: x.initial for x in fields}))[1])
+        ps.edit_settings("none-hit")
+        assert seen["f"]["extra_body"].placeholder == \
+            '如 DeepSeek 配置 {"thinking": {"type": "enabled"}}'
 
     def test_edit_settings_saves_provider_level(self, monkeypatch):
         """提交后写入提供商级开关与 extra_body。"""
@@ -805,6 +860,10 @@ class TestEditModelForm:
         monkeypatch.setattr(ps, "candidate_providers", lambda: {})
         config.invalidate()
         pv.save_provider(_provider_config())
+        # 测试不依赖生产预设值表：默认置空，需要预置的用例自行 monkeypatch
+        from mycode import provider_presets
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
 
     def _run(self, monkeypatch, values, pid="deepseek", model="deepseek-chat"):
         seen = {}
@@ -895,7 +954,7 @@ class TestEditModelForm:
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
                                          "extra_body": ""})
         assert fields[1].initial == ""
-        assert "留空=按模型库默认（true）" in fields[1].placeholder
+        assert "留空=按模型库默认：true" in fields[1].placeholder
 
     def test_extra_body_echoed_single_line(self, monkeypatch):
         """已配置的 extra_body 回显为单行 JSON。
@@ -931,6 +990,37 @@ class TestEditModelForm:
         ps._edit_model("deepseek", "not-configured")
         assert called == []
 
+    def test_model_extra_body_placeholder_prefers_provider(self, monkeypatch):
+        """模型级场景：提供商级有 extra_body 时优先于提供商预置。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(extra_body={"preset": 1}))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"],
+                                          extra_body={"provider": 1}))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""},
+                           pid="dp", model="m1")
+        assert fields[2].placeholder == '留空=按提供商级配置：{"provider": 1}'
+
+    def test_model_extra_body_placeholder_falls_to_preset(self, monkeypatch):
+        """提供商级未配时，模型级场景回退到提供商预置表。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(extra_body={"preset": 1}))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""},
+                           pid="dp", model="m1")
+        assert fields[2].placeholder == '留空=按提供商预置：{"preset": 1}'
+
     def test_field_hints_and_placeholder(self, monkeypatch):
         """字段说明文案：开关说明与 extra_body 占位/提示。"""
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
@@ -941,11 +1031,50 @@ class TestEditModelForm:
         assert fields[2].hint == "JSON 对象"
 
     def test_switch_placeholder_follows_provider_level(self, monkeypatch):
-        """提供商级配了开关时，占位文字提示「按本提供商默认」。"""
+        """提供商级配了开关时，占位文字提示「按提供商级配置」。"""
         pv.save_provider(_provider_config(send_reasoning_content=True))
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
                                          "extra_body": ""})
-        assert fields[1].placeholder == "true/false，留空=按本提供商默认（true）"
+        assert fields[1].placeholder == "true/false，留空=按提供商级配置：true"
+
+    def test_switch_placeholder_preset_beats_models_dev(self, monkeypatch):
+        """预置表命中时优先于模型库推导展示（提供商手动未配的情况下）。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(
+                send_reasoning_content=True))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
+        # 模型库推导也为 true，但预置表优先级更高，来源标注应指向预置
+        monkeypatch.setattr(ps.pv, "default_send_reasoning",
+                            lambda pid, m: True)
+        monkeypatch.setattr(ps.pv, "resolve_send_reasoning",
+                            lambda pid, m: True)
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""},
+                           pid="dp", model="m1")
+        assert fields[1].placeholder == "true/false，留空=按提供商预置：true"
+
+    def test_switch_placeholder_provider_beats_preset(self, monkeypatch):
+        """提供商手动配置优先于预置表展示。"""
+        from mycode import provider_presets
+        t = [provider_presets.ProviderPreset(
+            id="d", name="D", for_providers=("dp",),
+            config=provider_presets.PresetConfig(
+                send_reasoning_content=True))]
+        monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
+                            provider_presets._rebuild_index(t))
+        pv.save_provider(_provider_config(id="dp", name="D", models=["m1"],
+                                          send_reasoning_content=False))
+        fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
+                                         "extra_body": ""},
+                           pid="dp", model="m1")
+        assert fields[1].placeholder == \
+            "true/false，留空=按提供商级配置：false"
 
     def test_switch_placeholder_model_library_when_no_provider_flag(self, monkeypatch):
         """提供商级未配开关时，仍提示「按模型库默认」。"""
@@ -969,7 +1098,7 @@ class TestEditModelForm:
         assert name_f.hint == "留空则用模型 id"
         assert name_f.placeholder == "my-model"
         # 无模型库数据 → 推导值恒为 false，在「不回传」措辞后追加（false）
-        assert flag_f.placeholder == "true/false，留空=不回传（false）"
+        assert flag_f.placeholder == "true/false，留空=不回传：false"
         assert flag_f.hint == "历史思考随历史消息发回模型"
 
     def test_switch_placeholder_keeps_own_wording(self, monkeypatch):
@@ -982,8 +1111,8 @@ class TestEditModelForm:
         udf = self._run(monkeypatch, {
             "name": "", "send_reasoning_content": "", "extra_body": ""},
             pid="udf-provider-1", model="my-model")[1].placeholder
-        assert catalog == "true/false，留空=按模型库默认（false）"
-        assert udf == "true/false，留空=不回传（false）"
+        assert catalog == "true/false，留空=按模型库默认：false"
+        assert udf == "true/false，留空=不回传：false"
 
     def test_catalog_wording_mentions_model_library(self, monkeypatch):
         """models.dev 提供商：显示名提示模型库名称。"""

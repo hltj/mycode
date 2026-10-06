@@ -123,6 +123,40 @@ udf-provider-1 · 1 模型
   确认后删除 section；若该提供商是当前 `model_provider`，清空当前
   提供商与模型。
 
+## 提供商预设值
+
+`src/mycode/provider_presets.py` 内置一张**提供商级请求设置预设值表**，
+省去为多家共用同一套设置的提供商重复填写。每条记录：
+
+```python
+ProviderPreset(
+    id="z-ai",                  # 记录 id（仅便于识别）
+    name="智谱",                # 显示名（仅便于识别）
+    for_providers=("zhipuai", "zhipuai-coding-plan", "zai", "zai-coding-plan"),
+    config=PresetConfig(      # 两项至少填一项
+        send_reasoning_content=True,
+        extra_body={"thinking": {"type": "enabled", "clear_thinking": False}},
+    ),
+)
+```
+
+`ProviderPreset` / `PresetConfig` 都是 `frozen` dataclass（不可变），
+字段类型即约束；未设置的项为 `None`。`lookup()` 返回 `PresetConfig`。
+
+- 导入时用推导式把 `for_providers` 展开成「提供商 id → config 副本」索引
+  （`_rebuild_index()`），`lookup(pid)` 直接查表并返回 `PresetConfig`；
+  一个 id 只对应一条记录，无需合并，未命中返回两项皆空的配置；
+- 索引里每个 id 各存一份独立副本（`extra_body` 深拷贝），配合 `frozen`
+  使调用方改不动配置表；`resolve_extra_body` 另返回深拷贝供请求使用；
+- 生效顺序：模型级 → 提供商级 → 本表 → models.dev 推导；
+- 本表只作预设值，用户在 `/provider` 显式配置后即覆盖它；
+- 表单里这两项留空时，占位文字会提示回退来源并展示实际生效内容：
+  - 开关：按回退优先级标注来源——提供商手动配置 → 本表（`留空=按提供商预置：true/false`）
+    → 按提供商类型显示「按模型库默认」或「不回传：false」；
+  - `extra_body`：命中本表（或模型级场景下命中提供商级）时直接展示该
+    JSON（压成单行），如 `留空=按提供商预置：{"thinking": {"type": "enabled"}}`；
+    都没有时给通用示例 `如 DeepSeek 配置 {...}`。
+
 ## 模型配置（三级菜单）
 
 「模型配置」进入级联菜单，菜单项是该提供商已配置的所有模型
@@ -148,7 +182,7 @@ deepseek · 2 模型
 | 字段 | 说明 |
 |------|------|
 | 显示名 | models.dev 提供商留空回退模型库名称，自定义提供商留空回退模型 id。占位文字提示当前生效值 |
-| 回传 reasoning_content | 布尔值 `true` / `false`（大小写不敏感），非布尔字面量经校验器报错；留空表示继承。占位文字按生效来源区分：`true/false，留空=按本提供商默认（true/false）`（提供商级已配）、`true/false，留空=按模型库默认（true/false）`（models.dev 提供商且提供商级未配）、`true/false，留空=不回传（false）`（自定义提供商） |
+| 回传 reasoning_content | 布尔值 `true` / `false`（大小写不敏感），非布尔字面量经校验器报错；留空表示继承。占位文字按生效来源区分：`true/false，留空=按提供商级配置：true/false`（提供商级已配）、`true/false，留空=按模型库默认：true/false`（models.dev 提供商且提供商级未配）、`true/false，留空=不回传：false`（自定义提供商） |
 | extra_body | JSON 对象，留空不传；非 JSON 或顶层非对象经校验器报错。占位文字 `如 DeepSeek 配置 {"thinking": {"type": "enabled"}}` |
 
 > **回显必须单行**：`form_ui` 的输入是单行 `Buffer`，多行文本只会显示最后
@@ -156,7 +190,7 @@ deepseek · 2 模型
 > 压成单行回显，不加 `indent`。
 
 - 开关的占位文字提示推导结果（如
-  `true/false，留空=按模型库默认（true）`）；已显式配置时回显当前值
+  `true/false，留空=按模型库默认：true`）；已显式配置时回显当前值
   （`true` / `false`），未配置则初始值留空；
 - 三项全空时删除该模型的配置子表，不留空配置；
 - 写入 `providers.save_model_config`，各字段**按需写入**：显示名为空 /

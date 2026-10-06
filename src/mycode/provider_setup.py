@@ -321,6 +321,42 @@ def _host_of(url: str) -> str:
 # 编辑
 # ---------------------------------------------------------------------------
 
+def _inherited_flag_text(pid: str, is_udf: bool) -> str:
+    """提供商级开关留空时的占位文字：说明回退来源与推导值。
+
+    来源优先级：``provider_presets`` 预设值表（命中）> models.dev 推导。
+    自定义提供商不在模型库中，一律「不回传：false」。
+    """
+    from mycode import provider_presets
+
+    flag = provider_presets.lookup(pid).send_reasoning_content
+    if isinstance(flag, bool):
+        return f"true/false，留空=按提供商预置：{'true' if flag else 'false'}"
+    if is_udf:
+        return "true/false，留空=不回传：false"
+    return "true/false，留空=按模型库默认"
+
+
+def _inherited_extra_body_text(pid: str, model: str = "") -> str:
+    """extra_body 留空时的占位文字：展示回退来源与内容。
+
+    ``model`` 非空为模型级场景，先看提供商级配置；否则为提供商级场景。
+    两者的下一级都是 ``provider_presets`` 提供商预置表。命中的配置压成
+    单行展示（form_ui 是单行输入）；都没有则给通用示例。
+    """
+    from mycode import provider_presets
+
+    if model:
+        provider = pv.load_providers().get(pid)
+        if provider is not None and provider.extra_body:
+            return "留空=按提供商级配置：" + json.dumps(
+                provider.extra_body, ensure_ascii=False)
+    body = provider_presets.lookup(pid).extra_body
+    if isinstance(body, dict) and body:
+        return "留空=按提供商预置：" + json.dumps(body, ensure_ascii=False)
+    return '如 DeepSeek 配置 {"thinking": {"type": "enabled"}}'
+
+
 def edit_settings(pid: str) -> str:
     """编辑提供商的设定值：显示名 / base_url / api_key / 模型列表 /
     回传 reasoning_content / extra_body。
@@ -344,6 +380,7 @@ def edit_settings(pid: str) -> str:
             hint="提供商 id 为 udf-<后缀>；改动会同步当前提供商配置",
             validator=_id_suffix_validator(exclude_pid=pid),
         ))
+    inherited = _inherited_flag_text(pid, is_udf)
     fields.extend([
         FormField(name="name", label="显示名", initial=existing.name),
         FormField(name="base_url", label="Base URL", initial=existing.base_url),
@@ -351,22 +388,21 @@ def edit_settings(pid: str) -> str:
                   password=True),
         FormField(name="models", label="模型列表",
                   initial=",".join(existing.models)),
-        # 提供商级默认请求设置：模型级同名配置优先于它们
+        # 提供商级默认请求设置：模型级同名配置优先于它们；留空时回退到
+        # provider_presets 预设值表（命中时），再退到模型库推导
         FormField(name="send_reasoning_content",
                   label="回传 reasoning_content",
                   initial=("" if existing.send_reasoning_content is None
                            else str(existing.send_reasoning_content).lower()),
-                  placeholder=("true/false，留空=按模型库默认"
-                                if not is_udf else
-                                "true/false，留空=不回传（false）"),
-                  hint="本提供商默认；模型配置可覆盖",
+                  placeholder=inherited,
+                  hint="提供商级配置；模型配置可覆盖",
                   validator=lambda t: _parse_bool(t)[1]),
         # form_ui 是单行输入，JSON 必须压成一行回显
         FormField(name="extra_body", label="extra_body",
                   initial=(json.dumps(existing.extra_body, ensure_ascii=False)
                            if existing.extra_body else ""),
-                  placeholder='如 DeepSeek 配置 {"thinking": {"type": "enabled"}}',
-                  hint="本提供商默认；模型配置可覆盖",
+                  placeholder=_inherited_extra_body_text(pid),
+                  hint="提供商级配置；模型配置可覆盖",
                   validator=_json_validator("extra_body")),
     ])
     form = form_ui(fields, title=f"编辑：{existing.name}（{pid}）",
@@ -547,16 +583,22 @@ def _edit_model(pid: str, model: str) -> None:
     # 自定义提供商在模型库里没有数据：显示名只能回退模型 id、开关推导值
     # 恒为 false
     is_udf = pv.is_user_defined(pid)
-    # 开关留空时的回退来源：提供商级配置优先，其次模型库的 interleaved 推导
+    # 开关留空时的回退来源（与 resolve_send_reasoning 同序）：提供商级配置
+    # → provider_presets 预置表 → 模型库 interleaved 推导
+    from mycode import provider_presets
+
     provider = pv.load_providers().get(pid)
     has_provider_flag = (provider is not None
                          and provider.send_reasoning_content is not None)
+    preset_flag = provider_presets.lookup(pid).send_reasoning_content
     if has_provider_flag:
-        inherited = f"true/false，留空=按本提供商默认（{'true' if current_flag else 'false'}）"
+        inherited = f"true/false，留空=按提供商级配置：{'true' if current_flag else 'false'}"
+    elif isinstance(preset_flag, bool):
+        inherited = f"true/false，留空=按提供商预置：{'true' if preset_flag else 'false'}"
     elif is_udf:
-        inherited = "true/false，留空=不回传（false）"
+        inherited = "true/false，留空=不回传：false"
     else:
-        inherited = f"true/false，留空=按模型库默认（{'true' if current_flag else 'false'}）"
+        inherited = f"true/false，留空=按模型库默认：{'true' if current_flag else 'false'}"
     fields = [
         FormField(name="name", label="显示名",
                   initial=cfg.name,
@@ -572,7 +614,7 @@ def _edit_model(pid: str, model: str) -> None:
         FormField(name="extra_body", label="extra_body",
                   initial=(json.dumps(cfg.extra_body, ensure_ascii=False)
                            if cfg.extra_body else ""),
-                  placeholder='如 DeepSeek 配置 {"thinking": {"type": "enabled"}}',
+                  placeholder=_inherited_extra_body_text(pid, model),
                   hint="JSON 对象",
                   validator=_json_validator("extra_body")),
     ]
