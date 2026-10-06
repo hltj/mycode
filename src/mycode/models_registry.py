@@ -319,47 +319,55 @@ def interleaves_reasoning(obj: object) -> bool:
     return inter.get("field") == _REASONING_FIELD
 
 
+def _provider_entry(pid: str, raw: object) -> ProviderInfo | None:
+    """api_data 单条目 → ProviderInfo；非 openai-compatible 条目返回 None。
+
+    ``name`` 缺省或非字符串回退提供商 id；``api`` 缺省或非字符串保留
+    空串占位（少数提供商无 api 模板，用官方 openai base）；``env`` 统一
+    规整为字符串列表。
+    """
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("npm") != _NPM_OPENAI_COMPATIBLE:
+        return None
+    name = raw.get("name")
+    if not isinstance(name, str) or not name:
+        name = pid
+    api = raw.get("api")
+    if not isinstance(api, str) or not api:
+        api = ""
+    env = raw.get("env")
+    env_list = [str(x) for x in env] if isinstance(env, list) else []
+    models_raw = raw.get("models")
+    models = {
+        mid: ModelInfo(
+            id=mid,
+            name=_model_name(m),
+            interleaves_reasoning=interleaves_reasoning(m),
+        )
+        for m in (models_raw.values() if isinstance(models_raw, dict) else ())
+        if (mid := _model_id(m)) and _model_supports_tool_call(m)
+    }
+    return ProviderInfo(
+        id=pid,
+        name=name,
+        base_url=api,
+        env=env_list,
+        models=models,
+    )
+
+
 def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
     """解析 api.json 为候选提供商映射（id → ProviderInfo）。
 
     仅保留 npm 为 ``@ai-sdk/openai-compatible`` 的条目；models 只保留
     支持工具调用的条目（id → ModelInfo），顺序与接口一致。
     """
-    result: dict[str, ProviderInfo] = {}
-    for pid, raw in api_data.items():
-        if not isinstance(raw, dict):
-            continue
-        if raw.get("npm") != _NPM_OPENAI_COMPATIBLE:
-            continue
-        name = raw.get("name")
-        api = raw.get("api")
-        if not isinstance(name, str) or not name:
-            name = pid
-        if not isinstance(api, str) or not api:
-            # 少数提供商无 api 模板（用官方 openai base）；保留空串占位
-            api = ""
-        env = raw.get("env")
-        env_list = [str(x) for x in env] if isinstance(env, list) else []
-
-        models_raw = raw.get("models")
-        models = {
-            mid: ModelInfo(
-                id=mid,
-                name=_model_name(m),
-                interleaves_reasoning=interleaves_reasoning(m),
-            )
-            for m in (models_raw.values() if isinstance(models_raw, dict) else ())
-            if (mid := _model_id(m)) and _model_supports_tool_call(m)
-        }
-
-        result[pid] = ProviderInfo(
-            id=pid,
-            name=name,
-            base_url=api,
-            env=env_list,
-            models=models,
-        )
-    return result
+    return {
+        pid: info
+        for pid, raw in api_data.items()
+        if (info := _provider_entry(pid, raw)) is not None
+    }
 
 
 def all_model_ids(api_data: dict) -> dict[str, list[str]]:

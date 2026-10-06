@@ -103,16 +103,16 @@ def _main_menu_question(existing: dict[str, pv.ProviderConfig]) -> AskQuestion:
             description=_meta_status_text(),
         ),
         AskOption(label="添加自定义模型提供商", value=MAIN_ADD_USER_DEFINED),
+        *[
+            AskOption(
+                label=f"编辑：{existing[pid].name}",
+                value=f"{EDIT_PREFIX}{pid}",
+                description=f"{pid} · {len(existing[pid].models)} 模型",
+            )
+            for pid in sorted(existing)
+        ],
+        AskOption(label="返回", value=MAIN_CANCEL),
     ]
-    for pid in sorted(existing):
-        p = existing[pid]
-        n = len(p.models)
-        opts.append(AskOption(
-            label=f"编辑：{p.name}",
-            value=f"{EDIT_PREFIX}{pid}",
-            description=f"{pid} · {n} 模型",
-        ))
-    opts.append(AskOption(label="返回", value=MAIN_CANCEL))
     return AskQuestion(title="模型提供商配置", options=opts)
 
 
@@ -137,16 +137,25 @@ def _candidate_options(
     return [FilterOption(label=label(pid), value=pid) for pid in sorted(infos)]
 
 
-def _model_options(models: dict[str, mr.ModelInfo]) -> list[FilterOption]:
+def _model_options(
+    models: dict[str, mr.ModelInfo],
+    selected: set[str] | None = None,
+) -> list[FilterOption]:
     """模型 → filter_ui options（label 模型名称（模型id））。
 
     按显示名排序（不区分大小写；缺失回退 id），同名再按 id 保证稳定。
+    ``selected`` 非空时对应选项初始勾选（回显现有勾选）。
     """
     def sort_key(m: str) -> tuple[str, str]:
         return ((models[m].name or m).lower(), m)
 
+    selected = selected or set()
     return [
-        FilterOption(label=f"{models[m].name or m}（{m}）", value=m)
+        FilterOption(
+            label=f"{models[m].name or m}（{m}）",
+            value=m,
+            selected=m in selected,
+        )
         for m in sorted(models, key=sort_key)
     ]
 
@@ -187,19 +196,17 @@ def add_from_catalog() -> Optional[str]:
         return pid
 
     # 变量表单：env 列表逐变量填写
-    fields: list[FormField] = []
-    for var in info.env:
-        is_secret = mr.is_secret_env_var(var)
-        hint: str = ""
-        if f"${{{var}}}" in info.base_url:
-            hint = "用于拼接 API 地址"
-        fields.append(FormField(
+    fields = [
+        FormField(
             name=var,
             label=var,
-            hint=hint,
+            hint="用于拼接 API 地址" if f"${{{var}}}" in info.base_url else "",
             password=is_secret,
             placeholder="sk-..." if is_secret else "输入值",
-        ))
+        )
+        for var in info.env
+        if (is_secret := mr.is_secret_env_var(var)) is not None
+    ]
     # 无 env 变量（如某些本地服务）跳过表单
     values: dict[str, str] = {}
     if fields:
@@ -447,10 +454,7 @@ def edit_reselect_models(pid: str) -> None:
         # 自定义提供商无候选数据：无显示名，仅按 id 排序
         models = {m: mr.ModelInfo(id=m) for m in existing.models}
     # 回显现有勾选
-    opts = _model_options(models)
-    for o in opts:
-        if o.value in existing.models:
-            o.selected = True
+    opts = _model_options(models, selected=set(existing.models))
     pick = filter_ui(opts, title=f"勾选 {existing.name}（{pid}）的模型",
                      description=f"可勾选多个（上限 {MAX_MODELS_PER_PROVIDER}）",
                      multi=True, style=_current_style())

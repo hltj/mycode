@@ -41,10 +41,13 @@ def _build_question(providers: dict, index: int) -> AskQuestion:
     info = providers[pid]
     current = get_current()
     cur_pid, cur_model = current if current else ("", "")
-    opts = []
-    for m in info.models:
-        label = m if (pid, m) != (cur_pid, cur_model) else f"{m}（当前）"
-        opts.append(AskOption(label=label, value=m))
+    opts = [
+        AskOption(
+            label=m if (pid, m) != (cur_pid, cur_model) else f"{m}（当前）",
+            value=m,
+        )
+        for m in info.models
+    ]
     title = f"◄ {info.name} ({index + 1}/{len(pids)}) ►"
     return AskQuestion(title=title, options=opts)
 
