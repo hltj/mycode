@@ -473,8 +473,8 @@ class TestResolveModelSettings:
                 send_reasoning_content=True,
                 extra_body={"thinking": {"type": "enabled"}}))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         return "test-def-p"
 
     def test_default_from_interleaved_field(self, env, provider):
@@ -607,7 +607,7 @@ class TestResolveModelSettings:
     def test_provider_presets_fallback(self, env, provider, default_pid):
         """提供商级未配置时回退到 provider_presets 预设值表。"""
         from mycode import provider_presets, providers as pvs
-        assert provider_presets.lookup(
+        assert provider_presets.lookup_config(
             default_pid).send_reasoning_content is True
         pvs.save_provider(pv.ProviderConfig(id=default_pid, name="D", base_url="u",
                                             api_key="k", models=["m1"]))
@@ -639,7 +639,7 @@ class TestResolveModelSettings:
         got["thinking"]["type"] = "disabled"          # type: ignore[index]
         again = pvs.resolve_extra_body(default_pid, "m1")
         assert again["thinking"]["type"] == "enabled"  # type: ignore[index]
-        assert provider_presets.lookup(
+        assert provider_presets.lookup_config(
             default_pid).extra_body["thinking"][       # type: ignore[index]
             "type"] == "enabled"
 
@@ -664,7 +664,7 @@ class TestResolveModelSettings:
                                             base_url="u", api_key="k",
                                             models=["m1"]))
         # 表里开关为 True，而模型库缓存推导为 False
-        assert provider_presets.lookup(
+        assert provider_presets.lookup_config(
             default_pid).send_reasoning_content is True
         assert pvs.resolve_send_reasoning(default_pid, "m1") is True
 

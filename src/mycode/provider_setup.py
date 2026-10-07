@@ -336,7 +336,7 @@ def _inherited_flag_text(pid: str, is_udf: bool) -> str:
     """
     from mycode import provider_presets
 
-    flag = provider_presets.lookup(pid).send_reasoning_content
+    flag = provider_presets.lookup_config(pid).send_reasoning_content
     if isinstance(flag, bool):
         return f"true/false，留空=按提供商预置：{'true' if flag else 'false'}"
     if is_udf:
@@ -358,7 +358,7 @@ def _inherited_extra_body_text(pid: str, model: str = "") -> str:
         if provider is not None and provider.extra_body:
             return "留空=按提供商级配置：" + json.dumps(
                 provider.extra_body, ensure_ascii=False)
-    body = provider_presets.lookup(pid).extra_body
+    body = provider_presets.lookup_config(pid).extra_body
     if isinstance(body, dict) and body:
         return "留空=按提供商预置：" + json.dumps(body, ensure_ascii=False)
     return '如 DeepSeek 配置 {"thinking": {"type": "enabled"}}'
@@ -594,7 +594,7 @@ def _edit_model(pid: str, model: str) -> None:
     provider = pv.load_providers().get(pid)
     has_provider_flag = (provider is not None
                          and provider.send_reasoning_content is not None)
-    preset_flag = provider_presets.lookup(pid).send_reasoning_content
+    preset_flag = provider_presets.lookup_config(pid).send_reasoning_content
     if has_provider_flag:
         inherited = f"true/false，留空=按提供商级配置：{'true' if current_flag else 'false'}"
     elif isinstance(preset_flag, bool):

@@ -335,7 +335,7 @@ def default_send_reasoning(pid: str, model: str) -> bool:
     里该模型的 ``interleaved`` 推导（仅 ``{"field": "reasoning_content"}``
     视为开启）。
     """
-    flag = provider_presets.lookup(pid).send_reasoning_content
+    flag = provider_presets.lookup_config(pid).send_reasoning_content
     if isinstance(flag, bool):
         return flag
     model_info = _cached_model_info(pid, model)
@@ -354,7 +354,7 @@ def resolve_extra_body(pid: str, model: str) -> Optional[dict]:
     provider = load_providers().get(pid)
     if provider is not None and provider.extra_body:
         return dict(provider.extra_body)
-    body = provider_presets.lookup(pid).extra_body
+    body = provider_presets.lookup_config(pid).extra_body
     return deepcopy(body) if body else None
 
 

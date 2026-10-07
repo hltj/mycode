@@ -13,6 +13,9 @@
   - 下载/解析失败写 meta 的 error 状态
 - 候选提供商解析：仅 ``npm == "@ai-sdk/openai-compatible"`` 入选；
   model 的 ``tool_call == false`` 被过滤（缺字段视为支持）
+- ``_replace_url_path``：只替换 URL 的 path 段，其余部分保留
+- 预设 ``openai_compatible`` 的提供商（npm 标注其他包）也纳入候选，
+  ``api`` 的 URL path 被替换为预设的 ``path``
 - ``resolve_base_url``：``${VAR}`` 插值渲染（缺失变量替换为空串）
 - ``is_secret_env_var``：名称含 KEY / TOKEN / PAT 视为密钥
 """
@@ -381,6 +384,113 @@ class TestCandidateProviders:
             "m1": mr.ModelInfo(id="m1", name="M One"),
             "m2": mr.ModelInfo(id="m2"),
         }
+
+
+# ===================================================================
+# 预设 openai_compatible（models.dev 标注其他 npm 但提供 OpenAI 兼容 API）
+# ===================================================================
+
+class TestPresetOpenAICompatible:
+    """npm 非 openai-compatible 时，查 provider_presets 的 openai_compatible：
+    命中则把 ``api`` 的 URL path 替换为预设的 ``path`` 后纳入候选。"""
+
+    @staticmethod
+    def _install_preset(monkeypatch, pids: list[str], path: str = "/v1"):
+        from mycode import provider_presets as pp
+
+        t = [pp.ProviderPreset(
+            id="test-oai", name="测试预设",
+            for_providers=tuple(pids),
+            openai_compatible=pp.OpenAICompatible(path=path))]
+        monkeypatch.setattr(pp, "_PROVIDER_PRESETS", t)
+        monkeypatch.setattr(pp, "_OAI_BY_PROVIDER", pp._rebuild_oai_index(t))
+        return t
+
+    def test_preset_provider_included_with_path_replaced(self, monkeypatch):
+        """命中预设：api 的 URL path 被替换，scheme / netloc 保留。"""
+        self._install_preset(monkeypatch, ["anthropic-style"])
+        data = {
+            "anthropic-style": {
+                "npm": "@ai-sdk/anthropic",
+                "name": "Anthropic Style",
+                "api": "https://api.example.com/anthropic/v1",
+                "models": _models_dict([AVAILABLE_MODEL]),
+            },
+        }
+        providers = mr.candidate_providers(data)
+        assert set(providers) == {"anthropic-style"}
+        p = providers["anthropic-style"]
+        assert p.base_url == "https://api.example.com/v1"
+        assert p.models == {"m-good": mr.ModelInfo(id="m-good")}
+
+    def test_presets_different_paths(self, monkeypatch):
+        """预设 path 可为任意 path 段（如多级路径）。"""
+        self._install_preset(monkeypatch, ["multi-path"], path="/openai/v1")
+        data = {
+            "multi-path": {
+                "npm": "@ai-sdk/anthropic",
+                "api": "https://api.example.com/anthropic/v1",
+                "models": _models_dict([AVAILABLE_MODEL]),
+            },
+        }
+        assert mr.candidate_providers(
+            data)["multi-path"].base_url == "https://api.example.com/openai/v1"
+
+    def test_no_preset_still_excluded(self):
+        """未命中预设：仍按 npm 过滤掉。"""
+        data = {
+            "anthropic-style": {
+                "npm": "@ai-sdk/anthropic",
+                "api": "https://api.example.com/anthropic/v1",
+                "models": _models_dict([AVAILABLE_MODEL]),
+            },
+        }
+        assert mr.candidate_providers(data) == {}
+
+    def test_preset_but_api_missing_excluded(self, monkeypatch):
+        """命中预设但 raw 无 api 模板：无从替换 path，不入选。"""
+        self._install_preset(monkeypatch, ["no-api"])
+        data = {
+            "no-api": {
+                "npm": "@ai-sdk/anthropic",
+                "api": None,
+                "models": _models_dict([AVAILABLE_MODEL]),
+            },
+        }
+        assert mr.candidate_providers(data) == {}
+
+    def test_native_openai_compatible_unchanged_by_preset(self, monkeypatch):
+        """npm 本就是 openai-compatible 时不查预设，api 原样保留。"""
+        self._install_preset(monkeypatch, ["openai-compat-1"], path="/v9")
+        data = _api_data()
+        providers = mr.candidate_providers(data)
+        assert providers["openai-compat-1"].base_url == (
+            "https://api.example.com/v1")
+
+
+# ===================================================================
+# _replace_url_path
+# ===================================================================
+
+class TestReplaceUrlPath:
+    def test_replace_path_keep_host(self):
+        assert mr._replace_url_path(
+            "https://api.example.com/anthropic/v1", "/v1") == (
+            "https://api.example.com/v1")
+
+    def test_multi_segment_path(self):
+        assert mr._replace_url_path(
+            "https://api.example.com/old/path", "/openai/v1") == (
+            "https://api.example.com/openai/v1")
+
+    def test_query_and_fragment_kept(self):
+        assert mr._replace_url_path(
+            "https://api.example.com/anthropic/v1?x=1#frag", "/v1") == (
+            "https://api.example.com/v1?x=1#frag")
+
+    def test_empty_path_becomes_root(self):
+        assert mr._replace_url_path("https://api.example.com/anthropic", "") == (
+            "https://api.example.com")
 
 
 # ===================================================================

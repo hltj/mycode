@@ -20,7 +20,10 @@
   - 任何失败只写 meta 的 ``status=error``。
 - 下载用 ``httpx``（``http://`` 与 ``https://``；压缩 zstd/brotli/gzip 走
   httpx 默认协商，安装 ``httpx[zstd]`` 后优先 zstd）。
-- 候选解析：只保留 npm 为 ``@ai-sdk/openai-compatible`` 的提供商；
+- 候选解析：npm 为 ``@ai-sdk/openai-compatible`` 的提供商入选；npm 标
+  注了其他包但 ``provider_presets`` 给它预设了 ``openai_compatible`` 的
+  也入选（如 MiniMax：models.dev 标 ``@ai-sdk/anthropic``，但提供
+  OpenAI 兼容 API），其 ``api`` 的 URL path 被替换为预设的 ``path``；
   每个 model 缺 ``tool_call`` 或为 true 才保留（agent 必须工具调用），
   ``ProviderInfo.models`` 为模型 id → ``ModelInfo``（含 id/name，以及
   ``interleaved`` 是否指定思考字段为 ``reasoning_content``）。
@@ -39,8 +42,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+from mycode import provider_presets
 
 API_URL = "https://models.dev/api.json?type=all"
 
@@ -319,8 +325,22 @@ def interleaves_reasoning(obj: object) -> bool:
     return inter.get("field") == _REASONING_FIELD
 
 
+def _replace_url_path(url: str, path: str) -> str:
+    """把 URL 的 path 段替换为 ``path``（scheme / netloc 等其余部分保留）。"""
+    parts = urlsplit(url)
+    return urlunsplit(
+        (parts.scheme, parts.netloc, path, parts.query, parts.fragment)
+    )
+
+
 def _provider_entry(pid: str, raw: object) -> ProviderInfo | None:
-    """api_data 单条目 → ProviderInfo；非 openai-compatible 条目返回 None。
+    """api_data 单条目 → ProviderInfo；不符合入选条件的条目返回 None。
+
+    入选条件：npm 为 ``@ai-sdk/openai-compatible``；或 npm 标注了其他包
+    但 ``provider_presets`` 给它预设了 ``openai_compatible``（如 MiniMax：
+    models.dev 标 ``@ai-sdk/anthropic``，但提供 OpenAI 兼容 API）——此时
+    把 ``api`` 的 URL path 替换为预设的 ``path`` 后按 openai-compatible
+    处理，``api`` 缺失时无从替换，返回 None。
 
     ``name`` 缺省或非字符串回退提供商 id；``api`` 缺省或非字符串保留
     空串占位（少数提供商无 api 模板，用官方 openai base）；``env`` 统一
@@ -328,14 +348,21 @@ def _provider_entry(pid: str, raw: object) -> ProviderInfo | None:
     """
     if not isinstance(raw, dict):
         return None
-    if raw.get("npm") != _NPM_OPENAI_COMPATIBLE:
-        return None
+    if raw.get("npm") == _NPM_OPENAI_COMPATIBLE:
+        api = raw.get("api")
+        if not isinstance(api, str) or not api:
+            api = ""
+    else:
+        oai = provider_presets.lookup_openai_compatible(pid)
+        if oai is None:
+            return None
+        api = raw.get("api")
+        if not isinstance(api, str) or not api:
+            return None
+        api = _replace_url_path(api, oai.path)
     name = raw.get("name")
     if not isinstance(name, str) or not name:
         name = pid
-    api = raw.get("api")
-    if not isinstance(api, str) or not api:
-        api = ""
     env = raw.get("env")
     env_list = [str(x) for x in env] if isinstance(env, list) else []
     models_raw = raw.get("models")
@@ -360,7 +387,9 @@ def _provider_entry(pid: str, raw: object) -> ProviderInfo | None:
 def candidate_providers(api_data: dict) -> dict[str, ProviderInfo]:
     """解析 api.json 为候选提供商映射（id → ProviderInfo）。
 
-    仅保留 npm 为 ``@ai-sdk/openai-compatible`` 的条目；models 只保留
+    保留 npm 为 ``@ai-sdk/openai-compatible`` 的条目，以及 npm 标注了
+    其他包但 ``provider_presets`` 预设了 ``openai_compatible`` 的条目
+    （其 ``api`` 的 URL path 被替换为预设的 ``path``）；models 只保留
     支持工具调用的条目（id → ModelInfo），顺序与接口一致。
     """
     return {

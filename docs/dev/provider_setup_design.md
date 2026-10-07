@@ -6,11 +6,13 @@
 
 ## 数据流
 
-- 候选模型提供商来自 `models_registry.ProviderInfo`（api.json 中所有
-  `npm == "@ai-sdk/openai-compatible"` 的条目，当前约 182 家；
+- 候选模型提供商来自 `models_registry.ProviderInfo`：api.json 中
+  `npm == "@ai-sdk/openai-compatible"` 的条目，外加 npm 标注了其他包但
+  `provider_presets` 预设了 `openai_compatible` 的条目（如 MiniMax 的 4
+  条，其 `api` 的 URL path 被替换为预设的 `path`），当前约 189 家；
   `ProviderInfo.models` 为模型 id → `ModelInfo` 映射，含 id/name 与
   `interleaves_reasoning`（由 `interleaved.field == "reasoning_content"`
-  推导，是回传开关的默认值来源））。
+  推导，是回传开关的默认值来源）。
 - 配置写入 `providers.save_provider`（`[providers.<id>]`），当前模型经
   `providers.set_current`。
 - 模型级配置写入 `providers.save_model_config`
@@ -125,29 +127,45 @@ udf-provider-1 · 1 模型
 
 ## 提供商预设值
 
-`src/mycode/provider_presets.py` 内置一张**提供商级请求设置预设值表**，
-省去为多家共用同一套设置的提供商重复填写。每条记录：
+`src/mycode/provider_presets.py` 内置一张**提供商预设值表**，承载两类
+预设信息，一条记录至少设置一类（可同时设置两类，如 MiniMax）：
+
+- `config`：提供商级请求设置预设（见下）；
+- `openai_compatible`：OpenAI 兼容端点预设（见下）。
+
+`ProviderPreset` / `PresetConfig` / `OpenAICompatible` 都是 `frozen`
+dataclass（不可变），字段类型即约束；未设置的项为 `None`。每个提供商 id
+只出现在一条记录的 `for_providers` 里，索引无需合并。
+
+每条记录（以 MiniMax 为例，两类信息都设置）：
 
 ```python
 ProviderPreset(
-    id="z-ai",                  # 记录 id（仅便于识别）
-    name="智谱",                # 显示名（仅便于识别）
-    for_providers=("zhipuai", "zhipuai-coding-plan", "zai", "zai-coding-plan"),
-    config=PresetConfig(      # 两项至少填一项
-        send_reasoning_content=True,
-        extra_body={"thinking": {"type": "enabled", "clear_thinking": False}},
-    ),
+    id="minimax",               # 记录 id（仅便于识别）
+    name="MiniMax",             # 显示名（仅便于识别）
+    for_providers=("minimax-cn", "minimax", "minimax-cn-coding-plan", "minimax-coding-plan"),
+    config=PresetConfig(send_reasoning_content=False),  # 可选；两项至少填一项
+    openai_compatible=OpenAICompatible(path="/v1"),     # 可选
 )
 ```
 
-`ProviderPreset` / `PresetConfig` 都是 `frozen` dataclass（不可变），
-字段类型即约束；未设置的项为 `None`。`lookup()` 返回 `PresetConfig`。
+导入时把 `for_providers` 展开成两个索引：`_rebuild_cfg_index()` 得到
+「提供商 id → config 副本」（`_CFG_BY_PROVIDER`），`_rebuild_oai_index()`
+得到「提供商 id → openai_compatible」（`_OAI_BY_PROVIDER`）。
 
-- 导入时用推导式把 `for_providers` 展开成「提供商 id → config 副本」索引
-  （`_rebuild_index()`），`lookup(pid)` 直接查表并返回 `PresetConfig`；
-  一个 id 只对应一条记录，无需合并，未命中返回两项皆空的配置；
-- 索引里每个 id 各存一份独立副本（`extra_body` 深拷贝），配合 `frozen`
-  使调用方改不动配置表；`resolve_extra_body` 另返回深拷贝供请求使用；
+### config：提供商级请求设置预设
+
+省去为多家共用同一套请求设置的提供商重复填写。`PresetConfig` 两项至少
+填一项：
+
+- `send_reasoning_content`：布尔，是否把 `reasoning_content` 回传给模型；
+- `extra_body`：透传到请求体的额外字段（JSON）。
+
+`lookup_config(pid)` 返回 `PresetConfig`（未命中返回两项皆空的配置）。
+`_CFG_BY_PROVIDER` 里每个 id 各存一份独立副本（`extra_body` 深拷贝），
+配合 `frozen` 使调用方改不动配置表；`resolve_extra_body` 另返回深拷贝
+供请求使用。
+
 - 生效顺序：模型级 → 提供商级 → 本表 → models.dev 推导；
 - 本表只作预设值，用户在 `/provider` 显式配置后即覆盖它；
 - 表单里这两项留空时，占位文字会提示回退来源并展示实际生效内容：
@@ -156,6 +174,16 @@ ProviderPreset(
   - `extra_body`：命中本表（或模型级场景下命中提供商级）时直接展示该
     JSON（压成单行），如 `留空=按提供商预置：{"thinking": {"type": "enabled"}}`；
     都没有时给通用示例 `如 DeepSeek 配置 {...}`。
+
+### openai_compatible：OpenAI 兼容端点预设
+
+目前只有 `path`（OpenAI 兼容端点的 URL path，如 `/v1`）。models.dev 里
+npm 标注了其他包（如 MiniMax 的 `@ai-sdk/anthropic`）但实际提供 OpenAI
+兼容 API 的提供商，由 `models_registry` 用预设 `path` 替换其 `api` 的
+URL path（scheme / netloc 保留），从而纳入 OpenAI 兼容候选。
+
+`lookup_openai_compatible(pid)` 返回 `OpenAICompatible`（未命中返回
+`None`）。`_OAI_BY_PROVIDER` 的值是 `frozen` 只读对象，直接共享。
 
 ## 模型配置（三级菜单）
 

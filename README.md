@@ -192,7 +192,7 @@ uv run python -m mycode
 
 首次启动后先运行 `/provider` 配置模型提供商：
 
-- **添加模型提供商**：从 models.dev 模型库选择（约 182 家 OpenAI 兼容提供商，
+- **添加模型提供商**：从 models.dev 模型库选择（约 189 家 OpenAI 兼容提供商，
   支持关键词筛选与分页），填写所需变量（密钥类掩码显示），勾选启用的模型
   （每家上限 15 个）。模型库每天首次启动异步更新（`models_fetch_timeout`
   可配超时，etag 协商 + zstd 压缩优先），更新状态展示在菜单里。

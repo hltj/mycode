@@ -429,7 +429,7 @@ class TestEdit:
         """占位文字按提供商区分：自定义提供商不在模型库中，不提模型库。"""
         from mycode import provider_presets
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER", {})
         texts = {}
         for pid in ("deepseek", "udf-provider-1"):
             pv.save_provider(_provider_config(id=pid, name=pid,
@@ -451,8 +451,8 @@ class TestEdit:
             config=provider_presets.PresetConfig(
                 send_reasoning_content=True))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
         seen = {}
         monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
@@ -470,8 +470,8 @@ class TestEdit:
             config=provider_presets.PresetConfig(
                 extra_body={"thinking": {"type": "enabled"}}))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
         seen = {}
         monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
@@ -485,7 +485,7 @@ class TestEdit:
         """未命中提供商预置时，占位给通用示例。"""
         from mycode import provider_presets
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER", {})
         pv.save_provider(_provider_config(id="none-hit", name="N", models=["m1"]))
         seen = {}
         monkeypatch.setattr(ps, "form_ui", lambda fields, **kw: (
@@ -863,7 +863,7 @@ class TestEditModelForm:
         # 测试不依赖生产预设值表：默认置空，需要预置的用例自行 monkeypatch
         from mycode import provider_presets
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", [])
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER", {})
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER", {})
 
     def _run(self, monkeypatch, values, pid="deepseek", model="deepseek-chat"):
         seen = {}
@@ -997,8 +997,8 @@ class TestEditModelForm:
             id="d", name="D", for_providers=("dp",),
             config=provider_presets.PresetConfig(extra_body={"preset": 1}))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"],
                                           extra_body={"provider": 1}))
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
@@ -1013,8 +1013,8 @@ class TestEditModelForm:
             id="d", name="D", for_providers=("dp",),
             config=provider_presets.PresetConfig(extra_body={"preset": 1}))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
                                          "extra_body": ""},
@@ -1045,8 +1045,8 @@ class TestEditModelForm:
             config=provider_presets.PresetConfig(
                 send_reasoning_content=True))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"]))
         # 模型库推导也为 true，但预置表优先级更高，来源标注应指向预置
         monkeypatch.setattr(ps.pv, "default_send_reasoning",
@@ -1066,8 +1066,8 @@ class TestEditModelForm:
             config=provider_presets.PresetConfig(
                 send_reasoning_content=True))]
         monkeypatch.setattr(provider_presets, "_PROVIDER_PRESETS", t)
-        monkeypatch.setattr(provider_presets, "_BY_PROVIDER",
-                            provider_presets._rebuild_index(t))
+        monkeypatch.setattr(provider_presets, "_CFG_BY_PROVIDER",
+                            provider_presets._rebuild_cfg_index(t))
         pv.save_provider(_provider_config(id="dp", name="D", models=["m1"],
                                           send_reasoning_content=False))
         fields = self._run(monkeypatch, {"name": "", "send_reasoning_content": "",
