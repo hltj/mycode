@@ -1086,6 +1086,74 @@ class TestProviderField:
 
 
 # ===================================================================
+# 恢复会话：load 恢复最后一条消息的模型/提供商
+# ===================================================================
+
+class TestLoadRestoresModel:
+    """load 恢复会话时，模型/提供商取会话最后一条消息自带的值。"""
+
+    @pytest.fixture
+    def session_history(self, temp_home):
+        """创建会话历史实例（SESSIONS_DIR 指向临时目录）"""
+        sessions_dir = temp_home / "sessions"
+        with patch('mycode.session.SESSIONS_DIR', sessions_dir):
+            return SessionHistory("/test/project", model="old-model",
+                                  provider="old-provider")
+
+    def test_last_message_overrides_session_record(self, session_history):
+        """最后一条消息的模型/提供商覆盖 session 记录初值。"""
+        user_msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="new-model", provider="new-provider")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+
+        loaded = SessionHistory.load(session_history.file_path)
+        assert loaded.model == "new-model"
+        assert loaded.provider == "new-provider"
+
+    def test_model_change_event_last(self, session_history):
+        """最后一条是模型切换事件时，取切换后的模型/提供商。"""
+        from mycode.session import ModelChangeEvent
+        user_msg = UserMessage(
+            message=ChatCompletionUserMessageParam(role="user", content="hi"),
+            model="old-model", provider="old-provider")
+        session_history.inject_meta(user_msg)
+        session_history.append(user_msg)
+        mc = ModelChangeEvent(model="m2", provider="p2")
+        session_history.inject_meta(mc)
+        session_history.append(mc)
+
+        loaded = SessionHistory.load(session_history.file_path)
+        assert loaded.model == "m2"
+        assert loaded.provider == "p2"
+
+    def test_legacy_entry_without_provider(self, session_history):
+        """旧条目无 provider 字段：模型恢复，提供商回退 session 记录。"""
+        line = {
+            "time": "2026-01-01T00:00:00+08:00",
+            "type": "message",
+            "id": "legacy1",
+            "parent_id": session_history.entries[-1].id,
+            "model": "legacy-model",
+            "mode": "auto",
+            "message": {"role": "user", "content": "hi"},
+        }
+        with open(session_history.file_path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(line, ensure_ascii=False) + '\n')
+
+        loaded = SessionHistory.load(session_history.file_path)
+        assert loaded.model == "legacy-model"
+        assert loaded.provider == "old-provider"
+
+    def test_session_record_only(self, session_history):
+        """无消息的会话：保持 session 记录的模型/提供商。"""
+        loaded = SessionHistory.load(session_history.file_path)
+        assert loaded.model == "old-model"
+        assert loaded.provider == "old-provider"
+
+
+# ===================================================================
 # 思考内容 reasoning_content：附加 / 读取 / 剥离 / 持久化
 # ===================================================================
 

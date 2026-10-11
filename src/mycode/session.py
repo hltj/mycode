@@ -617,6 +617,7 @@ class SessionHistory:
                         instance.entries.append(agent_msg)
 
         # 恢复模式：取最后一条消息自带的模式（覆盖 session 记录初值）
+        # 恢复模型：取最后一条消息自带的模型/提供商（覆盖 session 记录初值）
         if instance.entries:
             last = instance.entries[-1]
             mode_val = getattr(last, "mode", None)
@@ -625,6 +626,13 @@ class SessionHistory:
                     instance.mode = Mode(mode_val)
                 except ValueError:
                     pass
+            model_val = getattr(last, "model", "")
+            if model_val:
+                instance.model = model_val
+                provider_val = getattr(last, "provider", "")
+                if provider_val:
+                    # 旧条目无 provider 字段（空串）时沿用 session 记录初值
+                    instance.provider = provider_val
 
         if not instance.entries:
             raise ValueError(f"无法加载空会话文件: {file_path}")

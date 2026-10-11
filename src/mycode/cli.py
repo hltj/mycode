@@ -793,6 +793,27 @@ def _dispatch_model_change(
     ))
 
 
+def _restore_session_model(session_hist: SessionHistory) -> tuple[str, str]:
+    """恢复会话的模型/提供商，返回 (provider, model)。
+
+    恢复的会话应用会话**最后一条消息**自带的模型/提供商
+    （``SessionHistory.load`` 已恢复到 ``session_hist.model`` /
+    ``provider``）：写回 current 并重建 client，让 base_url/api_key 与
+    会话原提供商一致。旧会话没有 provider 字段时仅恢复模型 id，
+    沿用当前提供商。
+    """
+    current = _pv.get_current()
+    provider = current[0] if current else ""
+    model = current[1] if current else (config.get("model") or '')
+    if session_hist.model:
+        model = session_hist.model
+    if session_hist.provider:
+        provider = session_hist.provider
+        _pv.set_current(provider, model)
+        get_client(refresh=True)
+    return provider, model
+
+
 def _switch_mode(provider: str, model: str, bus: AgentEventBus, mode: Mode) -> None:
     """切换模式：更新公共状态并派发 ModeChangeEvent（渲染 + 持久化）。"""
     MODE_STATE.set(mode)
@@ -1055,6 +1076,10 @@ def main():
 
     # 恢复会话时同步模式（session 公共字段），新会话默认自动
     MODE_STATE.set(session_hist.mode)
+
+    # 恢复会话时模型恢复为会话最后一条消息的模型（新会话沿用当前配置）
+    if args.resume or args.continue_session:
+        provider, model = _restore_session_model(session_hist)
 
     # ---- 组装事件总线（CLI 场景：持久化 + 终端渲染） ----
     bus = AgentEventBus(session_hist=session_hist)

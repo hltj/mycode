@@ -2332,6 +2332,57 @@ class TestModelSwitchRefreshesClient:
         refreshed.assert_called_once_with(refresh=True)
 
 
+class TestRestoreSessionModel:
+    """恢复会话时模型恢复为会话最后一条消息的模型。"""
+
+    def _hist(self, model, provider=""):
+        from mycode.session import SessionHistory
+        return SessionHistory(cwd="/tmp", model=model, provider=provider)
+
+    def test_restores_last_message_model(self, monkeypatch):
+        """会话自带提供商/模型：覆盖当前配置、写回 current 并刷新 client。"""
+        fake = _FakeProviders({"cfg": _FakePconf(["cfg-model"])})
+        monkeypatch.setattr(cli, "_pv", fake)
+        fake.set_current = MagicMock()
+        refreshed = MagicMock()
+        monkeypatch.setattr(cli, "get_client", refreshed)
+
+        hist = self._hist("sess-model", "sess-provider")
+        provider, model = cli._restore_session_model(hist)
+
+        assert (provider, model) == ("sess-provider", "sess-model")
+        fake.set_current.assert_called_once_with("sess-provider", "sess-model")
+        refreshed.assert_called_once_with(refresh=True)
+
+    def test_legacy_session_without_provider(self, monkeypatch):
+        """旧会话无 provider 字段：仅恢复模型 id，沿用当前提供商。"""
+        fake = _FakeProviders({"cfg": _FakePconf(["cfg-model"])})
+        monkeypatch.setattr(cli, "_pv", fake)
+        fake.set_current = MagicMock()
+        monkeypatch.setattr(cli, "get_client", MagicMock())
+
+        hist = self._hist("sess-model")  # provider 为空
+        provider, model = cli._restore_session_model(hist)
+
+        assert (provider, model) == ("cfg", "sess-model")
+        fake.set_current.assert_not_called()
+
+    def test_no_current_config(self, monkeypatch):
+        """无当前配置：直接采用会话的提供商/模型。"""
+        fake = _FakeProviders({})
+        monkeypatch.setattr(cli, "_pv", fake)
+        fake.set_current = MagicMock()
+        refreshed = MagicMock()
+        monkeypatch.setattr(cli, "get_client", refreshed)
+
+        hist = self._hist("sess-model", "sess-provider")
+        provider, model = cli._restore_session_model(hist)
+
+        assert (provider, model) == ("sess-provider", "sess-model")
+        fake.set_current.assert_called_once_with("sess-provider", "sess-model")
+        refreshed.assert_called_once_with(refresh=True)
+
+
 class _FakePconf:
     def __init__(self, models, name=""):
         self.models = models
