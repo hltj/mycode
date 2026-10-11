@@ -25,6 +25,7 @@ def grep(
     literal: Annotated[bool, "按字面量匹配（关闭正则元字符）"] = False,
     context: Annotated[int, "匹配前后输出几行上下文"] = 0,
     no_ignore: Annotated[bool, "不忽略 .gitignore（fallback 到 grep 时必须为 true）"] = False,
+    include_hidden: Annotated[bool, "包含隐藏文件（点开头的文件或目录）"] = False,
     limit: Annotated[int, "最多返回的匹配行数"] = 100,
     truncate: Annotated[int, "输出字节数上限（KiB）"] = 50,
 ) -> str:
@@ -46,6 +47,13 @@ def grep(
             cmd.extend(["-C", str(context)])
         if glob:
             cmd.extend(["--glob", glob])
+        if include_hidden:
+            cmd.append("--hidden")
+        elif glob:
+            # rg 默认不搜隐藏文件，但一旦指定 include glob，匹配 glob 的
+            # 隐藏文件会被搜到（如 '*.txt' 命中 '.secret.txt'）。末尾补
+            # --glob '!.*'（rg 规则以后出现的 glob 为准）维持默认语义。
+            cmd.extend(["--glob", "!.*"])
         cmd.extend(["--", pattern, sp.rel])
         # cwd=wksp：相对路径入口 + 相对工作区的输出，避免长前缀
         proc = subprocess.run(
@@ -63,7 +71,9 @@ def grep(
                 "请安装 ripgrep (rg) 后再试；"
                 "或显式设置 no_ignore=true 接受此限制"
             )
-        cmd = ["grep", "-rn", "-H", "--"]
+        # 注意：所有选项必须在 '--' 之前；'--' 之后一律按位置参数解析
+        # （首个为模式），放在 '--' 之后的选项会被当成文件名。
+        cmd = ["grep", "-rn", "-H"]
         if ignore_case:
             cmd.append("-i")
         if literal:
@@ -72,7 +82,12 @@ def grep(
             cmd.extend(["-C", str(context)])
         if glob:
             cmd.extend(["--include", glob])
-        cmd.extend([pattern, sp.rel])
+        if not include_hidden:
+            # grep 原生不区分隐藏文件；用排除模式使行为同 rg/fd 的默认。
+            # 模式取 '.[!.]*'（点开头的 2 字符及以上名称）而非 '.*'：
+            # 搜索根为 '.' 时，--exclude-dir='.*' 会把根目录整体排除掉。
+            cmd.extend(["--exclude", ".[!.]*", "--exclude-dir", ".[!.]*"])
+        cmd.extend(["--", pattern, sp.rel])
         proc = subprocess.run(
             cmd, cwd=sp.wksp, capture_output=True, text=True,
         )

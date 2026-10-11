@@ -303,6 +303,105 @@ def test_glob_basename_only(workdir: Path):
     assert "deep.txt" in out
 
 
+def _add_hidden_files(workdir: Path):
+    """放一个隐藏文件和一个隐藏目录（内含文件），用于隐藏文件语义测试。"""
+    (workdir / ".secret.txt").write_text("x\n")
+    (workdir / ".hdir").mkdir()
+    (workdir / ".hdir" / "inner.txt").write_text("x\n")
+
+
+def test_glob_hidden_excluded_by_default(workdir: Path):
+    """默认不列隐藏文件与隐藏目录内容。"""
+    from mycode.tools import glob
+    _add_hidden_files(workdir)
+    out = glob(".", "*.txt")
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    assert "inner.txt" not in out
+
+
+def test_glob_include_hidden(workdir: Path):
+    """include_hidden=True 时列出隐藏文件与隐藏目录内容。"""
+    from mycode.tools import glob
+    _add_hidden_files(workdir)
+    out = glob(".", "*.txt", include_hidden=True)
+    assert "hello.txt" in out
+    assert ".secret.txt" in out
+    assert "inner.txt" in out
+
+
+def test_glob_fallback_rejects_without_no_ignore(monkeypatch, workdir: Path):
+    """fallback 到 find 且 no_ignore=False 时返回错误（find 不支持 .gitignore）。"""
+    import shutil
+    orig_which = shutil.which
+    def fake_which(name: str):
+        if name in ("fd", "rg"):
+            return None
+        return orig_which(name)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    from mycode.tools import glob
+    out = glob(".", "*.txt")
+    assert out.startswith("Error:")
+    assert "no_ignore" in out
+
+
+def test_glob_fallback_works_with_no_ignore(monkeypatch, workdir: Path):
+    """fallback 到 find 且 no_ignore=True 时正常匹配。"""
+    import shutil
+    orig_which = shutil.which
+    def fake_which(name: str):
+        if name in ("fd", "rg"):
+            return None
+        return orig_which(name)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    from mycode.tools import glob
+    out = glob(".", "*.txt", no_ignore=True)
+    assert "hello.txt" in out
+    assert "Error" not in out
+
+
+def test_glob_find_hidden_excluded_by_default(monkeypatch, workdir: Path):
+    """find 分支：include_hidden=False 用排除模式剔除隐藏条目；True 时列出。"""
+    import shutil
+    orig_which = shutil.which
+    def fake_which(name: str):
+        if name in ("fd", "rg"):
+            return None
+        return orig_which(name)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    from mycode.tools import glob
+    _add_hidden_files(workdir)
+    out = glob(".", "*.txt", no_ignore=True)
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    assert "inner.txt" not in out
+    out2 = glob(".", "*.txt", no_ignore=True, include_hidden=True)
+    assert "hello.txt" in out2
+    assert ".secret.txt" in out2
+    assert "inner.txt" in out2
+
+
+def test_glob_rg_branch_hidden_semantics(monkeypatch, workdir: Path):
+    """rg 分支：指定 include glob 时隐藏文件默认仍不列出，--hidden 时列出。"""
+    import shutil
+    orig_which = shutil.which
+    def fake_which(name: str):
+        if name == "fd":
+            return None
+        return orig_which(name)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    from mycode.tools import glob
+    _add_hidden_files(workdir)
+    out = glob(".", "*.txt")
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    assert "inner.txt" not in out
+    out2 = glob(".", "*.txt", include_hidden=True)
+    assert "hello.txt" in out2
+    assert ".secret.txt" in out2
+    assert "inner.txt" in out2
+
+
 # --- grep ---
 
 def test_grep_basic(workdir: Path):
@@ -370,6 +469,64 @@ def test_grep_fallback_works_with_no_ignore(monkeypatch, workdir: Path):
     out = grep("hello", ".", no_ignore=True)
     assert "hello.txt" in out
     assert "Error" not in out
+
+
+def test_grep_hidden_excluded_by_default(workdir: Path):
+    """默认不搜隐藏文件与隐藏目录内容。"""
+    from mycode.tools import grep
+    (workdir / ".secret.txt").write_text("hello hidden\n")
+    (workdir / ".hdir").mkdir()
+    (workdir / ".hdir" / "inner.txt").write_text("hello hidden\n")
+    out = grep("hello", ".")
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    assert "inner.txt" not in out
+
+
+def test_grep_include_hidden(workdir: Path):
+    """include_hidden=True 时搜隐藏文件与隐藏目录内容。"""
+    from mycode.tools import grep
+    (workdir / ".secret.txt").write_text("hello hidden\n")
+    (workdir / ".hdir").mkdir()
+    (workdir / ".hdir" / "inner.txt").write_text("hello hidden\n")
+    out = grep("hello", ".", include_hidden=True)
+    assert "hello.txt" in out
+    assert ".secret.txt" in out
+    assert "inner.txt" in out
+
+
+def test_grep_glob_does_not_leak_hidden(workdir: Path):
+    """指定 glob 参数时，匹配 glob 的隐藏文件默认仍不搜（rg include glob 会泄漏）。"""
+    from mycode.tools import grep
+    (workdir / ".secret.txt").write_text("hello hidden\n")
+    out = grep("hello", ".", glob="*.txt")
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    out2 = grep("hello", ".", glob="*.txt", include_hidden=True)
+    assert ".secret.txt" in out2
+
+
+def test_grep_fallback_hidden_excluded(monkeypatch, workdir: Path):
+    """grep 分支：用 --exclude/--exclude-dir 排除模式剔除隐藏文件/目录。"""
+    import shutil
+    orig_which = shutil.which
+    def fake_which(name: str):
+        if name == "rg":
+            return None
+        return orig_which(name)
+    monkeypatch.setattr(shutil, "which", fake_which)
+    from mycode.tools import grep
+    (workdir / ".secret.txt").write_text("hello hidden\n")
+    (workdir / ".hdir").mkdir()
+    (workdir / ".hdir" / "inner.txt").write_text("hello hidden\n")
+    out = grep("hello", ".", no_ignore=True)
+    assert "hello.txt" in out
+    assert ".secret.txt" not in out
+    assert "inner.txt" not in out
+    out2 = grep("hello", ".", no_ignore=True, include_hidden=True)
+    assert "hello.txt" in out2
+    assert ".secret.txt" in out2
+    assert "inner.txt" in out2
 
 
 def test_grep_truncate_kib(workdir: Path):
